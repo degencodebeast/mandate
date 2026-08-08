@@ -87,6 +87,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=True,
         description="API key agents include in the MCP connection string.",
     ),
+    ConfigurationVariable(
+        name="RECEIPT_REGISTRY_ADDRESS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Address of the Receipt Registry contract on Arc testnet.",
+    ),
+    ConfigurationVariable(
+        name="SERVICE_WALLET_ADDRESS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Mandate Service wallet address that signs payments and receipts.",
+    ),
 )
 
 
@@ -141,3 +153,6 @@ class ApiSettings(BaseSettings):
     privy_verification_key: SecretStr | None = None
     mandate_mcp_url: str = "localhost:8000/mcp"
     mandate_mcp_api_key: str = "local-mcp-key"
+    receipt_registry_address: str | None = None
+    service_wallet_address: str | None = None
+    circle_chain: str = "ARC-TESTNET"

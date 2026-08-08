@@ -18,6 +18,7 @@ annotations``. FastAPI needs real, evaluated type annotations (not strings) to
 resolve ``Annotated[...]`` dependency aliases.
 """
 
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Annotated
@@ -38,11 +39,16 @@ from mandate.auth import (
 from mandate.config import ApiSettings, Service, assert_secret_boundary
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
+from mandate.payments import CircleCliPaymentExecutor
+from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
     MandateParameters,
     MandateStore,
+    NotFoundError,
     PostgresMandateStore,
 )
+from mandate.receipts import ArcReceiptRecorder
+from mandate.spend import MandateSpendService, SpendResponse
 from mandate.wallets import WalletBinder
 
 
@@ -58,6 +64,27 @@ class CreateMandateRequest(BaseModel):
     @classmethod
     def non_negative_amount(cls, value: str) -> str:
         """Reject negative amounts."""
+        try:
+            amount = float(value)
+        except ValueError as error:
+            raise ValueError("must be a decimal number") from error
+        if amount < 0:
+            raise ValueError("must not be negative")
+        return value
+
+
+class SpendRequest(BaseModel):
+    """The accepted mandate.spend fields."""
+
+    task_id: str = Field(min_length=1)
+    purpose: str = Field(min_length=1, max_length=512)
+    service_url: str = Field(min_length=1)
+    amount: str
+
+    @field_validator("amount")
+    @classmethod
+    def non_negative_amount(cls, value: str) -> str:
+        """Reject negative or malformed amounts."""
         try:
             amount = float(value)
         except ValueError as error:
@@ -85,6 +112,7 @@ def create_app(
     mandate_store: MandateStore | None = None,
     wallet_binder: WalletBinder | None = None,
     identity_registrar: AgentIdentityRegistrar | None = None,
+    spend_service: MandateSpendService | None = None,
 ) -> FastAPI:
     """Build the FastAPI web application.
 
@@ -93,9 +121,9 @@ def create_app(
     fails closed.
 
     The identity verifier defaults to a deny-all adapter. The mandate store,
-    wallet binder, and identity registrar default to Postgres/Circle/Arc
-    implementations when settings permit, or fail closed otherwise. Tests pass
-    scripted adapters.
+    wallet binder, identity registrar, and spend service default to
+    Postgres/Circle/Arc implementations when settings permit, or fail closed
+    otherwise. Tests pass scripted adapters.
     """
     assert_secret_boundary(Service.API, environment)
 
@@ -110,6 +138,7 @@ def create_app(
         if active_settings.database_url is not None
         else None
     )
+    active_spend = spend_service or _spend_service_from_settings(active_settings, active_store)
 
     app = FastAPI(
         title="Mandate API",
@@ -191,4 +220,89 @@ def create_app(
         }
         return JSONResponse(content=document, status_code=201)
 
+    @app.post("/api/v1/mandates/{mandate_id}/spend")
+    def spend(
+        mandate_id: uuid.UUID,
+        command: SpendRequest,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_spend is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            result = active_spend.spend(
+                user_id=identity.subject,
+                mandate_id=mandate_id,
+                task_id=command.task_id,
+                purpose=command.purpose,
+                service_url=command.service_url,
+                amount=command.amount,
+            )
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        return JSONResponse(content=_spend_to_json(result))
+
     return app
+
+
+def _spend_service_from_settings(
+    settings: ApiSettings,
+    store: MandateStore | None,
+) -> MandateSpendService | None:
+    """Build the production spend service when every dependency is configured."""
+    if store is None or settings.receipt_registry_address is None:
+        return None
+    if settings.service_wallet_address is None:
+        return None
+    if settings.database_url is None:
+        return None
+    intent_store = PostgresIntentStore(settings.database_url)
+    payment_executor = CircleCliPaymentExecutor(
+        wallet_address=settings.service_wallet_address,
+        chain=settings.circle_chain,
+    )
+    receipt_recorder = ArcReceiptRecorder(
+        registry_address=settings.receipt_registry_address,
+        wallet_address=settings.service_wallet_address,
+        chain=settings.circle_chain,
+    )
+    return MandateSpendService(
+        mandate_store=store,
+        intent_store=intent_store,
+        payment_executor=payment_executor,
+        receipt_recorder=receipt_recorder,
+    )
+
+
+def _spend_to_json(response: SpendResponse) -> dict[str, object]:
+    """Render a SpendResponse as a safe JSON document."""
+    intent = response.intent
+    document: dict[str, object] = {
+        "outcome": response.outcome,
+        "reason": response.reason,
+        "intent": {
+            "id": str(intent.id),
+            "mandate_id": str(intent.mandate_id),
+            "purpose_hash": intent.purpose_hash,
+            "service_url": intent.service_url,
+            "amount": intent.amount,
+            "status": intent.status,
+            "tx_hash": intent.tx_hash,
+            "created_at": intent.created_at.isoformat(),
+            "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
+        },
+        "spent_total": response.spent_total,
+    }
+    if response.receipt is None:
+        document["receipt"] = None
+    else:
+        receipt = response.receipt
+        document["receipt"] = {
+            "task_id": receipt.task_id,
+            "purpose_hash": receipt.purpose_hash,
+            "service_url": receipt.service_url,
+            "amount": receipt.amount,
+            "tx_hash": receipt.tx_hash,
+            "recorded_at": receipt.recorded_at.isoformat(),
+            "intent_state": receipt.intent_state,
+        }
+    return document
