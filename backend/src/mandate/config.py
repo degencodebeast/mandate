@@ -6,11 +6,11 @@ The table is the single source of truth for the settings each process loads.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -83,7 +83,7 @@ def unexpected_secrets(
     service: Service, environment: Mapping[str, str] | None = None
 ) -> tuple[str, ...]:
     """Return the secret variable names present in the environment that the service does not own."""
-    present = __import__("os").environ if environment is None else environment
+    present = os.environ if environment is None else environment
     return tuple(
         variable.name
         for variable in forbidden_variables_for(service)
@@ -111,6 +111,4 @@ class ApiSettings(BaseSettings):
 
     mandate_env: str = "local"
     database_url: str | None = None
-    privy_app_id: str | None = None
-    privy_verification_key: SecretStr | None = None
-    test_signing_key: SecretStr | None = None
+    port: int = 8000
