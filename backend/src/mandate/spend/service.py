@@ -197,7 +197,7 @@ class MandateSpendService:
         if intent.status == "settled":
             return self._settled_receipt_response(intent, mandate, task_id=task_id)
         if intent.status in ("pending", "settling"):
-            return self._in_progress_response(intent, mandate)
+            return self._already_in_progress_response(intent, mandate)
         return self._duplicate_response(intent, mandate)
 
     def _settled_receipt_response(
@@ -208,13 +208,17 @@ class MandateSpendService:
         task_id: str,
     ) -> SpendResponse:
         """Return the existing receipt for a settled intent."""
+        tx_hash = intent.tx_hash
+        settled_at = intent.settled_at
+        if tx_hash is None or settled_at is None:
+            raise ValueError(f"Settled intent {intent.id} has no transaction hash or settled_at.")
         receipt = SpendReceipt(
             task_id=task_id,
             purpose_hash=intent.purpose_hash,
             service_url=intent.service_url,
             amount=intent.amount,
-            tx_hash=intent.tx_hash or "",
-            recorded_at=intent.settled_at or self._now(),
+            tx_hash=tx_hash,
+            recorded_at=settled_at,
             intent_state="settled",
         )
         return SpendResponse(
@@ -225,14 +229,13 @@ class MandateSpendService:
             spent_total=mandate.spent_total,
         )
 
-    def _in_progress_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
+    def _already_in_progress_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
         """Block a concurrent caller whose intent another caller is settling."""
-        return SpendResponse(
+        return self._blocked_response(
+            intent,
+            mandate,
             outcome="blocked: already_in_progress",
             reason="already in progress",
-            intent=intent,
-            receipt=None,
-            spent_total=mandate.spent_total,
         )
 
     def _duplicate_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
@@ -243,9 +246,25 @@ class MandateSpendService:
         purpose_hash) constraint maps one economic intent to one row. When the
         row already exists, the service never pays again.
         """
-        return SpendResponse(
+        return self._blocked_response(
+            intent,
+            mandate,
             outcome="blocked: duplicate_intent",
             reason="An intent for this task and purpose already exists.",
+        )
+
+    def _blocked_response(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        outcome: str,
+        reason: str,
+    ) -> SpendResponse:
+        """Build a blocked SpendResponse without a receipt."""
+        return SpendResponse(
+            outcome=outcome,
+            reason=reason,
             intent=intent,
             receipt=None,
             spent_total=mandate.spent_total,
