@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from mandate.wallets import (
-    CircleCliWalletBinder,
+    CircleApiWalletBinder,
     ScriptedWalletBinder,
     WalletBinder,
     WalletBinding,
@@ -50,8 +50,8 @@ def test_binding_is_frozen() -> None:
 
 def test_circle_cli_binder_exists_and_is_constructible() -> None:
     # The production binder must be importable and constructible. It is not
-    # called in tests (no CLI, no network) but its presence proves the seam.
-    binder = CircleCliWalletBinder(wallet_set_id="ws_1", chain="ARC-TESTNET")
+    # called in tests (no API, no network) but its presence proves the seam.
+    binder = CircleApiWalletBinder(wallet_set_id="ws_1", chain="ARC-TESTNET")
     assert binder is not None
 
 

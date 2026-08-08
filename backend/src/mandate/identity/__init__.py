@@ -2,10 +2,12 @@
 
 from mandate.identity.registrar import (
     AgentIdentityRegistrar,
+    ArcErc8004Registrar,
     ScriptedAgentIdentityRegistrar,
 )
 
 __all__ = [
     "AgentIdentityRegistrar",
+    "ArcErc8004Registrar",
     "ScriptedAgentIdentityRegistrar",
 ]

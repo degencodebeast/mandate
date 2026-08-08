@@ -75,6 +75,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=True,
         description="Privy access-token verification material held by the API.",
     ),
+    ConfigurationVariable(
+        name="MANDATE_MCP_URL",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Public base URL agents use to reach the Mandate Service MCP endpoint.",
+    ),
+    ConfigurationVariable(
+        name="MANDATE_MCP_API_KEY",
+        owners=frozenset({Service.API}),
+        secret=True,
+        description="API key agents include in the MCP connection string.",
+    ),
 )
 
 
@@ -127,3 +139,5 @@ class ApiSettings(BaseSettings):
     port: int = 8000
     privy_app_id: str | None = None
     privy_verification_key: SecretStr | None = None
+    mandate_mcp_url: str = "localhost:8000/mcp"
+    mandate_mcp_api_key: str = "local-mcp-key"

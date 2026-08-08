@@ -1,14 +1,14 @@
 """Wallet binding Interface and Adapters for the Mandate Service."""
 
 from mandate.wallets.binder import (
-    CircleCliWalletBinder,
+    CircleApiWalletBinder,
     ScriptedWalletBinder,
     WalletBinder,
     WalletBinding,
 )
 
 __all__ = [
-    "CircleCliWalletBinder",
+    "CircleApiWalletBinder",
     "ScriptedWalletBinder",
     "WalletBinder",
     "WalletBinding",

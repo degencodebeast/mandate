@@ -182,7 +182,12 @@ def create_app(
             "wallet_address": mandate.wallet_address,
             "circle_wallet_id": mandate.circle_wallet_id,
             "agent_identity": mandate.agent_identity,
-            "connection_string": build_connection_string(mandate_id=str(mandate.id)),
+            "created_at": mandate.created_at.isoformat(),
+            "connection_string": build_connection_string(
+                mandate_id=str(mandate.id),
+                base_url=active_settings.mandate_mcp_url,
+                api_key=active_settings.mandate_mcp_api_key,
+            ),
         }
         return JSONResponse(content=document, status_code=201)
 
