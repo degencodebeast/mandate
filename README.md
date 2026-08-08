@@ -1,6 +1,8 @@
 # Mandate
 
-**The fault-tolerant execution boundary for autonomous AI agents.** It guarantees one economic intent cannot accidentally become multiple settlements — even through timeouts, retries, concurrency, lost responses, and unknown outcomes.
+**Financial fault tolerance for autonomous agents.**
+
+Mandate guarantees one economic intent cannot accidentally become multiple settlements — even through timeouts, retries, concurrency, lost responses, and unknown outcomes.
 
 > Built for the **Encode x Arc Programmable Money Hackathon** — Agentic Economy track.
 > Chain: **Arc testnet** · Money: **USDC** · Agent framework: **Agno** · Auth: **Privy**
