@@ -69,3 +69,59 @@ curl http://localhost:4022/search -H "PAYMENT-SIGNATURE: <valid-payload>"
 Service A applies the failure simulator inside the paid route handler, so a
 successful payment can still be followed by a 500 or a timeout — the exact
 "paid but not delivered" case the circuit breaker is built for.
+
+## Naive-agent demo (the "without Mandate" side)
+
+`src/naive-agent.ts` is a standalone demo script that calls Service A directly —
+no Mandate, no circuit breaker, no dedupe. It retries on failure (default 5
+attempts) and makes a **real x402 payment on every attempt**, exactly as a
+naive agent would. Each attempt runs the full x402 handshake: probe the
+endpoint, read `PAYMENT-REQUIRED`, send a `PAYMENT-SIGNATURE`, and read the
+settlement from `PAYMENT-RESPONSE`. Settlement goes through the same mock
+facilitator the services ship with (see above), so the demo is fully
+self-contained. Retries after the first are duplicate charges, so the run
+shows the money wasted when a service fails after being paid.
+
+```bash
+# Terminal 1 — flaky Service A on port 4021 (fails 3/5 paid requests)
+npm run start:a
+
+# Terminal 2 — the naive agent pays per retry and shows money lost
+npm run start:naive
+```
+
+For a fully deterministic demo (every attempt fails), start Service A with
+`FAILURE_RATE=1`:
+
+```bash
+PORT=4021 SERVICE_NAME=search-a FAILURE_RATE=1 FAILURE_MODE=error npx tsx src/service-a.ts
+```
+
+Example output:
+
+```
+=== NAIVE AGENT (NO MANDATE) ===
+Target: http://localhost:4021/search
+
+[2026-08-08T23:43:02.800Z] Attempt 1: PAID $0.05 -> HTTP 500
+[2026-08-08T23:43:02.801Z] Attempt 2: PAID $0.05 (DUPLICATE) -> HTTP 500
+[2026-08-08T23:43:02.802Z] Attempt 3: PAID $0.05 (DUPLICATE) -> HTTP 500
+[2026-08-08T23:43:02.803Z] Attempt 4: PAID $0.05 (DUPLICATE) -> HTTP 500
+[2026-08-08T23:43:02.804Z] Attempt 5: PAID $0.05 (DUPLICATE) -> HTTP 500
+
+=== SUMMARY ===
+Payments attempted: 5
+Payments charged: 5
+Duplicates: 4
+Total charged: $0.25
+Money lost to duplicates: $0.25
+NOT DELIVERED after 5 attempts
+```
+
+Configuration (environment variables):
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVICE_URL` | `http://localhost:4021/search` | Paid endpoint the agent calls |
+| `MAX_ATTEMPTS` | `5` | Attempts before giving up |
+| `REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout |

@@ -13,6 +13,7 @@
     "test": "vitest run",
     "start:a": "tsx src/service-a.ts",
     "start:b": "tsx src/service-b.ts",
+    "start:naive": "tsx src/naive-agent.ts",
     "dev:a": "tsx watch src/service-a.ts",
     "dev:b": "tsx watch src/service-b.ts"
   },
