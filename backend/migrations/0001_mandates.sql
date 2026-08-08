@@ -17,9 +17,13 @@ CREATE TABLE intents (
     purpose_hash text NOT NULL CHECK (length(purpose_hash) > 0),
     service_url text NOT NULL CHECK (length(service_url) > 0),
     amount numeric NOT NULL CHECK (amount >= 0),
-    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'settled', 'blocked')),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN (
+        'pending', 'settling', 'settled', 'unknown', 'reconciling',
+        'not_settled', 'blocked', 'already_in_progress'
+    )),
     tx_hash text,
     created_at timestamptz NOT NULL DEFAULT now(),
+    settled_at timestamptz,
     UNIQUE (mandate_id, purpose_hash)
 );
 
