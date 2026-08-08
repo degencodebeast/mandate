@@ -24,7 +24,7 @@ Circle gives agents wallets, nanopayments, and the x402 protocol. What Circle do
 | All 15 tested x402 facilitators had safety violations | "Free Shopping, Asset Theft, Service Denial, Gas Abuse" | [USENIX Security 2026](https://arxiv.org/abs/2607.19545) |
 | Paying is solved; deciding what to pay for is not | "payment protocols do not determine which service an agent should buy" | [402Pilot, arXiv Aug 2026](https://arxiv.org/abs/2608.01341) |
 
-Circle provides wallet-level spending limits (per-tx, daily, weekly, monthly) but **only on mainnet** — not on Arc testnet. These limits are wallet-scoped, not task-scoped. They do not prevent duplicate payments. They do not trip circuit breakers. They do not produce receipts.
+Circle provides wallet-level spending limits (per-tx, daily, weekly, monthly) and address allow/block lists. These limits are wallet-scoped, not task-scoped. They do not prevent duplicate payments. They do not trip circuit breakers. They do not produce receipts. They do not let a human say "spend on this task, for these services, and do not pay the same intent twice."
 
 A human who delegates spending authority to an agent has no way to say: *"spend up to $0.10 on this task, for these services, and do not pay the same intent twice."*
 
@@ -157,27 +157,4 @@ Checks compose with AND semantics. No mandate = no payment. Fail closed by defau
 backend/     Python FastAPI Mandate Service
 frontend/    Next.js dashboard (coming)
 contracts/   Receipt Registry Solidity contract (coming)
-docs/        ADRs + keeperhack learnings
 ```
-
-## Docs
-
-- `CONTEXT.md` — domain glossary (13 terms)
-- `docs/adr/` — 24 architectural decision records
-- `docs/keeperhack-learnings.md` — distilled wisdom from 13 winning hackathon repos
-- `.scratch/` — planning (spec + 10 tickets); never committed
-
-## Workflow
-
-Uses [Matt Pocock's engineering skills](https://github.com/mattpocock/skills): grilling → spec → tickets → implement → code-review. Multi-agent orchestration via tmux panes and git worktrees. Every ticket is TDD at pre-agreed seams, internally code-reviewed, then gate-reviewed before merge.
-
----
-
-## Acknowledgements
-
-Architecture patterns adapted from:
-- **Aegis** — fail-closed policy engine with composable `check(ctx) → { allow, reason }` checks
-- **KeeperForge** — advisory agent + deterministic policy gate, Privy JWT verification, secret boundary
-- **Leash** — tool policy with route/risk/approval classification
-- **agent-rank** — decision-only agent invariant (`tools=[]`)
-- **Veridex Arena** — InMemoryDb + scripted adapters for network-free tests
