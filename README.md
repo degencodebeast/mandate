@@ -15,7 +15,7 @@ An agent pays $0.05 for a research report. Arc settlement happens. The HTTP resp
 
 So it retries. And pays twice.
 
-This is not a spending-limits problem. Circle already provides wallet-level limits. PayPer provides local session guardrails. Neither solves the harder case: **money has moved, but the outcome is unknown.**
+This is not a spending-limits problem. Circle already provides wallet-level limits. They do not solve the harder case: **money has moved, but the outcome is unknown.**
 
 | Pain | Evidence | Source |
 |---|---|---|
@@ -87,7 +87,7 @@ Mandate is a standalone service you connect to, not a library you import.
 - It does not replace Circle. It wraps Circle. The payment still flows through Circle Nanopayments on Arc.
 - It does not give the agent a wallet. The user owns the wallet. Mandate is the boundary above it.
 - It does not decide what to buy. The agent reasons about that. Mandate guarantees the spend executes safely.
-- It is not "better spending limits." Circle and PayPer already have limits. Mandate is the fault-tolerance layer above limits.
+- It is not "better spending limits." Circle already has limits. Mandate is the fault-tolerance layer above limits.
 
 ---
 
