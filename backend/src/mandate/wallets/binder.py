@@ -96,7 +96,8 @@ class CircleApiWalletBinder:
                 {"name": f"mandate-wallet-{ref_id}", "refId": ref_id},
             ],
         }
-        url = f"{self._base_url}/wallets"
+        # The Circle API creates developer-controlled wallets at /developer/wallets.
+        url = f"{self._base_url}/developer/wallets"
         result = (
             self._http_request(url, payload)
             if self._http_request is not None

@@ -113,7 +113,9 @@ def test_binder_creates_wallet_when_no_existing_found() -> None:
     assert len(calls) == 2
     query, create = calls
     assert query[1] is None
+    assert "refId=did%3Aprivy%3Acreate-user" in query[0]
     assert create[1] is not None
+    assert "/developer/wallets" in create[0]
     created_payload = create[1]
     metadata = created_payload["metadata"]  # type: ignore[index]
     assert metadata[0]["refId"] == "did:privy:create-user"  # type: ignore[index]
