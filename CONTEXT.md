@@ -52,6 +52,10 @@ _Avoid_: request, payload, input
 The frozen output of the policy engine. It contains the decision (ALLOW or BLOCKED), the rule that triggered a block (if any), and a human-readable reason. The agent receives this and adapts.
 _Avoid_: response, verdict, output
 
+**Spend Outcome**:
+The named result of a spend attempt. One of: permitted, blocked: duplicate_intent, blocked: budget_exceeded, blocked: breaker_open, blocked: service_not_allowed, blocked: mandate_expired, blocked: per_call_cap_exceeded.
+_Avoid_: status, result, state
+
 ## Design Language
 
 **Authority Banner**:
