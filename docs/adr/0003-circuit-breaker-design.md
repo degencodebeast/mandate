@@ -1,3 +1,0 @@
-# Circuit breaker design: trip on failures, block target, time-based recovery
-
-The circuit breaker trips after 3 consecutive failed settlements to the same service or facilitator. It blocks payments to that specific target (not the whole wallet), letting the agent route to a backup. It recovers via a time-based half-open state after 60 seconds: one trial payment is allowed, and the breaker closes on success or re-opens on failure. We rejected spend-velocity tripping (overlaps with the budget mandate), wallet-wide freezes (too blunt, agent cannot route around failure), and manual reset (kills agent autonomy).

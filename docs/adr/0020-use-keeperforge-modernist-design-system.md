@@ -1,7 +1,0 @@
-# Use the KeeperForge Modernist design system for Mandate's dashboard
-
-Mandate's Next.js dashboard uses the Modernist design system from the KeeperForge prototype (`Design system prototype review-4/`). The visual direction matches: a controlled workshop that turns intent into verified evidence. Dark graphite ground (`#090B0F`), Archivo font, zero corner radius, flat bordered surfaces, 2px section rules, flush-left labels, dense-but-calm hierarchy. Amber for authority/mandate actions, blue for proof/receipts, green for settled payments only, red for blocked/denied, warn-amber for pending.
-
-The design tokens (`styles.css`), component classes (buttons, cards, forms, tables, tags, navigation, dialog), interaction rules, accessibility rules, and responsive behavior rules are adapted from the KeeperForge handoff with minimal changes. Four styling skills guide implementation: `frontend-design` (aesthetic direction), `emil-design-eng` (component polish), `design-motion-principles` (motion), and `make-interfaces-feel-better` (typography, surfaces, icons, hover states).
-
-We rejected building a new design system from scratch (too much time for a 2-day build), using a generic UI library like shadcn or Mantine (gives a generic SaaS look that does not match the authority-control aesthetic), and plain Tailwind without a system (the product needs authority and trust; plain Tailwind gives a generic look).
