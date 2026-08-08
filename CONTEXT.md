@@ -44,6 +44,14 @@ _Avoid_: customer, account, tenant
 A percentage of each payment amount, taken from the user's wallet by the Mandate Service. Example: 1% of each payment. This is the revenue model.
 _Avoid_: commission, cut, charge
 
+**Spend Context**:
+The frozen input to the policy engine. It contains the mandate, the intent, the breaker state, and the current budget totals. The policy engine reads it to decide whether a payment is allowed.
+_Avoid_: request, payload, input
+
+**Spend Result**:
+The frozen output of the policy engine. It contains the decision (ALLOW or BLOCKED), the rule that triggered a block (if any), and a human-readable reason. The agent receives this and adapts.
+_Avoid_: response, verdict, output
+
 ## Design Language
 
 **Authority Banner**:
