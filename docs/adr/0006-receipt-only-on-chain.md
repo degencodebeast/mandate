@@ -1,0 +1,3 @@
+# Only the Receipt goes on-chain; mandate, dedupe, and breaker stay off-chain
+
+The Receipt Registry is the only on-chain contract. It stores receipt data (task, intent, service, amount, tx hash) and emits events. The mandate, dedupe state, and circuit breaker state stay off-chain in Postgres. We rejected putting the mandate on-chain (control logic that changes when the human updates it; on-chain updates cost gas) and putting everything on-chain (dedupe and breaker change every payment; on-chain state adds latency the breaker cannot afford). The settlement already flows through Circle Nanopayments on Arc, so Arc is in the money flow. The receipt adds the audit layer that makes Arc non-decorative.

@@ -1,0 +1,3 @@
+# Receipt Registry: owner-only write access
+
+Only the Mandate Service address can call `recordReceipt` on the Receipt Registry contract. The contract stores an owner field set at deployment. No other address can write receipts. We rejected allowing anyone to write (fake receipts possible) and per-agent allowlists (adds onboarding complexity for each new agent). The owner is the Mandate Service's wallet, set once at contract deployment.

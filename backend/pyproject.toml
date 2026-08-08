@@ -1,0 +1,48 @@
+[project]
+name = "mandate"
+version = "0.1.0"
+description = "Mandate backend package. It runs as a FastAPI web process exposing MCP tools and REST endpoints for the dashboard."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.121.0",
+    "uvicorn[standard]>=0.41.0",
+    "pydantic>=2.13.0",
+    "pydantic-settings>=2.13.0",
+    "psycopg[binary]>=3.2.12",
+    "pyjwt[crypto]>=2.10.1,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "ruff>=0.15.0",
+    "mypy>=1.19.0",
+    "httpx2>=2.9.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mandate"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "S", "PTH"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests"]

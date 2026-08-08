@@ -1,0 +1,12 @@
+.scratch/
+docs/agents/
+.DS_Store
+.env
+.env.local
+__pycache__/
+*.pyc
+.venv/
+.worktrees/
+node_modules/
+.next/
+dist/
