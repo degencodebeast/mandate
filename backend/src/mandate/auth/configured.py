@@ -20,7 +20,7 @@ def build_identity_verifier(settings: ApiSettings) -> PrivyIdentityVerifier | No
     """
     if settings.privy_app_id is None:
         return None
-    if settings.mandate_env == "test" and settings.privy_verification_key:
+    if settings.mandate_env == "test" and settings.privy_verification_key is not None:
         return DeterministicPrivyAdapter(
             signing_key=settings.privy_verification_key.get_secret_value(),
             app_id=settings.privy_app_id,

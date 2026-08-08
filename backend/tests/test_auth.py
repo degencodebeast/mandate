@@ -114,6 +114,20 @@ def test_protected_endpoint_returns_401_with_wrong_signing_key() -> None:
     assert response.status_code == 401
 
 
+def test_protected_endpoint_returns_401_with_non_privy_subject() -> None:
+    verifier = _make_verifier()
+    token = _valid_token({"sub": "not-a-privy-subject"})
+    app = create_app(
+        settings=ApiSettings(database_url=None),
+        identity_verifier=verifier,
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+
+
 def test_health_still_works_without_auth() -> None:
     verifier = _make_verifier()
     app = create_app(

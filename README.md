@@ -59,6 +59,16 @@ Timeout/lost → UNKNOWN → freeze retries → reconcile against Arc
 
 **One intent. One settlement. Even when the response is lost.**
 
+### The product, not middleware
+
+Mandate is a standalone service you connect to, not a library you import.
+
+- **MCP connection string** — paste it into any agent (Agno, LangChain, Claude, OpenAI). Your agent gets `mandate.create`, `mandate.spend`, `mandate.status` as tools.
+- **Dashboard** — create mandates, watch live spending, see intent states, view on-Arc receipts.
+- **Per-user wallets** — each user owns a Circle Agent Wallet. Mandate is the boundary above it.
+- **Per-payment fee** — 1% of each payment funds the service. It is a business, not a script.
+- **Works with any agent framework** — Mandate is framework-agnostic. Any MCP-compatible agent connects the same way.
+
 ### What Mandate gives you
 
 - **Unknown-outcome handling** — If a payment times out or the response is lost, Mandate freezes retries, reconciles against Arc settlement state, and either returns the existing receipt or allows one safe retry. Never a blind double-pay.

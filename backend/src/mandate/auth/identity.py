@@ -95,7 +95,7 @@ class PrivyAccessTokenAdapter:
             authentication_time = claims.get("auth_time")
             if (
                 not isinstance(subject, str)
-                or not subject
+                or not subject.startswith("did:privy:")
                 or not isinstance(session_id, str)
                 or not session_id
             ):
