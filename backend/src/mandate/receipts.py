@@ -13,9 +13,10 @@ Adapters:
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable, Sequence
 from typing import Protocol
+
+from mandate.cli import run_cli
 
 
 class ReceiptRecorder(Protocol):
@@ -62,7 +63,7 @@ class ArcReceiptRecorder:
         tx_hash: str,
     ) -> str:
         """Call recordReceipt on the registry with the full receipt fields."""
-        self._run_command(
+        run_cli(
             [
                 "circle",
                 "wallet",
@@ -80,20 +81,10 @@ class ArcReceiptRecorder:
                 self._wallet_address,
                 "--chain",
                 self._chain,
-            ]
+            ],
+            self._runner,
         )
         return tx_hash
-
-    def _run_command(self, command: Sequence[str]) -> str:
-        if self._runner is not None:
-            return self._runner(command)
-        completed = subprocess.run(  # noqa: S603 - fixed literal list, no shell, no user input
-            list(command),
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-        return completed.stdout
 
 
 class ScriptedReceiptRecorder:

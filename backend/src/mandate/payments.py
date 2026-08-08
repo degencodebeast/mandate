@@ -15,10 +15,11 @@ Adapters:
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from mandate.cli import run_cli
 
 
 class PaymentExecutor(Protocol):
@@ -52,7 +53,7 @@ class CircleCliPaymentExecutor:
 
     def execute_payment(self, *, service_url: str, amount: str) -> str:
         """Run the CLI payment and return the settlement transaction hash."""
-        output = self._run_command(
+        output = run_cli(
             [
                 "circle",
                 "services",
@@ -66,20 +67,10 @@ class CircleCliPaymentExecutor:
                 amount,
                 "--output",
                 "json",
-            ]
+            ],
+            self._runner,
         )
         return _extract_tx_hash(output)
-
-    def _run_command(self, command: Sequence[str]) -> str:
-        if self._runner is not None:
-            return self._runner(command)
-        completed = subprocess.run(  # noqa: S603 - fixed literal list, no shell, no user input
-            list(command),
-            capture_output=True,
-            check=True,
-            text=True,
-        )
-        return completed.stdout
 
 
 class ScriptedPaymentExecutor:

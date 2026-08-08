@@ -149,12 +149,13 @@ class MandateSpendService:
             amount=amount,
             tx_hash=tx_hash,
         )
+        settled_at = self._now()
         updated = self._mandate_store.record_spend(mandate_id=mandate_id, amount=amount)
         settled = self._intent_store.transition(
             intent_id=settling.id,
             status="settled",
             tx_hash=tx_hash,
-            settled_at=now,
+            settled_at=settled_at,
         )
         receipt = SpendReceipt(
             task_id=task_id,
@@ -162,7 +163,7 @@ class MandateSpendService:
             service_url=service_url,
             amount=amount,
             tx_hash=tx_hash,
-            recorded_at=now,
+            recorded_at=settled_at,
             intent_state="settled",
         )
         return SpendResponse(

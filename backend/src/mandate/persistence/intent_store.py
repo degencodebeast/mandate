@@ -136,7 +136,7 @@ class PostgresIntentStore:
             ).fetchone()
         if row is None:
             return None
-        return _from_row(row)
+        return self._from_row(row)
 
     def transition(
         self,
@@ -161,21 +161,20 @@ class PostgresIntentStore:
             ).fetchone()
         if row is None:
             raise IntentNotFoundError("The intent does not exist.")
-        return _from_row(row)
+        return self._from_row(row)
 
-
-def _from_row(row: dict[str, Any]) -> Intent:
-    return Intent(
-        id=row["id"],
-        mandate_id=row["mandate_id"],
-        purpose_hash=row["purpose_hash"],
-        service_url=row["service_url"],
-        amount=_money(row["amount"]),
-        status=row["status"],
-        tx_hash=row["tx_hash"],
-        created_at=row["created_at"],
-        settled_at=row["settled_at"],
-    )
+    def _from_row(self, row: dict[str, Any]) -> Intent:
+        return Intent(
+            id=row["id"],
+            mandate_id=row["mandate_id"],
+            purpose_hash=row["purpose_hash"],
+            service_url=row["service_url"],
+            amount=_money(row["amount"]),
+            status=row["status"],
+            tx_hash=row["tx_hash"],
+            created_at=row["created_at"],
+            settled_at=row["settled_at"],
+        )
 
 
 def _money(value: Any) -> str:
