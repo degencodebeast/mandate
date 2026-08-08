@@ -8,6 +8,8 @@ CREATE TABLE mandates (
     expiry timestamptz,
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired')),
     spent_total numeric NOT NULL DEFAULT 0 CHECK (spent_total >= 0),
+    wallet_address text,
+    circle_wallet_id text,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
