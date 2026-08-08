@@ -1,5 +1,9 @@
 .scratch/
 docs/agents/
+docs/adr/
+docs/keeperhack-learnings.md
+AGENTS.md
+CONTEXT.md
 .DS_Store
 .env
 .env.local
