@@ -12,19 +12,22 @@ link-or-create: find an existing wallet for this user, or create one.
 Adapters:
 - CircleApiWalletBinder: production. Calls the Circle developer-controlled
   wallets API (create with refId metadata; link-or-create by querying refId).
-  The HTTP call is injectable so tests can script it without network.
+  The HTTP calls are injectable so tests can script them without network.
 - ScriptedWalletBinder: test. Returns fixed values (ADR-0024).
 """
 
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-HttpPost = Callable[[dict[str, object]], str]
+HttpRequest = Callable[[str, dict[str, object] | None], str]
+
+_WALLETS_BASE = "https://api.circle.com/v1/w3s"
 
 
 @dataclass(frozen=True)
@@ -52,30 +55,35 @@ class CircleApiWalletBinder:
         wallet_set_id: str,
         chain: str = "ARC-TESTNET",
         api_key: str = "",
-        base_url: str = "https://api.circle.com/v1/w3s/developer/wallets",
-        http_post: HttpPost | None = None,
+        base_url: str = _WALLETS_BASE,
+        http_request: HttpRequest | None = None,
     ) -> None:
         self._wallet_set_id = wallet_set_id
         self._chain = chain
         self._api_key = api_key
         self._base_url = base_url
-        self._http_post = http_post
+        self._http_request = http_request
 
     def bind(self, *, user_id: str) -> WalletBinding:
         """Link an existing wallet for this user, or create one, and return it."""
-        ref_id = user_id
-        existing = self._find_by_ref_id(ref_id)
+        existing = self._find_by_ref_id(user_id)
         if existing is not None:
             return existing
-        return self._create_with_ref_id(ref_id)
+        return self._create_with_ref_id(user_id)
 
     def _find_by_ref_id(self, ref_id: str) -> WalletBinding | None:
-        # The Circle API lists wallets; filtering by refId is done by the
-        # developer. The query endpoint is exercised by a real deployment.
-        # For the MVP this returns None (create path) unless a production
-        # query is wired in. Link-or-create is implemented as: query for a
-        # wallet whose metadata.refId matches; return it if found.
-        return None
+        """Query the Circle wallet list filtered by refId; return the match or None."""
+        url = f"{self._base_url}/wallets?refId={_quote(ref_id)}&pageSize=1"
+        result = self._http_request(url, None) if self._http_request is not None else self._get(url)
+        document = json.loads(result)
+        wallets = document.get("data", {}).get("wallets", [])
+        if not wallets:
+            return None
+        first = wallets[0]
+        return WalletBinding(
+            wallet_address=first["address"],
+            circle_wallet_id=first["id"],
+        )
 
     def _create_with_ref_id(self, ref_id: str) -> WalletBinding:
         payload: dict[str, object] = {
@@ -88,7 +96,12 @@ class CircleApiWalletBinder:
                 {"name": f"mandate-wallet-{ref_id}", "refId": ref_id},
             ],
         }
-        result = self._http_post(payload) if self._http_post is not None else self._post(payload)
+        url = f"{self._base_url}/wallets"
+        result = (
+            self._http_request(url, payload)
+            if self._http_request is not None
+            else self._post(url, payload)
+        )
         document = json.loads(result)
         wallets = document["data"]["wallets"]
         first = wallets[0]
@@ -97,9 +110,18 @@ class CircleApiWalletBinder:
             circle_wallet_id=first["id"],
         )
 
-    def _post(self, payload: dict[str, object]) -> str:
+    def _get(self, url: str) -> str:
         request = urllib.request.Request(  # noqa: S310 - base URL is https from config, not user input
-            self._base_url,
+            url,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request) as response:  # noqa: S310 - fixed https base URL from config
+            return response.read().decode()
+
+    def _post(self, url: str, payload: dict[str, object]) -> str:
+        request = urllib.request.Request(  # noqa: S310 - base URL is https from config, not user input
+            url,
             data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
@@ -123,3 +145,8 @@ class ScriptedWalletBinder:
             wallet_address=self._wallet_address,
             circle_wallet_id=self._circle_wallet_id,
         )
+
+
+def _quote(value: str) -> str:
+    """URL-encode a query parameter value."""
+    return urllib.parse.quote(value, safe="")
