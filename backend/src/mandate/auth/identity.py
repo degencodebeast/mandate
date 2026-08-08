@@ -27,6 +27,9 @@ class AuthenticationDeniedError(ValueError):
     """A token did not prove the required user identity."""
 
 
+_DENIED_MESSAGE = "The Privy identity was not accepted."
+
+
 @dataclass(frozen=True)
 class PrivyIdentity:
     """The verified Privy user and session identity."""
@@ -48,7 +51,7 @@ class _RejectingIdentityVerifier:
     """Always deny. Used when no verifier is configured."""
 
     def verify(self, token: str) -> PrivyIdentity:
-        raise AuthenticationDeniedError("The Privy identity was not accepted.")
+        raise AuthenticationDeniedError(_DENIED_MESSAGE)
 
 
 def rejecting_identity_verifier() -> PrivyIdentityVerifier:
@@ -107,9 +110,9 @@ class PrivyAccessTokenAdapter:
                 ),
             )
         except AuthenticationDeniedError:
-            raise AuthenticationDeniedError("The Privy identity was not accepted.") from None
+            raise AuthenticationDeniedError(_DENIED_MESSAGE) from None
         except Exception:
-            raise AuthenticationDeniedError("The Privy identity was not accepted.") from None
+            raise AuthenticationDeniedError(_DENIED_MESSAGE) from None
 
 
 class DeterministicPrivyAdapter(PrivyAccessTokenAdapter):

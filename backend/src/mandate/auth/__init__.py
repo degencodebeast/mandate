@@ -1,5 +1,6 @@
 """Authentication Interface for the Mandate Service."""
 
+from mandate.auth.configured import build_identity_verifier
 from mandate.auth.identity import (
     AuthenticationDeniedError,
     DeterministicPrivyAdapter,
@@ -15,5 +16,6 @@ __all__ = [
     "PrivyAccessTokenAdapter",
     "PrivyIdentity",
     "PrivyIdentityVerifier",
+    "build_identity_verifier",
     "rejecting_identity_verifier",
 ]

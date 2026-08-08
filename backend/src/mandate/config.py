@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,6 +63,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="Deployment environment label.",
     ),
+    ConfigurationVariable(
+        name="PRIVY_APP_ID",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Privy application identifier used as the token audience.",
+    ),
+    ConfigurationVariable(
+        name="PRIVY_VERIFICATION_KEY",
+        owners=frozenset({Service.API}),
+        secret=True,
+        description="Privy access-token verification material held by the API.",
+    ),
 )
 
 
@@ -112,3 +125,5 @@ class ApiSettings(BaseSettings):
     mandate_env: str = "local"
     database_url: str | None = None
     port: int = 8000
+    privy_app_id: str | None = None
+    privy_verification_key: SecretStr | None = None
