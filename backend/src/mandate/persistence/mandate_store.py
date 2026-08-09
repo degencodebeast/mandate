@@ -40,6 +40,8 @@ class MandateStore(Protocol):
 
     def record_spend(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
 
+    def record_fee(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
+
 
 @dataclass(frozen=True)
 class MandateParameters:
@@ -64,7 +66,7 @@ class Mandate:
     expiry: datetime | None
     status: str
     spent_total: str
-    fees_paid: str
+    fees_total: str
     wallet_address: str | None
     circle_wallet_id: str | None
     created_at: datetime
@@ -98,7 +100,7 @@ class PostgresMandateStore:
                 """
                 INSERT INTO mandates (
                     id, user_id, agent_identity, budget, per_call_cap,
-                    allowed_services, expiry, status, spent_total, fees_paid,
+                    allowed_services, expiry, status, spent_total, fees_total,
                     wallet_address, circle_wallet_id, created_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
@@ -126,7 +128,7 @@ class PostgresMandateStore:
             row = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total, fees_paid,
+                       allowed_services, expiry, status, spent_total, fees_total,
                        wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE id = %s AND user_id = %s
@@ -143,7 +145,7 @@ class PostgresMandateStore:
             rows = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total, fees_paid,
+                       allowed_services, expiry, status, spent_total, fees_total,
                        wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE user_id = %s
@@ -167,8 +169,31 @@ class PostgresMandateStore:
                 SET spent_total = spent_total + %s
                 WHERE id = %s
                 RETURNING id, user_id, agent_identity, budget, per_call_cap,
-                          allowed_services, expiry, status, spent_total, fees_paid,
-                          wallet_address, circle_wallet_id, created_at
+                          allowed_services, expiry, status, spent_total,
+                          fees_total, wallet_address, circle_wallet_id, created_at
+                """,
+                (amount, mandate_id),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("Mandate not found or belongs to another user")
+        return self._from_row(row)
+
+    def record_fee(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
+        """Add one collected fee to the mandate's fees_total (ticket 07).
+
+        The update adds the amount to the stored numeric total atomically, the
+        same pattern as record_spend (ADR-0004). The returned mandate carries
+        the updated fees_total and the current spent_total.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE mandates
+                SET fees_total = fees_total + %s
+                WHERE id = %s
+                RETURNING id, user_id, agent_identity, budget, per_call_cap,
+                          allowed_services, expiry, status, spent_total,
+                          fees_total, wallet_address, circle_wallet_id, created_at
                 """,
                 (amount, mandate_id),
             ).fetchone()
@@ -187,7 +212,7 @@ class PostgresMandateStore:
             expiry=row["expiry"],
             status=row["status"],
             spent_total=_money(row["spent_total"]),
-            fees_paid=_money(row["fees_paid"]),
+            fees_total=_money(row["fees_total"]),
             wallet_address=row["wallet_address"],
             circle_wallet_id=row["circle_wallet_id"],
             created_at=row["created_at"],

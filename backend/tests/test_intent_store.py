@@ -107,6 +107,30 @@ def test_transition_to_settled_records_tx_and_time(
     assert settled.settled_at == settled_at
 
 
+def test_transition_to_settled_records_fee_fields(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-3b",
+        service_url="https://service-a.example.com",
+        amount="1.00",
+    )
+
+    settled = intent_store.transition(
+        intent_id=intent.id,
+        status="settled",
+        tx_hash="0xsettled",
+        settled_at=datetime(2026, 8, 8, 12, 30, tzinfo=UTC),
+        fee_amount="0.010000",
+        fee_tx_hash="0xfeepaid",
+    )
+
+    assert settled.fee_amount == "0.010000"
+    assert settled.fee_tx_hash == "0xfeepaid"
+
+
 def test_transition_to_blocked(
     stores: tuple[PostgresMandateStore, PostgresIntentStore],
 ) -> None:

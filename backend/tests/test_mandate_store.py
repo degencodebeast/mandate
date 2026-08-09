@@ -124,15 +124,15 @@ def test_get_mandate_raises_not_found_for_other_user(store: PostgresMandateStore
         store.get_mandate(user_id="did:privy:user-y", mandate_id=created.id)
 
 
-def test_record_spend_increments_spent_total(store: PostgresMandateStore) -> None:
-    created = store.create_mandate(
-        user_id="did:privy:user-z",
+def test_record_fee_updates_fees_total(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-4",
         parameters=MandateParameters(
-            budget="5.00", per_call_cap="1.00", allowed_services=[], expiry=None
+            budget="10.00", per_call_cap="1.00", allowed_services=[], expiry=None
         ),
     )
 
-    updated = store.record_spend(mandate_id=created.id, amount="1.25")
+    updated = store.record_fee(mandate_id=mandate.id, amount="0.010000")
 
-    assert updated.spent_total == "1.25"
-    assert updated.fees_paid == "0"
+    assert updated.fees_total == "0.010000"
+    assert updated.spent_total == "0"

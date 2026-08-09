@@ -37,6 +37,7 @@ from mandate.auth import (
     rejecting_identity_verifier,
 )
 from mandate.config import ApiSettings, Service, assert_secret_boundary
+from mandate.fees import CircleCliFeeCollector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
@@ -224,6 +225,7 @@ def create_app(
             "expiry": mandate.expiry.isoformat() if mandate.expiry else None,
             "status": mandate.status,
             "spent_total": mandate.spent_total,
+            "fees_total": mandate.fees_total,
             "wallet_address": mandate.wallet_address,
             "circle_wallet_id": mandate.circle_wallet_id,
             "agent_identity": mandate.agent_identity,
@@ -275,6 +277,7 @@ def create_app(
                     "id": str(mandate.id),
                     "status": mandate.status,
                     "spent_total": mandate.spent_total,
+                    "fees_total": mandate.fees_total,
                     "budget": mandate.budget,
                     "per_call_cap": mandate.per_call_cap,
                 },
@@ -311,6 +314,14 @@ def _spend_service_from_settings(
         chain=settings.circle_chain,
         timeout_seconds=settings.reconciliation_timeout_seconds,
     )
+    fee_collector = (
+        CircleCliFeeCollector(
+            chain=settings.circle_chain,
+            timeout_seconds=settings.payment_timeout_seconds,
+        )
+        if settings.fee_wallet_address is not None
+        else None
+    )
     return MandateSpendService(
         mandate_store=store,
         intent_store=intent_store,
@@ -318,6 +329,9 @@ def _spend_service_from_settings(
         receipt_recorder=receipt_recorder,
         settlement_inspector=settlement_inspector,
         reconciliation_timeout_seconds=settings.reconciliation_timeout_seconds,
+        fee_collector=fee_collector,
+        fee_wallet_address=settings.fee_wallet_address,
+        fee_percentage=settings.fee_percentage,
     )
 
 
@@ -375,6 +389,8 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
             "tx_hash": receipt.tx_hash,
             "recorded_at": receipt.recorded_at.isoformat(),
             "intent_state": receipt.intent_state,
+            "fee_amount": receipt.fee_amount,
+            "fee_tx_hash": receipt.fee_tx_hash,
         }
     return document
 
@@ -392,4 +408,6 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "created_at": intent.created_at.isoformat(),
         "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
         "retry_count": intent.retry_count,
+        "fee_amount": intent.fee_amount,
+        "fee_tx_hash": intent.fee_tx_hash,
     }

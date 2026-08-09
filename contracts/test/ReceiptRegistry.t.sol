@@ -17,6 +17,7 @@ contract ReceiptRegistryTest is Test {
         string serviceUrl,
         string amount,
         string txHash,
+        string feeTxHash,
         uint256 timestamp
     );
 
@@ -34,6 +35,7 @@ contract ReceiptRegistryTest is Test {
             "https://service-a.example.com",
             "0.50",
             "0xsettled-tx-1",
+            "0xfee-tx-1",
             block.timestamp
         );
         uint256 recordedAt = registry.recordReceipt(
@@ -42,9 +44,34 @@ contract ReceiptRegistryTest is Test {
             "0xintent-hash-1",
             "https://service-a.example.com",
             "0.50",
-            "0xsettled-tx-1"
+            "0xsettled-tx-1",
+            "0xfee-tx-1"
         );
         assertEq(recordedAt, block.timestamp);
+    }
+
+    function test_owner_can_record_receipt_without_fee() public {
+        vm.prank(owner);
+        vm.expectEmit(false, false, false, true);
+        emit ReceiptRecorded(
+            "did:erc8004:agent-4",
+            "task-4",
+            "0xintent-hash-4",
+            "https://service-a.example.com",
+            "1.00",
+            "0xsettled-tx-4",
+            "",
+            block.timestamp
+        );
+        registry.recordReceipt(
+            "did:erc8004:agent-4",
+            "task-4",
+            "0xintent-hash-4",
+            "https://service-a.example.com",
+            "1.00",
+            "0xsettled-tx-4",
+            ""
+        );
     }
 
     function test_owner_is_set_at_deployment() public view {
@@ -60,7 +87,8 @@ contract ReceiptRegistryTest is Test {
             "0xintent-hash-2",
             "https://service-a.example.com",
             "0.25",
-            "0xsettled-tx-2"
+            "0xsettled-tx-2",
+            "0xfee-tx-2"
         );
     }
 
@@ -72,7 +100,8 @@ contract ReceiptRegistryTest is Test {
             "0xintent-hash-3",
             "https://service-a.example.com",
             "1.00",
-            "0xsettled-tx-3"
+            "0xsettled-tx-3",
+            "0xfee-tx-3"
         );
         registry.recordReceipt(
             "did:erc8004:agent-3",
@@ -80,7 +109,8 @@ contract ReceiptRegistryTest is Test {
             "0xintent-hash-3",
             "https://service-a.example.com",
             "1.00",
-            "0xsettled-tx-3"
+            "0xsettled-tx-3",
+            "0xfee-tx-3"
         );
         vm.stopPrank();
     }

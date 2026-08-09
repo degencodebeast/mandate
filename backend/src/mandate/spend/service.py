@@ -36,16 +36,24 @@ reconciliation (spec "Unknown outcome handling" and "Reconciliation"):
 The safe retry is bounded by retry_count: at most one retry per intent. After
 the retry, further spend calls return "unknown: not_settled" with retries
 exhausted.
+
+Ticket 07 adds the fee split (ADR-0014): after a successful service payment the
+service collects ``fee_percentage`` of the payment from the user's wallet to
+the fee wallet. The receipt carries both hashes. A failed fee transfer is
+logged and the payment still settles.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 
+from mandate.fees import FeeCollector, FeeTransferError, compute_fee_amount
 from mandate.payments import (
     PaymentExecutionError,
     PaymentExecutor,
@@ -64,6 +72,8 @@ from mandate.reconciliation import (
 )
 from mandate.spend.policy import SpendContext, evaluate
 
+logger: logging.Logger = logging.getLogger(__name__)
+
 Now = Callable[[], datetime]
 
 OUTCOME_RECONCILING = "unknown: reconciling"
@@ -77,7 +87,13 @@ REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 
 @dataclass(frozen=True)
 class SpendReceipt:
-    """The receipt data returned with a settled spend."""
+    """The receipt data returned with a settled spend.
+
+    Ticket 07 adds the fee split: the receipt carries both the service payment
+    transaction hash and the fee transfer transaction hash, plus the collected
+    fee amount. When no fee is configured or the fee transfer failed, the fee
+    fields are None (the payment still settles).
+    """
 
     task_id: str
     purpose_hash: str
@@ -86,6 +102,8 @@ class SpendReceipt:
     tx_hash: str
     recorded_at: datetime
     intent_state: str
+    fee_amount: str | None = None
+    fee_tx_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +135,9 @@ class MandateSpendService:
         receipt_recorder: ReceiptRecorder,
         settlement_inspector: SettlementInspector,
         reconciliation_timeout_seconds: float = 30.0,
+        fee_collector: FeeCollector | None = None,
+        fee_wallet_address: str | None = None,
+        fee_percentage: float = 0.01,
         now: Now | None = None,
     ) -> None:
         self._mandate_store = mandate_store
@@ -125,6 +146,9 @@ class MandateSpendService:
         self._receipt_recorder = receipt_recorder
         self._settlement_inspector = settlement_inspector
         self._reconciliation_timeout_seconds = reconciliation_timeout_seconds
+        self._fee_collector = fee_collector
+        self._fee_wallet_address = fee_wallet_address
+        self._fee_percentage = fee_percentage
         self._now = now or (lambda: datetime.now(UTC))
 
     def spend(
@@ -413,7 +437,14 @@ class MandateSpendService:
         purpose_hash: str,
         tx_hash: str,
     ) -> tuple[Intent, SpendReceipt, Mandate]:
-        """Record the receipt, update spent_total, and settle the intent."""
+        """Record the receipt, update the totals, and settle the intent.
+
+        The receipt is recorded before the fee is collected, so no fee money
+        moves unless the settlement is durably recorded (gate finding on ticket
+        07). The on-chain receipt carries the service payment hash and an empty
+        fee hash; the fee transfer hash is persisted on the intent and returned
+        in the receipt data.
+        """
         self._receipt_recorder.record_receipt(
             user_id=mandate.agent_identity,
             task_id=task_id,
@@ -421,14 +452,23 @@ class MandateSpendService:
             service_url=intent.service_url,
             amount=intent.amount,
             tx_hash=tx_hash,
+            fee_tx_hash="",
+        )
+        fee_amount, fee_tx_hash = self._collect_fee(
+            mandate=mandate,
+            amount=intent.amount,
         )
         settled_at = self._now()
         updated = self._mandate_store.record_spend(mandate_id=mandate.id, amount=intent.amount)
+        if fee_amount is not None and fee_tx_hash is not None:
+            updated = self._mandate_store.record_fee(mandate_id=mandate.id, amount=fee_amount)
         settled = self._intent_store.transition(
             intent_id=intent.id,
             status="settled",
             tx_hash=tx_hash,
             settled_at=settled_at,
+            fee_amount=fee_amount,
+            fee_tx_hash=fee_tx_hash,
         )
         receipt = SpendReceipt(
             task_id=task_id,
@@ -438,8 +478,47 @@ class MandateSpendService:
             tx_hash=tx_hash,
             recorded_at=settled_at,
             intent_state="settled",
+            fee_amount=fee_amount,
+            fee_tx_hash=fee_tx_hash,
         )
         return settled, receipt, updated
+
+    def _collect_fee(
+        self,
+        *,
+        mandate: Mandate,
+        amount: str,
+    ) -> tuple[str | None, str | None]:
+        """Split the fee after a successful service payment (ticket 07).
+
+        Returns the (fee_amount, fee_tx_hash) pair. The fee is collected only
+        when a fee wallet, a collector, and a positive percentage are
+        configured and the computed fee is non-zero. A failed fee transfer is
+        logged, never a payment failure: the service payment already settled.
+        Because the fee never moved, it is not counted in the mandate's
+        fees_total.
+        """
+        if self._fee_wallet_address is None or self._fee_collector is None:
+            return None, None
+        if self._fee_percentage <= 0:
+            return None, None
+        fee_amount = compute_fee_amount(amount, self._fee_percentage)
+        if Decimal(fee_amount) <= 0:
+            return None, None
+        try:
+            fee_tx_hash = self._fee_collector.collect_fee(
+                wallet_address=mandate.wallet_address or "",
+                fee_wallet_address=self._fee_wallet_address,
+                amount=fee_amount,
+            )
+        except FeeTransferError as error:
+            logger.warning(
+                "Fee transfer failed for mandate %s; the service payment already settled. %s",
+                mandate.id,
+                error,
+            )
+            return fee_amount, None
+        return fee_amount, fee_tx_hash
 
     def _settled_receipt_response(
         self,
@@ -461,6 +540,8 @@ class MandateSpendService:
             tx_hash=tx_hash,
             recorded_at=settled_at,
             intent_state="settled",
+            fee_amount=intent.fee_amount,
+            fee_tx_hash=intent.fee_tx_hash,
         )
         return SpendResponse(
             outcome="blocked: duplicate_intent",
