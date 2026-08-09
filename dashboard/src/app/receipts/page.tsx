@@ -15,8 +15,10 @@ interface MandateWithReceipts {
 export default function ReceiptsPage() {
   const client = useMandateClient();
   const [rows, setRows] = useState<MandateWithReceipts[] | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setPageError(null);
     try {
       const { mandates } = await client.listMandates();
       const next = await Promise.all(
@@ -36,7 +38,7 @@ export default function ReceiptsPage() {
       setRows(next);
     } catch (err) {
       setRows([]);
-      console.error(err);
+      setPageError(err instanceof ApiError ? err.message : "Could not list mandates.");
     }
   }, [client]);
 
@@ -45,8 +47,14 @@ export default function ReceiptsPage() {
   }, [load]);
 
   const flat: { receipt: ReceiptRecord; mandate: MandateSummary }[] = [];
+  let hasErrors = false;
+  let allSucceeded = true;
   if (rows) {
     for (const entry of rows) {
+      if (entry.error) {
+        hasErrors = true;
+        allSucceeded = false;
+      }
       for (const receipt of entry.receipts) {
         flat.push({ receipt, mandate: entry.mandate });
       }
@@ -73,21 +81,19 @@ export default function ReceiptsPage() {
           <span className="spinner" aria-hidden />
           <div className="empty-title">Loading receipts…</div>
         </div>
-      ) : rows.length === 0 ? (
-        <div className="empty">
-          <div className="empty-title">No receipts yet</div>
-          <div className="empty-body">
-            Once an agent settles a payment, the receipt will appear here.
-          </div>
+      ) : pageError ? (
+        <div className="notice error" role="alert">
+          {pageError}
+          <button className="btn btn-secondary" style={{ marginLeft: "var(--space-3)" }} onClick={() => void load()}>
+            Retry
+          </button>
         </div>
-      ) : (
+      ) : hasErrors ? (
         <>
-          {rows.some((entry) => entry.error) ? (
-            <div className="notice error" role="alert">
-              One or more receipt reads failed. Missing proofs are shown as
-              errors below, not as empty history.
-            </div>
-          ) : null}
+          <div className="notice error" role="alert">
+            One or more receipt reads failed. Missing proofs are shown as
+            errors below, not as empty history.
+          </div>
           {rows.map((entry) =>
             entry.error ? (
               <div className="card" key={entry.mandate.id} style={{ padding: "var(--space-4)" }}>
@@ -98,22 +104,27 @@ export default function ReceiptsPage() {
                   </Link>
                   <div className="notice error" role="alert">
                     Receipt read failed: {entry.error}
+                    <button
+                      className="btn btn-secondary"
+                      style={{ marginLeft: "var(--space-3)" }}
+                      onClick={() => void load()}
+                    >
+                      Retry
+                    </button>
                   </div>
                 </div>
               </div>
             ) : null,
           )}
-          {flat.length === 0 ? (
-            <div className="empty">
-              <div className="empty-title">No receipts yet</div>
-              <div className="empty-body">
-                Once an agent settles a payment, the receipt will appear here.
-              </div>
-            </div>
-          ) : null}
         </>
-      )}
-      {rows !== null && flat.length > 0 ? (
+      ) : flat.length === 0 ? (
+        <div className="empty">
+          <div className="empty-title">No receipts yet</div>
+          <div className="empty-body">
+            Once an agent settles a payment, the receipt will appear here.
+          </div>
+        </div>
+      ) : (
         <div className="card" style={{ padding: 0 }}>
           <div className="receipt-row" style={{ background: "var(--surface-2)" }}>
             <span className="kicker">Mandate · service</span>
@@ -150,7 +161,7 @@ export default function ReceiptsPage() {
             </div>
           ))}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
