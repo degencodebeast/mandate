@@ -11,6 +11,7 @@ clock; the Postgres stores use the real test database.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -123,7 +124,6 @@ class TimeoutHonoringPaymentExecutor:
         self.calls.append((service_url, amount))
         self._started_at = self.clock()
         self.entered.set()
-        import time
 
         while (self.clock() - self._started_at).total_seconds() < self.payment_timeout_seconds:
             time.sleep(0.005)
