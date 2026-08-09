@@ -84,11 +84,17 @@ Redacted record of one real Circle Gateway testnet payment on Arc testnet.
 ## Receipt Anchor
 ```json
 {
-  "transaction": "0x01301cc44147cafb0e7e5408385f91e73ad59b27a410184a9bff6adf4bc7015c",
-  "recorded_payment_reference": "c6ebf806-46c1-4704-b75f-1afc2f25d791",
-  "explorer": "https://testnet.arcscan.app/tx/0x01301cc44147cafb0e7e5408385f91e73ad59b27a410184a9bff6adf4bc7015c"
+  "transaction": "0xc29eecd907ee53038e1c35c8d974b735f8f996b259f1025bbd77d3cf691c01fd",
+  "recorded_payment_reference": "7def6214-d8d1-4562-9d0a-b50bcff80b72",
+  "explorer": "https://testnet.arcscan.app/tx/0xc29eecd907ee53038e1c35c8d974b735f8f996b259f1025bbd77d3cf691c01fd"
 }
 ```
+
+The Receipt Anchor above records the same Payment Reference as the real
+payment (`7def6214-d8d1-4562-9d0a-b50bcff80b72`). One reference traces the full
+chain: settle -> official status `completed` (batch hash
+`0xdc7eaf63...565c`) -> Receipt Anchor. No inference is needed to connect the
+payment evidence to the Arc proof.
 
 ## Redactions
 - Demo Operator Wallet address and backing EOA are shortened.
