@@ -71,12 +71,18 @@ Check = Callable[[SpendContext], SpendResult]
 
 @dataclass(frozen=True)
 class _CanonicalService:
-    """One normalized service authority (scheme, host, port, path)."""
+    """One normalized service authority (scheme, host, port, path, query)."""
 
     scheme: str
     host: str
     port: int
     path: str
+    query: str
+
+    @property
+    def is_origin(self) -> bool:
+        """Return whether the entry names an origin with no path or query."""
+        return self.path in ("", "/") and not self.query
 
 
 def _canonical_service(url: str) -> _CanonicalService | None:
@@ -103,17 +109,26 @@ def _canonical_service(url: str) -> _CanonicalService | None:
         port = (443 if scheme == "https" else 80) if parsed.port is None else parsed.port
     except ValueError:
         return None
-    path = parsed.path or "/"
-    return _CanonicalService(scheme=scheme, host=host, port=port, path=path)
+    return _CanonicalService(
+        scheme=scheme,
+        host=host,
+        port=port,
+        path=parsed.path or "/",
+        query=parsed.query,
+    )
 
 
 def _service_matches(requested: _CanonicalService, allowed: _CanonicalService) -> bool:
     """Return whether one requested service fits an allow-listed authority.
 
-    The canonical origin (scheme, host, port) must match exactly. A raw
-    string-prefix comparison is never used (ADR-0032). When the allowed entry
-    names a path, the requested path must equal it or continue it at a path
-    boundary, so ``/api`` does not also authorize ``/api-evil``.
+    The canonical origin (scheme, host, port) must match exactly (ADR-0032). A
+    raw string-prefix comparison is never used.
+
+    When the allowed entry names an origin (no path, no query), every path and
+    query on that origin is allowed. When the allowed entry names a path or a
+    query, the requested URL must match the normalized URL exactly: equal path
+    and equal query. A child path or a changed query on a path-scoped entry is
+    therefore rejected.
     """
     if (requested.scheme, requested.host, requested.port) != (
         allowed.scheme,
@@ -121,11 +136,9 @@ def _service_matches(requested: _CanonicalService, allowed: _CanonicalService) -
         allowed.port,
     ):
         return False
-    allowed_path = allowed.path
-    if allowed_path == "/":
+    if allowed.is_origin:
         return True
-    base = allowed_path.rstrip("/")
-    return requested.path == allowed_path or requested.path.startswith(f"{base}/")
+    return requested.path == allowed.path and requested.query == allowed.query
 
 
 def mandate_active(context: SpendContext) -> SpendResult:

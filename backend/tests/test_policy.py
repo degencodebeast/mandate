@@ -210,6 +210,52 @@ def test_service_allowed_allows_exact_path() -> None:
     assert result.decision == ALLOW
 
 
+def test_service_allowed_rejects_child_path_of_path_scoped_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay/attacker?mode=two")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_changed_query_on_exact_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=two")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_dropped_query_on_exact_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(_context(mandate, service_url="https://trusted.example/api/pay"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_allows_exact_url_with_query() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=one")
+    )
+
+    assert result.decision == ALLOW
+
+
+def test_service_allowed_origin_entry_allows_child_path_and_query() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=one")
+    )
+
+    assert result.decision == ALLOW
+
+
 def test_amount_valid_rejects_non_finite() -> None:
     result = amount_valid(_context(_mandate(), amount="NaN"))
 
