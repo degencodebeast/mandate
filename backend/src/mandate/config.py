@@ -213,6 +213,29 @@ class ApiSettings(BaseSettings):
             raise ValueError("fee_percentage must be a fraction between 0 and 1")
         return value
 
+    @field_validator(
+        "payment_timeout_seconds",
+        "circuit_breaker_cooldown_seconds",
+        "circuit_breaker_trial_timeout_seconds",
+    )
+    @classmethod
+    def timeout_is_finite_and_positive(cls, value: float) -> float:
+        """Reject a non-finite or non-positive timeout value.
+
+        The CircuitBreaker compares timeouts against the wall clock and computes
+        elapsed ``timedelta`` values. NaN or infinity would raise
+        ``ValueError`` or ``OverflowError`` during recovery, and a zero or
+        negative lease would make a freshly consumed trial available at once,
+        breaking the fail-closed rule (ADR-0032, ticket 10f gate). Every
+        timeout must be a finite, strictly positive number before the relation
+        between the payment window and the trial lease is compared.
+        """
+        if value <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("timeout_seconds must be a finite number")
+        return value
+
     @model_validator(mode="after")
     def trial_timeout_exceeds_payment_timeout(self) -> ApiSettings:
         """Reject a trial lease shorter than the payment call window.

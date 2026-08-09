@@ -77,3 +77,43 @@ def test_trial_timeout_strictly_above_payment_timeout_is_accepted() -> None:
     )
 
     assert settings.circuit_breaker_trial_timeout_seconds > settings.payment_timeout_seconds
+
+
+def test_payment_timeout_rejects_zero() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(payment_timeout_seconds=0.0)
+
+
+def test_payment_timeout_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(payment_timeout_seconds=-2.0)
+
+
+def test_payment_timeout_rejects_infinity() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(payment_timeout_seconds=float("inf"))
+
+
+def test_payment_timeout_rejects_nan() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(payment_timeout_seconds=float("nan"))
+
+
+def test_trial_timeout_rejects_zero() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_trial_timeout_seconds=0.0)
+
+
+def test_trial_timeout_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_trial_timeout_seconds=-1.0)
+
+
+def test_trial_timeout_rejects_infinity() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_trial_timeout_seconds=float("inf"))
+
+
+def test_trial_timeout_rejects_nan() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_trial_timeout_seconds=float("nan"))
