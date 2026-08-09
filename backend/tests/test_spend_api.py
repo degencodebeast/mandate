@@ -9,8 +9,11 @@ stores use the real test database.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,6 +34,7 @@ from mandate.persistence.mandate_store import (
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import MandateSpendService
+from mandate.spend.service import purpose_hash
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -40,17 +44,20 @@ _SERVICE_URL = "https://service-a.example.com"
 
 
 class RecordingPaymentExecutor:
-    """Record payment calls; optionally fail on demand. No network."""
+    """Record payment calls; optionally fail or block on demand. No network."""
 
     def __init__(self, tx_hash: str = "0xsettled") -> None:
         self.tx_hash = tx_hash
         self.calls: list[tuple[str, str]] = []
         self.failure: PaymentExecutionError | None = None
+        self.gate: threading.Event | None = None
 
     def execute_payment(self, *, service_url: str, amount: str) -> str:
         if self.failure is not None:
             raise self.failure
         self.calls.append((service_url, amount))
+        if self.gate is not None:
+            self.gate.wait(timeout=10)
         return self.tx_hash
 
 
@@ -74,6 +81,7 @@ class Components:
             mandate_store=self.store,
             spend_service=spend_service,
         )
+        self.app = app
         self.client = TestClient(app)
         self.client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
 
@@ -225,16 +233,103 @@ def test_spend_unknown_mandate_returns_404(components: Components) -> None:
     assert components.payments.calls == []
 
 
-def test_spend_same_intent_never_pays_twice(components: Components) -> None:
+def test_spend_same_intent_second_call_returns_existing_receipt(
+    components: Components,
+) -> None:
     mandate = _create_mandate(components.store)
 
     first = _spend(components, mandate.id)
     second = _spend(components, mandate.id)
 
     assert first.json()["outcome"] == "permitted"
-    assert second.json()["outcome"] == "blocked: duplicate_intent"
+    second_document = second.json()
+    assert second_document["outcome"] == "blocked: duplicate_intent"
+    assert second_document["reason"] == "duplicate intent: already settled"
+    assert second_document["receipt"] is not None
+    assert second_document["receipt"]["task_id"] == "task-1"
+    assert second_document["receipt"]["purpose_hash"] == first.json()["receipt"]["purpose_hash"]
+    assert second_document["receipt"]["tx_hash"] == "0xsettled"
+    assert second_document["receipt"]["intent_state"] == "settled"
+    assert second_document["intent"]["status"] == "settled"
     assert len(components.payments.calls) == 1
-    assert second.json()["spent_total"] == "1.00"
+    assert second_document["spent_total"] == "1.00"
+
+
+def test_spend_settling_intent_returns_already_in_progress(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent_hash = purpose_hash("task-1", "buy a research report")
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling")
+
+    response = _spend(components, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "blocked: already_in_progress"
+    assert document["reason"] == "already in progress"
+    assert document["intent"]["status"] == "settling"
+    assert document["receipt"] is None
+    assert components.payments.calls == []
+
+
+def test_spend_five_concurrent_same_intent_one_settles_four_blocked(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store)
+    gate = threading.Event()
+    components.payments.gate = gate
+    barrier = threading.Barrier(5)
+
+    def spend_call() -> dict[str, Any]:
+        barrier.wait(timeout=5)
+        client = TestClient(components.app)
+        client.headers["Authorization"] = components.client.headers["Authorization"]
+        response = client.post(
+            f"/api/v1/mandates/{mandate.id}/spend",
+            json={
+                "task_id": "task-1",
+                "purpose": "buy a research report",
+                "service_url": _SERVICE_URL,
+                "amount": "1.00",
+            },
+        )
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(spend_call) for _ in range(5)]
+        deadline = time.monotonic() + 10
+        while sum(1 for future in futures if future.done()) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        gate.set()
+        documents = [future.result(timeout=10) for future in futures]
+
+    outcomes = [document["outcome"] for document in documents]
+    assert outcomes.count("permitted") == 1
+    assert outcomes.count("blocked: already_in_progress") == 4
+    assert len(components.payments.calls) == 1
+
+
+def test_spend_different_task_id_same_purpose_both_allowed(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    first = _spend(components, mandate.id, task_id="task-1", purpose="buy a research report")
+    second = _spend(components, mandate.id, task_id="task-2", purpose="buy a research report")
+
+    assert first.json()["outcome"] == "permitted"
+    assert second.json()["outcome"] == "permitted"
+    assert len(components.payments.calls) == 2
+
+
+def test_purpose_hash_is_deterministic_and_scoped_to_task_id() -> None:
+    same = purpose_hash("task-1", "buy a research report")
+    assert same == purpose_hash("task-1", "buy a research report")
+    assert same != purpose_hash("task-2", "buy a research report")
+    assert same != purpose_hash("task-1", "buy different data")
 
 
 def test_spend_different_purposes_are_separate_intents(components: Components) -> None:

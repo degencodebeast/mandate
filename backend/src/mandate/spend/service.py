@@ -11,9 +11,15 @@ Ticket 04 flow (ADR-0031, spec "Mandate spend flow"):
    amount to the mandate spent_total, transition to SETTLED with the tx hash
    and settled_at, and return the receipt data.
 
-Intent dedupe, locking, unknown-outcome reconciliation, and the circuit breaker
-are later tickets. This service fails closed when the same economic intent
-already exists and when the payment rail does not return a transaction hash.
+Ticket 05 adds two protections before payment (spec "Intent dedupe" and "Intent
+lock"): a settled intent for the same (mandate_id, purpose_hash) returns the
+existing receipt, and an in-flight intent (PENDING or SETTLING) returns
+ALREADY_IN_PROGRESS. The UNIQUE (mandate_id, purpose_hash) constraint maps one
+economic intent to one row, so at most one payment can ever happen for it.
+
+Unknown-outcome reconciliation and the circuit breaker are later tickets. This
+service fails closed when the same economic intent already exists and when the
+payment rail does not return a transaction hash.
 """
 
 from __future__ import annotations
@@ -101,7 +107,7 @@ class MandateSpendService:
         intent_hash = purpose_hash(task_id, purpose)
         existing = self._intent_store.get_intent(mandate_id=mandate_id, purpose_hash=intent_hash)
         if existing is not None:
-            return self._duplicate_response(existing, mandate)
+            return self._existing_intent_response(existing, mandate, task_id=task_id)
         try:
             intent = self._intent_store.create_intent(
                 mandate_id=mandate_id,
@@ -113,7 +119,7 @@ class MandateSpendService:
             raced = self._intent_store.get_intent(mandate_id=mandate_id, purpose_hash=intent_hash)
             if raced is None:
                 raise
-            return self._duplicate_response(raced, mandate)
+            return self._existing_intent_response(raced, mandate, task_id=task_id)
         result = evaluate(
             SpendContext(mandate=mandate, service_url=service_url, amount=amount, now=now)
         )
@@ -174,17 +180,91 @@ class MandateSpendService:
             spent_total=updated.spent_total,
         )
 
+    def _existing_intent_response(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        task_id: str,
+    ) -> SpendResponse:
+        """Route an already-existing intent by its state (ticket 05).
+
+        A SETTLED intent is the dedupe case: return the existing receipt so a
+        retry never pays twice. A PENDING or SETTLING intent is the lock case:
+        another caller is mid-flight, so return ALREADY_IN_PROGRESS. Any other
+        state keeps the generic duplicate block.
+        """
+        if intent.status == "settled":
+            return self._settled_receipt_response(intent, mandate, task_id=task_id)
+        if intent.status in ("pending", "settling"):
+            return self._already_in_progress_response(intent, mandate)
+        return self._duplicate_response(intent, mandate)
+
+    def _settled_receipt_response(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        task_id: str,
+    ) -> SpendResponse:
+        """Return the existing receipt for a settled intent."""
+        tx_hash = intent.tx_hash
+        settled_at = intent.settled_at
+        if tx_hash is None or settled_at is None:
+            raise ValueError(f"Settled intent {intent.id} has no transaction hash or settled_at.")
+        receipt = SpendReceipt(
+            task_id=task_id,
+            purpose_hash=intent.purpose_hash,
+            service_url=intent.service_url,
+            amount=intent.amount,
+            tx_hash=tx_hash,
+            recorded_at=settled_at,
+            intent_state="settled",
+        )
+        return SpendResponse(
+            outcome="blocked: duplicate_intent",
+            reason="duplicate intent: already settled",
+            intent=intent,
+            receipt=receipt,
+            spent_total=mandate.spent_total,
+        )
+
+    def _already_in_progress_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
+        """Block a concurrent caller whose intent another caller is settling."""
+        return self._blocked_response(
+            intent,
+            mandate,
+            outcome="blocked: already_in_progress",
+            reason="already in progress",
+        )
+
     def _duplicate_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
         """Return a blocked response for an existing economic intent.
 
-        The UNIQUE (mandate_id, purpose_hash) constraint maps one economic
-        intent to one row. When the row already exists, the service never pays
-        again — it returns the existing intent state. Ticket 05 adds the
-        settled-receipt and already-in-progress refinements.
+        This is the fallback for intent states the dedupe and lock rules do not
+        name (for example BLOCKED or UNKNOWN). The UNIQUE (mandate_id,
+        purpose_hash) constraint maps one economic intent to one row. When the
+        row already exists, the service never pays again.
         """
-        return SpendResponse(
+        return self._blocked_response(
+            intent,
+            mandate,
             outcome="blocked: duplicate_intent",
             reason="An intent for this task and purpose already exists.",
+        )
+
+    def _blocked_response(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        outcome: str,
+        reason: str,
+    ) -> SpendResponse:
+        """Build a blocked SpendResponse without a receipt."""
+        return SpendResponse(
+            outcome=outcome,
+            reason=reason,
             intent=intent,
             receipt=None,
             spent_total=mandate.spent_total,
