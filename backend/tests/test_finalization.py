@@ -35,6 +35,7 @@ from mandate.receipt_reader import ArcReceipt, ReceiptReadError, ScriptedReceipt
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import CircuitBreaker, MandateSpendService
 from mandate.spend.service import purpose_hash
+from tests.helpers import ScriptedTransferStatusInspector
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -103,6 +104,7 @@ def _build_client(
     receipts: Any,
     store: PostgresMandateStore,
     reader: Any = None,
+    inspector: Any = None,
 ) -> TestClient:
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     spend_service = MandateSpendService(
@@ -111,6 +113,7 @@ def _build_client(
         payment_executor=payments,
         receipt_recorder=receipts,
         receipt_reader=reader,
+        transfer_status_inspector=inspector,
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -183,6 +186,19 @@ def _finalize(
     )
 
 
+def _resolve(
+    client: TestClient,
+    mandate_id: uuid.UUID,
+    *,
+    task_id: str = "task-1",
+    purpose: str = "buy a research report",
+) -> Any:
+    return client.post(
+        f"/api/v1/mandates/{mandate_id}/resolve",
+        json={"task_id": task_id, "purpose": purpose},
+    )
+
+
 def _status(client: TestClient, mandate_id: uuid.UUID) -> dict[str, Any]:
     response = client.get(f"/api/v1/mandates/{mandate_id}/status")
     assert response.status_code == 200
@@ -203,11 +219,13 @@ def test_spend_stores_payment_reference_before_receipt_work(client: TestClient) 
 
     response = _spend(client, mandate.id)
 
-    assert response.status_code == 500
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "accepted"
     intent = _stored_intent(mandate.id, "task-1", "buy a research report")
     assert intent is not None
     assert intent.status == "settling"
     assert intent.payment_reference == "0xsettled"
+    assert intent.reference_type == "gateway-x402-transfer-uuid"
     assert intent.receipt_anchor is None
     status = _status(client, mandate.id)
     assert status["mandate"]["reserved_total"] == "1.00"
@@ -232,6 +250,7 @@ def test_interruption_after_value_acceptance_recovers_exactly_once(
         payments=ForbiddenPaymentExecutor(),
         receipts=recovered_receipts,
         store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
 
     response = _finalize(restarted, mandate.id)
@@ -262,12 +281,19 @@ def test_interruption_after_proof_recovers_without_second_receipt(client: TestCl
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
+    )
     intent_store.store_receipt_anchor(intent_id=intent.id, anchor="0xreceipt-anchor")
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
     receipts = ScriptedReceiptRecorder()
-    client = _build_client(payments=ForbiddenPaymentExecutor(), receipts=receipts, store=store)
+    client = _build_client(
+        payments=ForbiddenPaymentExecutor(),
+        receipts=receipts,
+        store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
+    )
 
     response = _finalize(client, mandate.id)
 
@@ -296,7 +322,9 @@ def test_recovery_after_receipt_write_but_anchor_store_lost(
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
+    )
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
     receipts = ScriptedReceiptRecorder()
@@ -330,6 +358,7 @@ def test_recovery_after_receipt_write_but_anchor_store_lost(
         receipts=receipts,
         store=store,
         reader=reader,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
 
     response = _finalize(client, mandate.id)
@@ -350,7 +379,12 @@ def test_repeated_recovery_returns_existing_proof_and_accounts_once(client: Test
     mandate = _create_mandate(store)
     payments = RecordingPaymentExecutor()
     receipts = ScriptedReceiptRecorder()
-    client = _build_client(payments=payments, receipts=receipts, store=store)
+    client = _build_client(
+        payments=payments,
+        receipts=receipts,
+        store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
+    )
     _spend(client, mandate.id)
 
     first = _finalize(client, mandate.id)
@@ -360,7 +394,7 @@ def test_repeated_recovery_returns_existing_proof_and_accounts_once(client: Test
     assert second.status_code == 200
     first_document = first.json()
     second_document = second.json()
-    assert first_document["outcome"] == "blocked: duplicate_intent"
+    assert first_document["outcome"] == "permitted"
     assert second_document["outcome"] == "blocked: duplicate_intent"
     assert first_document["receipt"] is not None
     assert first_document["receipt"]["receipt_anchor"] == "0xreceipt-anchor"
@@ -380,17 +414,25 @@ def test_duplicate_finalization_returns_existing_proof_without_new_receipt(
     mandate = _create_mandate(store)
     payments = RecordingPaymentExecutor()
     receipts = ScriptedReceiptRecorder()
-    client = _build_client(payments=payments, receipts=receipts, store=store)
+    client = _build_client(
+        payments=payments,
+        receipts=receipts,
+        store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
+    )
     _spend(client, mandate.id)
 
+    documents: list[dict[str, Any]] = []
     for _ in range(3):
         response = _finalize(client, mandate.id)
 
         assert response.status_code == 200
         document = response.json()
-        assert document["outcome"] == "blocked: duplicate_intent"
         assert document["receipt"]["receipt_anchor"] == "0xreceipt-anchor"
+        documents.append(document)
 
+    assert documents[0]["outcome"] == "permitted"
+    assert all(document["outcome"] == "blocked: duplicate_intent" for document in documents[1:])
     assert len(receipts.recorded) == 1
     assert len(payments.calls) == 1
     status = _status(client, mandate.id)
@@ -539,7 +581,9 @@ def test_concurrent_recovery_calls_receipt_adapter_once(client: TestClient) -> N
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
+    )
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
     receipts = ScriptedReceiptRecorder()
@@ -549,6 +593,7 @@ def test_concurrent_recovery_calls_receipt_adapter_once(client: TestClient) -> N
         receipts=receipts,
         store=store,
         reader=reader,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
 
     def recover() -> dict[str, Any]:
@@ -590,7 +635,9 @@ def test_legacy_settled_intent_recovers_receipt_anchor(client: TestClient) -> No
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
+    )
     store.reserve(mandate_id=mandate.id, amount="1.00")
     settled = intent_store.finalize_settlement(intent_id=intent.id, settled_at=datetime.now(UTC))
     assert settled.receipt_anchor is None
@@ -641,7 +688,9 @@ def test_finalize_receipt_read_failure_is_explicit_502(client: TestClient) -> No
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
+    )
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
     client = _build_client(
@@ -649,6 +698,7 @@ def test_finalize_receipt_read_failure_is_explicit_502(client: TestClient) -> No
         receipts=ScriptedReceiptRecorder(),
         store=store,
         reader=FailingReceiptReader(),
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
 
     response = _finalize(client, mandate.id)
@@ -667,20 +717,28 @@ def test_distinct_mandates_never_share_a_receipt_anchor(client: TestClient) -> N
         payments=RecordingPaymentExecutor(tx_hash="0xfirst-payment"),
         receipts=first_recorder,
         store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
     first = _spend(first_client, first_mandate.id)
+    first_resolved = _resolve(first_client, first_mandate.id)
     assert first.status_code == 200
-    assert first.json()["receipt"]["receipt_anchor"] == "0xfirst-anchor"
+    assert first.json()["outcome"] == "accepted"
+    assert first_resolved.status_code == 200
+    assert first_resolved.json()["receipt"]["receipt_anchor"] == "0xfirst-anchor"
 
     second_recorder = ScriptedReceiptRecorder(anchor="0xsecond-anchor")
     second_client = _build_client(
         payments=RecordingPaymentExecutor(tx_hash="0xsecond-payment"),
         receipts=second_recorder,
         store=store,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
     second = _spend(second_client, second_mandate.id)
+    second_resolved = _resolve(second_client, second_mandate.id)
     assert second.status_code == 200
-    assert second.json()["receipt"]["receipt_anchor"] == "0xsecond-anchor"
+    assert second.json()["outcome"] == "accepted"
+    assert second_resolved.status_code == 200
+    assert second_resolved.json()["receipt"]["receipt_anchor"] == "0xsecond-anchor"
 
     first_intent = _stored_intent(first_mandate.id, "task-1", "buy a research report")
     second_intent = _stored_intent(second_mandate.id, "task-1", "buy a research report")
@@ -705,7 +763,9 @@ def test_recovery_never_accepts_another_mandates_anchor(client: TestClient) -> N
         amount="1.00",
     )
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
-    intent_store.store_payment_reference(intent_id=intent.id, reference="0xmy-payment")
+    intent_store.store_payment_reference(
+        intent_id=intent.id, reference="0xmy-payment", reference_type="gateway-x402-transfer-uuid"
+    )
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
     other_receipt = ArcReceipt(
@@ -725,6 +785,7 @@ def test_recovery_never_accepts_another_mandates_anchor(client: TestClient) -> N
         receipts=ScriptedReceiptRecorder(anchor="0xmy-anchor"),
         store=store,
         reader=reader,
+        inspector=ScriptedTransferStatusInspector("completed"),
     )
 
     response = _finalize(client, mandate.id)

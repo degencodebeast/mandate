@@ -126,6 +126,8 @@ class IntentStore(Protocol):
         settled_at: datetime,
     ) -> Intent: ...
 
+    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent: ...
+
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
 
 
@@ -486,6 +488,67 @@ class PostgresIntentStore:
         if settled is None:
             return self._reload(intent_id)
         return self._from_row(settled)
+
+    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent:
+        """Block one SETTLING Intent and release its reservation atomically.
+
+        The whole failed-resolution runs in one transaction (ADR-0032, ticket
+        11 gate): the Intent locks its row, returns the reserved amount to the
+        Mandate, and transitions SETTLING → BLOCKED. Only the caller that wins
+        the row lock releases the reservation, so concurrent failed resolutions
+        can never double-release authority (ticket 11 gate Major). A repeated
+        call returns the already-blocked Intent without changing accounting.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            locked = connection.execute(
+                """
+                SELECT id, mandate_id, amount, status
+                FROM intents WHERE id = %s FOR UPDATE
+                """,
+                (intent_id,),
+            ).fetchone()
+            if locked is None:
+                raise IntentNotFoundError("The intent does not exist.")
+            if locked["status"] == "blocked":
+                blocked = connection.execute(
+                    _SELECT_INTENT + "WHERE id = %s", (intent_id,)
+                ).fetchone()
+                if blocked is None:
+                    raise IntentNotFoundError("The intent does not exist.")
+                return self._from_row(blocked)
+            if locked["status"] != "settling":
+                raise UnexpectedIntentStateError(
+                    f"Intent {intent_id} is {locked['status']}, not settling."
+                )
+            amount = str(locked["amount"])
+            mandate = connection.execute(
+                """
+                UPDATE mandates
+                SET reserved_total = reserved_total - %s
+                WHERE id = %s AND reserved_total >= %s
+                RETURNING id
+                """,
+                (amount, locked["mandate_id"], amount),
+            ).fetchone()
+            if mandate is None:
+                raise UnexpectedIntentStateError(
+                    "The Mandate reservation cannot cover the release."
+                )
+            blocked = connection.execute(
+                """
+                UPDATE intents
+                SET status = 'blocked'
+                WHERE id = %s AND status = 'settling'
+                RETURNING id, mandate_id, purpose_hash, service_url, amount,
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash, payment_reference,
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                """,
+                (intent_id,),
+            ).fetchone()
+        if blocked is None:
+            return self._reload(intent_id)
+        return self._from_row(blocked)
 
     @contextmanager
     def finalization_guard(self, *, intent_id: uuid.UUID) -> Iterator[None]:

@@ -100,3 +100,23 @@ def test_inspector_document_without_state_is_unknown() -> None:
 
     with pytest.raises(TransferLookupUnknownError):
         inspector.lookup_transfer("x")
+
+
+def test_inspector_document_with_different_id_is_unknown() -> None:
+    runner = RecordingRunner('{"id": "other", "status": "completed"}')
+    inspector = GatewayTransferStatusInspector(
+        base_url="https://gateway-api-testnet.circle.com", runner=runner
+    )
+
+    with pytest.raises(TransferLookupUnknownError):
+        inspector.lookup_transfer("x")
+
+
+def test_inspector_document_without_id_is_unknown() -> None:
+    runner = RecordingRunner('{"status": "completed"}')
+    inspector = GatewayTransferStatusInspector(
+        base_url="https://gateway-api-testnet.circle.com", runner=runner
+    )
+
+    with pytest.raises(TransferLookupUnknownError):
+        inspector.lookup_transfer("x")

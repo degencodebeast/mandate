@@ -52,10 +52,11 @@ npm run start:a
 The real demonstration pays through the official Circle Gateway path on Arc
 testnet. Start a service with `REAL_DEMO=true` and
 `FACILITATOR_URL=https://gateway-api-testnet.circle.com/v1/x402`. Real-demo mode
-fails closed: it requires a real facilitator URL and never falls back to the
-in-process mock facilitator (ticket 11). It advertises the
-`GatewayWalletBatched` x402 option with the Gateway authorization window, so the
-Circle CLI signs and settles through the real Gateway.
+fails closed: it requires the exact normalized official Gateway facilitator URL
+and never falls back to the in-process mock facilitator (ticket 11). A generic
+or mock URL is rejected. It advertises the `GatewayWalletBatched` x402 option
+with the Gateway authorization window, so the Circle CLI signs and settles
+through the real Gateway.
 
 ```bash
 REAL_DEMO=true FACILITATOR_URL=https://gateway-api-testnet.circle.com/v1/x402 \

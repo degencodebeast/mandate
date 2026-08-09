@@ -112,8 +112,14 @@ facilitator on Arc testnet. The service advertises the `GatewayWalletBatched`
 x402 option with the Gateway authorization window and resolves the real
 facilitator. A fresh payment through the real-demo Service B returned Payment
 Reference `e5677f7a-1b31-478b-9533-81b651c33c9d` (status `received` at capture
-time), then the official status boundary resolved it by exact reference.
+time), then the official status boundary resolved it by exact reference. A
+post-fix payment returned `7d418050-ec37-4bf3-a2c5-44b327cd8fe8`; the official
+boundary returned the identical `id` with status `received`. This confirms the
+payment is accepted but not completed, so the Intent stays frozen until the
+official lookup reports `completed`.
 
 Mock mode stays available for the deterministic circuit-breaker tests. Real-demo
-mode fails closed: `REAL_DEMO=true` without `FACILITATOR_URL` throws, and the
-in-process mock facilitator is never selected in real-demo mode.
+mode fails closed: `REAL_DEMO=true` requires the exact normalized official
+Gateway facilitator URL (`https://gateway-api-testnet.circle.com/v1/x402`) and
+rejects a generic or mock URL. The in-process mock facilitator is never selected
+in real-demo mode.

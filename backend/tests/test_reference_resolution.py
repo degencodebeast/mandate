@@ -157,16 +157,22 @@ def _resolve(client: TestClient, mandate_id: uuid.UUID) -> Any:
 
 
 def _interrupted_intent(client: TestClient, store: PostgresMandateStore) -> Mandate:
-    """Spend with a crashing receipt recorder, leaving a SETTLING stored reference."""
+    """Spend with the payment accepted, leaving a SETTLING stored reference.
+
+    Under ticket 11 the payment is only accepted: the intent stays SETTLING
+    with its reference and no Receipt Anchor until the official status boundary
+    returns ``completed``.
+    """
     mandate = _create_mandate(store)
     crashed = _build_client(
         store,
         payments=Executor(),
-        receipts=FailingReceiptRecorder(),
+        receipts=ScriptedReceiptRecorder(),
         inspector=None,
     )
     response = _spend(crashed, mandate.id)
-    assert response.status_code == 500
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "accepted"
     return mandate
 
 
@@ -273,3 +279,35 @@ def test_resolve_received_state_keeps_intent_settling(client: TestClient) -> Non
     assert document["intent"]["status"] in ("settling", "unknown")
     assert document["receipt"] is None
     assert receipts.recorded == []
+
+
+def test_concurrent_failed_resolutions_release_reservation_once(
+    client: TestClient,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _interrupted_intent(client, store)
+    receipts = ScriptedReceiptRecorder()
+    inspector = StatusInspector("failed")
+    client = _build_client(
+        store, payments=ForbiddenExecutor(), receipts=receipts, inspector=inspector
+    )
+
+    def resolve_call() -> dict[str, Any]:
+        response = _resolve(client, mandate.id)
+        return response.json()
+
+    barrier = threading.Barrier(5)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [
+            pool.submit(lambda: (barrier.wait(timeout=10), resolve_call())[1]) for _ in range(5)
+        ]
+        documents = [future.result(timeout=20) for future in futures]
+
+    assert all(document["outcome"] == "blocked: payment_failed" for document in documents)
+    assert all(document["intent"]["status"] == "blocked" for document in documents)
+    status = client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+    assert status["mandate"]["reserved_total"] == "0.00"
+    assert status["mandate"]["spent_total"] == "0"

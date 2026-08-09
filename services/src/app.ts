@@ -5,6 +5,7 @@ import type { RoutesConfig, FacilitatorClient } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import type { ServiceConfig } from "./config.js";
+import { isOfficialGatewayFacilitatorUrl } from "./gateway.js";
 import { arcUsdcMoneyParser, ARC_USDC_ERC20_ADDRESS, ARC_USDC_DECIMALS } from "./money.js";
 import { MockFacilitatorClient } from "./facilitator.js";
 import type { FailureSimulator } from "./failure.js";
@@ -27,9 +28,9 @@ const GATEWAY_AUTH_WINDOW_SECONDS = 2592000;
  * configuration omission cannot produce a persuasive but false demo.
  */
 export function resolveFacilitatorClient(config: ServiceConfig): FacilitatorClient {
-  if (config.realDemo && !config.facilitatorUrl) {
+  if (config.realDemo && (!config.facilitatorUrl || !isOfficialGatewayFacilitatorUrl(config.facilitatorUrl))) {
     throw new Error(
-      "REAL_DEMO requires FACILITATOR_URL pointing at the official Circle Gateway facilitator.",
+      "REAL_DEMO requires FACILITATOR_URL pointing at the exact official Circle Gateway facilitator.",
     );
   }
   if (config.facilitatorUrl) {

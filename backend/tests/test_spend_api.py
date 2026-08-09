@@ -36,6 +36,7 @@ from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import MandateSpendService
 from mandate.spend.service import purpose_hash
+from tests.helpers import ScriptedTransferStatusInspector
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -77,11 +78,13 @@ class Components:
         self.payments = RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
         self.fees = ScriptedFeeCollector()
+        self.inspector = ScriptedTransferStatusInspector("completed")
         spend_service = MandateSpendService(
             mandate_store=self.store,
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
+            transfer_status_inspector=self.inspector,
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
@@ -155,15 +158,35 @@ def _spend(
     return response
 
 
+def _resolve(
+    components: Components,
+    mandate_id: uuid.UUID,
+    *,
+    task_id: str = "task-1",
+    purpose: str = "buy a research report",
+) -> Any:
+    return components.client.post(
+        f"/api/v1/mandates/{mandate_id}/resolve",
+        json={"task_id": task_id, "purpose": purpose},
+    )
+
+
 def test_spend_within_budget_settles_and_updates_spent_total(
     components: Components,
 ) -> None:
     mandate = _create_mandate(components.store)
 
-    response = _spend(components, mandate.id)
+    spend = _spend(components, mandate.id)
+    resolve = _resolve(components, mandate.id)
 
-    assert response.status_code == 200
-    document = response.json()
+    assert spend.status_code == 200
+    accepted = spend.json()
+    assert accepted["outcome"] == "accepted"
+    assert accepted["reason"] == "payment accepted; awaiting official finalization"
+    assert accepted["intent"]["status"] == "settling"
+    assert accepted["receipt"] is None
+    assert resolve.status_code == 200
+    document = resolve.json()
     assert document["outcome"] == "permitted"
     assert document["reason"] is None
     assert document["intent"]["status"] == "settled"
@@ -184,6 +207,7 @@ def test_spend_within_budget_settles_and_updates_spent_total(
 def test_spend_over_budget_blocks_without_paying(components: Components) -> None:
     mandate = _create_mandate(components.store, budget="1.00", per_call_cap="1.00")
     _spend(components, mandate.id, amount="0.75")
+    _resolve(components, mandate.id)
 
     response = _spend(components, mandate.id, task_id="task-2", amount="0.50")
 
@@ -248,15 +272,17 @@ def test_spend_same_intent_second_call_returns_existing_receipt(
     mandate = _create_mandate(components.store)
 
     first = _spend(components, mandate.id)
+    resolved = _resolve(components, mandate.id)
     second = _spend(components, mandate.id)
 
-    assert first.json()["outcome"] == "permitted"
+    assert first.json()["outcome"] == "accepted"
+    assert resolved.json()["outcome"] == "permitted"
     second_document = second.json()
     assert second_document["outcome"] == "blocked: duplicate_intent"
     assert second_document["reason"] == "duplicate intent: already settled"
     assert second_document["receipt"] is not None
     assert second_document["receipt"]["task_id"] == "task-1"
-    assert second_document["receipt"]["purpose_hash"] == first.json()["receipt"]["purpose_hash"]
+    assert second_document["receipt"]["purpose_hash"] == resolved.json()["receipt"]["purpose_hash"]
     assert second_document["receipt"]["tx_hash"] == "0xsettled"
     assert second_document["receipt"]["intent_state"] == "settled"
     assert second_document["intent"]["status"] == "settled"
@@ -318,7 +344,7 @@ def test_spend_five_concurrent_same_intent_one_settles_four_blocked(
         documents = [future.result(timeout=10) for future in futures]
 
     outcomes = [document["outcome"] for document in documents]
-    assert outcomes.count("permitted") == 1
+    assert outcomes.count("accepted") == 1
     assert outcomes.count("blocked: already_in_progress") == 4
     assert len(components.payments.calls) == 1
 
@@ -327,10 +353,11 @@ def test_spend_different_task_id_same_purpose_both_allowed(components: Component
     mandate = _create_mandate(components.store)
 
     first = _spend(components, mandate.id, task_id="task-1", purpose="buy a research report")
+    _resolve(components, mandate.id, task_id="task-1", purpose="buy a research report")
     second = _spend(components, mandate.id, task_id="task-2", purpose="buy a research report")
 
-    assert first.json()["outcome"] == "permitted"
-    assert second.json()["outcome"] == "permitted"
+    assert first.json()["outcome"] == "accepted"
+    assert second.json()["outcome"] == "accepted"
     assert len(components.payments.calls) == 2
 
 
@@ -345,12 +372,15 @@ def test_spend_different_purposes_are_separate_intents(components: Components) -
     mandate = _create_mandate(components.store)
 
     first = _spend(components, mandate.id, purpose="buy report")
+    first_resolved = _resolve(components, mandate.id, purpose="buy report")
     second = _spend(components, mandate.id, purpose="buy data")
+    second_resolved = _resolve(components, mandate.id, purpose="buy data")
 
-    assert first.json()["outcome"] == "permitted"
-    assert second.json()["outcome"] == "permitted"
+    assert first.json()["outcome"] == "accepted"
+    assert second.json()["outcome"] == "accepted"
     assert len(components.payments.calls) == 2
-    assert second.json()["spent_total"] == "2.00"
+    assert first_resolved.json()["spent_total"] == "1.00"
+    assert second_resolved.json()["spent_total"] == "2.00"
 
 
 def test_spend_payment_failure_blocks_and_keeps_spent_total(components: Components) -> None:
@@ -509,9 +539,10 @@ def test_spend_does_not_collect_fee(components: Components) -> None:
     mandate = _create_mandate(components.store)
 
     response = _spend(components, mandate.id)
+    resolved = _resolve(components, mandate.id)
 
     assert response.status_code == 200
-    document = response.json()
+    document = resolved.json()
     assert document["outcome"] == "permitted"
     assert document["intent"]["status"] == "settled"
     assert document["intent"]["fee_amount"] is None
@@ -535,6 +566,7 @@ def test_spend_receipt_failure_leaves_recoverable_settling(components: Component
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=FailingReceiptRecorder(),
+        transfer_status_inspector=components.inspector,
     )
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     app = create_app(
@@ -546,7 +578,7 @@ def test_spend_receipt_failure_leaves_recoverable_settling(components: Component
     client = TestClient(app, raise_server_exceptions=False)
     client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
 
-    response = client.post(
+    spend = client.post(
         f"/api/v1/mandates/{mandate.id}/spend",
         json={
             "task_id": "task-1",
@@ -555,8 +587,13 @@ def test_spend_receipt_failure_leaves_recoverable_settling(components: Component
             "amount": "1.00",
         },
     )
-
-    assert response.status_code == 500
+    assert spend.status_code == 200
+    assert spend.json()["outcome"] == "accepted"
+    resolve = client.post(
+        f"/api/v1/mandates/{mandate.id}/resolve",
+        json={"task_id": "task-1", "purpose": "buy a research report"},
+    )
+    assert resolve.status_code == 500
     assert fees.calls == []
     intent_store = PostgresIntentStore(_DATABASE_URL)
     intent = intent_store.get_intent(
@@ -576,6 +613,7 @@ def test_spend_collects_no_fee(components: Components) -> None:
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
+        transfer_status_inspector=components.inspector,
     )
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     app = create_app(
@@ -587,7 +625,7 @@ def test_spend_collects_no_fee(components: Components) -> None:
     client = TestClient(app)
     client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
 
-    response = client.post(
+    spend = client.post(
         f"/api/v1/mandates/{mandate.id}/spend",
         json={
             "task_id": "task-1",
@@ -596,8 +634,14 @@ def test_spend_collects_no_fee(components: Components) -> None:
             "amount": "1.00",
         },
     )
+    assert spend.status_code == 200
+    assert spend.json()["outcome"] == "accepted"
+    resolve = client.post(
+        f"/api/v1/mandates/{mandate.id}/resolve",
+        json={"task_id": "task-1", "purpose": "buy a research report"},
+    )
 
-    document = response.json()
+    document = resolve.json()
     assert document["outcome"] == "permitted"
     assert document["receipt"]["fee_amount"] is None
     assert document["receipt"]["fee_tx_hash"] is None
@@ -608,7 +652,9 @@ def test_spend_collects_no_fee(components: Components) -> None:
 def test_status_shows_zero_fees_paid_per_mandate(components: Components) -> None:
     mandate = _create_mandate(components.store)
     _spend(components, mandate.id, task_id="task-1")
+    _resolve(components, mandate.id, task_id="task-1")
     _spend(components, mandate.id, task_id="task-2")
+    _resolve(components, mandate.id, task_id="task-2")
 
     response = components.client.get(f"/api/v1/mandates/{mandate.id}/status")
 
@@ -654,13 +700,13 @@ def test_spend_concurrent_distinct_intents_cannot_exceed_budget(
         documents = [future.result(timeout=10) for future in futures]
 
     outcomes = [document["outcome"] for document in documents]
-    assert outcomes.count("permitted") == 1
+    assert outcomes.count("accepted") == 1
     assert outcomes.count("blocked: budget_exceeded") == 1
     assert len(components.payments.calls) == 1
-    assert len(components.receipts.recorded) == 1
+    assert len(components.receipts.recorded) == 0
     status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
-    assert status["mandate"]["spent_total"] == "0.75"
-    assert status["mandate"]["reserved_total"] == "0.00"
+    assert status["mandate"]["spent_total"] == "0"
+    assert status["mandate"]["reserved_total"] == "0.75"
 
 
 def test_spend_failed_admission_releases_no_authority_another_caller_owns(
@@ -698,13 +744,13 @@ def test_spend_failed_admission_releases_no_authority_another_caller_owns(
         documents = [future.result(timeout=10) for future in futures]
 
     outcomes = [document["outcome"] for document in documents]
-    assert outcomes.count("permitted") == 1
+    assert outcomes.count("accepted") == 1
     assert outcomes.count("blocked: budget_exceeded") == 1
     assert denied["outcome"] == "blocked: budget_exceeded"
     assert len(components.payments.calls) == 1
     status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
-    assert status["mandate"]["spent_total"] == "0.75"
-    assert status["mandate"]["reserved_total"] == "0.00"
+    assert status["mandate"]["spent_total"] == "0"
+    assert status["mandate"]["reserved_total"] == "0.75"
 
 
 def test_spend_unknown_intent_returns_wait_or_request_review(components: Components) -> None:

@@ -160,6 +160,15 @@ describe("real-demo facilitator resolution", () => {
     const config: ServiceConfig = { ...baseConfig, realDemo: true };
     expect(() => resolveFacilitatorClient(config)).toThrow(/mock|FACILITATOR_URL/);
   });
+
+  it("rejects a generic facilitator URL when real-demo is enabled", () => {
+    const config: ServiceConfig = {
+      ...baseConfig,
+      realDemo: true,
+      facilitatorUrl: "http://127.0.0.1:9999/mock",
+    };
+    expect(() => resolveFacilitatorClient(config)).toThrow(/FACILITATOR_URL/);
+  });
 });
 
 describe("real-demo scheme selection", () => {

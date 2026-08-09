@@ -36,6 +36,7 @@ from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import BREAKER_OPEN_REASON, CircuitBreaker, MandateSpendService
 from mandate.status import MandateStatusService
+from tests.helpers import ScriptedTransferStatusInspector
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -143,6 +144,7 @@ class Components:
         self.breaker_store: BreakerStateStore = PostgresBreakerStateStore(_DATABASE_URL)
         self.payments = payments if payments is not None else RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
+        self.inspector = ScriptedTransferStatusInspector("completed")
         self.clock = clock if clock is not None else FakeClock()
         breaker = CircuitBreaker(
             store=self.breaker_store,
@@ -158,6 +160,7 @@ class Components:
             receipt_recorder=self.receipts,
             breaker=breaker,
             now=self.clock,
+            transfer_status_inspector=self.inspector,
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
@@ -312,7 +315,7 @@ def test_after_cooldown_half_open_trial_success_closes(components: Components) -
 
     trial = _spend(components, mandate.id, task_id="task-4")
 
-    assert trial.json()["outcome"] == "permitted"
+    assert trial.json()["outcome"] == "accepted"
     state = _breaker_state(components, _SERVICE_A)
     assert state["state"] == "closed"
     assert state["failure_count"] == 0
@@ -345,7 +348,7 @@ def test_open_breaker_does_not_affect_other_services(components: Components) -> 
     components.payments.hard_failure = None
     other = _spend(components, mandate.id, task_id="task-b", service_url=_SERVICE_B)
 
-    assert other.json()["outcome"] == "permitted"
+    assert other.json()["outcome"] == "accepted"
     assert _breaker_state(components, _SERVICE_B)["state"] == "closed"
 
 
@@ -429,7 +432,7 @@ def test_abandoned_trial_expires_and_permits_one_new_trial(components: Component
 
     recovered = _spend(components, mandate.id, task_id="task-4")
 
-    assert recovered.json()["outcome"] == "permitted"
+    assert recovered.json()["outcome"] == "accepted"
     state = _breaker_state(components, _SERVICE_A)
     assert state["state"] == "closed"
     assert state["failure_count"] == 0
@@ -467,7 +470,7 @@ def test_abandoned_trial_recovery_keeps_service_b_isolated(
 
     other = _spend(components, mandate.id, task_id="task-b", service_url=_SERVICE_B)
 
-    assert other.json()["outcome"] == "permitted"
+    assert other.json()["outcome"] == "accepted"
     assert _breaker_state(components, _SERVICE_B)["state"] == "closed"
 
 
@@ -497,7 +500,7 @@ def test_held_trial_owner_blocks_a_second_authorization() -> None:
 
         held.release.set()
         result = future.result(timeout=20).json()
-        assert result["outcome"] == "permitted"
+        assert result["outcome"] == "accepted"
 
     assert _breaker_state(components, _SERVICE_A)["state"] == "closed"
 

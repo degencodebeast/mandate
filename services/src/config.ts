@@ -1,5 +1,6 @@
 import type { Network } from "@x402/core/types";
 import type { FailureMode } from "./failure.js";
+import { isOfficialGatewayFacilitatorUrl } from "./gateway.js";
 import { ARC_TESTNET_NETWORK } from "./money.js";
 
 /**
@@ -50,9 +51,9 @@ export function loadServiceConfig(
 ): ServiceConfig {
   const realDemo = env.REAL_DEMO === "true";
   const facilitatorUrl = env.FACILITATOR_URL || undefined;
-  if (realDemo && !facilitatorUrl) {
+  if (realDemo && (!facilitatorUrl || !isOfficialGatewayFacilitatorUrl(facilitatorUrl))) {
     throw new Error(
-      "REAL_DEMO requires FACILITATOR_URL pointing at the official Circle Gateway facilitator.",
+      "REAL_DEMO requires FACILITATOR_URL pointing at the exact official Circle Gateway facilitator.",
     );
   }
   return {

@@ -30,6 +30,7 @@ from mandate.persistence.mandate_store import PostgresMandateStore
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import CircuitBreaker, MandateSpendService
+from tests.helpers import ScriptedTransferStatusInspector
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -487,6 +488,7 @@ def test_migration_0006_stranded_trial_recovers_and_permits_new_spend(
         payment_executor=payments,
         receipt_recorder=ScriptedReceiptRecorder(),
         breaker=CircuitBreaker(store=breaker_store),
+        transfer_status_inspector=ScriptedTransferStatusInspector("completed"),
     )
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     app = create_app(
@@ -499,7 +501,7 @@ def test_migration_0006_stranded_trial_recovers_and_permits_new_spend(
     client = TestClient(app)
     client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
 
-    response = client.post(
+    spend = client.post(
         f"/api/v1/mandates/{mandate_id}/spend",
         json={
             "task_id": "new-task",
@@ -508,9 +510,14 @@ def test_migration_0006_stranded_trial_recovers_and_permits_new_spend(
             "amount": "1.00",
         },
     )
-
-    assert response.status_code == 200
-    document = response.json()
+    assert spend.status_code == 200
+    assert spend.json()["outcome"] == "accepted"
+    resolved = client.post(
+        f"/api/v1/mandates/{mandate_id}/resolve",
+        json={"task_id": "new-task", "purpose": "buy a research report"},
+    )
+    assert resolved.status_code == 200
+    document = resolved.json()
     assert document["outcome"] == "permitted"
     assert payments.calls == [(_SERVICE_URL, "1.00")]
     status = client.get(f"/api/v1/mandates/{mandate_id}/status").json()

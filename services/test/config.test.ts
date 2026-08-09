@@ -61,9 +61,15 @@ describe("real-demo mode", () => {
     expect(config.realDemo).toBe(false);
   });
 
-  it("requires a real facilitator URL when enabled", () => {
+  it("requires the exact official facilitator URL when enabled", () => {
     expect(() =>
       loadServiceConfig({ REAL_DEMO: "true" }, { serviceName: "search-a", port: 4021, failureRate: 0.6 }),
+    ).toThrow(/FACILITATOR_URL/);
+    expect(() =>
+      loadServiceConfig(
+        { REAL_DEMO: "true", FACILITATOR_URL: "http://127.0.0.1:9999/mock" },
+        { serviceName: "search-a", port: 4021, failureRate: 0.6 },
+      ),
     ).toThrow(/FACILITATOR_URL/);
   });
 

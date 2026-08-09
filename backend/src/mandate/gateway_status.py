@@ -18,6 +18,7 @@ import json
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 GATEWAY_X402_PATH = "v1/x402/transfers"
 
@@ -29,6 +30,14 @@ class TransferLookupUnknownError(RuntimeError):
     may have failed, or the lookup returned no usable state. Mandate never
     treats this as proof that no payment occurred.
     """
+
+
+class TransferStatusInspector(Protocol):
+    """Resolve the exact Payment Reference through the official boundary."""
+
+    def lookup_transfer(self, payment_reference: str) -> TransferStatus:
+        """Return the official state for the exact reference, or raise unknown."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,11 @@ class GatewayTransferStatusInspector:
             raise TransferLookupUnknownError(
                 "The Gateway x402 transfer-status lookup did not return JSON."
             ) from error
+        document_id = document.get("id")
+        if document_id != payment_reference:
+            raise TransferLookupUnknownError(
+                "The Gateway x402 transfer-status lookup returned a different reference."
+            )
         payment_state = document.get("status")
         if not isinstance(payment_state, str) or not payment_state:
             raise TransferLookupUnknownError(

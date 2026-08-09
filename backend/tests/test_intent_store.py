@@ -398,3 +398,69 @@ def test_store_transfer_status_resolves_batch_tx_hash(
     assert resolved.batch_tx_hash == (
         "0x9a3af4c339eb81ddef60a1facb7cb6d9d6896a1fe4dbbcd755de6407886b5171"
     )
+
+
+def test_block_and_release_releases_reservation_once(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate = mandate_store.create_mandate(
+        user_id="u",
+        parameters=MandateParameters(
+            budget="10.00",
+            per_call_cap="1.00",
+            allowed_services=[],
+            expiry=None,
+        ),
+        wallet_address="w",
+        circle_wallet_id="c",
+        agent_identity="a",
+    )
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-block",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
+
+    blocked = intent_store.block_and_release_reservation(intent_id=intent.id)
+
+    assert blocked.status == "blocked"
+    updated = mandate_store.get_mandate(user_id="u", mandate_id=mandate.id)
+    assert updated.reserved_total == "0.00"
+    assert updated.spent_total == "0"
+
+
+def test_block_and_release_is_idempotent_and_single_owner(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate = mandate_store.create_mandate(
+        user_id="u",
+        parameters=MandateParameters(
+            budget="10.00",
+            per_call_cap="1.00",
+            allowed_services=[],
+            expiry=None,
+        ),
+        wallet_address="w",
+        circle_wallet_id="c",
+        agent_identity="a",
+    )
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-block-once",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
+
+    intent_store.block_and_release_reservation(intent_id=intent.id)
+    again = intent_store.block_and_release_reservation(intent_id=intent.id)
+
+    assert again.status == "blocked"
+    updated = mandate_store.get_mandate(user_id="u", mandate_id=mandate.id)
+    assert updated.reserved_total == "0.00"
