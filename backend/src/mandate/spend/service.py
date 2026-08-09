@@ -205,7 +205,9 @@ class MandateSpendService:
                 return routed
             return self._blocked_policy_response(blocked, mandate, result)
         if breaker_state.state == "half_open":
-            trial = self._breaker.allow_trial(service_url=service_url, state=breaker_state)
+            trial = self._breaker.allow_trial(
+                service_url=service_url, state=breaker_state, owner=str(intent.id)
+            )
             if trial is None:
                 blocked, routed = self._transition_or_route(
                     intent,

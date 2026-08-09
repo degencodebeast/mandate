@@ -303,3 +303,107 @@ def test_breaker_state_visible_via_mandate_status(components: Components) -> Non
     assert [state.service_url for state in status.breaker_states] == [_SERVICE_A]
     assert status.breaker_states[0].state == "open"
     assert status.breaker_states[0].failure_count == 3
+
+
+def test_half_open_trial_unknown_reopens_and_restarts_recovery(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    components.payments.hard_failure = None
+    components.payments.unknown_failure = PaymentUnknownError("The response was lost.")
+
+    trial = _spend(components, mandate.id, task_id="task-4")
+
+    assert trial.json()["outcome"] == "unknown"
+    assert trial.json()["action"] in ("wait", "request_review")
+    state = _breaker_state(components, _SERVICE_A)
+    assert state["state"] == "open"
+    assert state["last_failure_at"] is not None
+
+    blocked = _spend(components, mandate.id, task_id="task-5")
+    assert blocked.json()["outcome"] == "blocked: breaker_open"
+    assert components.payments.calls == []
+
+
+def test_abandoned_trial_expires_and_permits_one_new_trial(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            "UPDATE breaker_state SET state = 'half_open' WHERE service_url = %s",
+            (_SERVICE_A,),
+        )
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            UPDATE breaker_state
+            SET trial_allowed = false, trial_owner = 'abandoned-worker',
+                trial_started_at = %s
+            WHERE service_url = %s
+            """,
+            (
+                datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
+                _SERVICE_A,
+            ),
+        )
+
+    state = _breaker_state(components, _SERVICE_A)
+    assert state["state"] == "half_open"
+    assert state["trial_allowed"] is False
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    components.payments.hard_failure = None
+
+    recovered = _spend(components, mandate.id, task_id="task-4")
+
+    assert recovered.json()["outcome"] == "permitted"
+    state = _breaker_state(components, _SERVICE_A)
+    assert state["state"] == "closed"
+    assert state["failure_count"] == 0
+
+
+def test_abandoned_trial_recovery_keeps_service_b_isolated(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store, services=(_SERVICE_A, _SERVICE_B))
+    components.payments.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task, service_url=_SERVICE_A)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            UPDATE breaker_state
+            SET trial_allowed = false, trial_owner = 'abandoned-worker',
+                trial_started_at = %s
+            WHERE service_url = %s
+            """,
+            (
+                datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
+                _SERVICE_A,
+            ),
+        )
+        connection.execute(
+            "UPDATE breaker_state SET state = 'half_open' WHERE service_url = %s",
+            (_SERVICE_A,),
+        )
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    components.payments.hard_failure = None
+
+    other = _spend(components, mandate.id, task_id="task-b", service_url=_SERVICE_B)
+
+    assert other.json()["outcome"] == "permitted"
+    assert _breaker_state(components, _SERVICE_B)["state"] == "closed"

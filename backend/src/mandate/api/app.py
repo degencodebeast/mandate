@@ -411,6 +411,7 @@ def _spend_service_from_settings(
             store=breaker_store,
             failure_threshold=settings.circuit_breaker_failure_threshold,
             cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
+            trial_timeout_seconds=settings.circuit_breaker_trial_timeout_seconds,
         )
         if breaker_store is not None
         else None
@@ -539,6 +540,8 @@ def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
         "failure_count": state.failure_count,
         "last_failure_at": state.last_failure_at.isoformat() if state.last_failure_at else None,
         "trial_allowed": state.trial_allowed,
+        "trial_owner": state.trial_owner,
+        "trial_started_at": state.trial_started_at.isoformat() if state.trial_started_at else None,
     }
 
 

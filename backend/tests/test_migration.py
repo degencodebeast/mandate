@@ -23,11 +23,12 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
+from mandate.persistence.breaker_store import PostgresBreakerStateStore
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import PostgresMandateStore
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
-from mandate.spend import MandateSpendService
+from mandate.spend import CircuitBreaker, MandateSpendService
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -53,11 +54,13 @@ class RecordingPaymentExecutor:
 def reset_database() -> Iterator[None]:
     apply_migrations(_DATABASE_URL)
     with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM breaker_state")
         connection.execute("DELETE FROM intents")
         connection.execute("DELETE FROM mandates")
     yield
     apply_migrations(_DATABASE_URL)
     with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM breaker_state")
         connection.execute("DELETE FROM intents")
         connection.execute("DELETE FROM mandates")
 
@@ -360,3 +363,155 @@ def test_migration_0005_adds_recovery_columns_and_backfills_settled(
     assert by_status["settling"]["receipt_anchor"] is None
     assert by_status["blocked"]["payment_reference"] is None
     assert by_status["blocked"]["receipt_anchor"] is None
+
+
+def _downgrade_to_pre_0006() -> None:
+    """Return the breaker_state schema to the pre-0006 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("ALTER TABLE breaker_state DROP COLUMN trial_owner")
+        connection.execute("ALTER TABLE breaker_state DROP COLUMN trial_started_at")
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version = %s",
+            ("0006_trial_ownership",),
+        )
+
+
+def _insert_breaker_state(
+    *,
+    service_url: str,
+    state: str = "closed",
+    failure_count: int = 0,
+    trial_allowed: bool = False,
+) -> None:
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO breaker_state (
+                id, service_url, failure_count, state, last_failure_at, trial_allowed
+            ) VALUES (%s, %s, %s, %s, NULL, %s)
+            """,
+            (uuid.uuid4(), service_url, failure_count, state, trial_allowed),
+        )
+
+
+def test_migration_0006_adds_trial_ownership_columns(reset_database: None) -> None:
+    _downgrade_to_pre_0006()
+    _insert_breaker_state(
+        service_url="https://service-a.example.com",
+        state="half_open",
+        trial_allowed=False,
+    )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        row = connection.execute(
+            "SELECT state, trial_allowed, trial_owner, trial_started_at "
+            "FROM breaker_state WHERE service_url = %s",
+            ("https://service-a.example.com",),
+        ).fetchone()
+    assert row is not None
+    assert row["state"] == "half_open"
+    assert row["trial_allowed"] is True
+    assert row["trial_owner"] is None
+    assert row["trial_started_at"] is None
+
+
+def test_migration_0006_backfills_only_stranded_half_open_trials(
+    reset_database: None,
+) -> None:
+    _downgrade_to_pre_0006()
+    _insert_breaker_state(
+        service_url="https://service-a.example.com",
+        state="half_open",
+        trial_allowed=False,
+    )
+    _insert_breaker_state(
+        service_url="https://service-b.example.com",
+        state="closed",
+        trial_allowed=False,
+    )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            "SELECT service_url, trial_allowed FROM breaker_state ORDER BY service_url"
+        ).fetchall()
+    by_url = {row["service_url"]: row for row in rows}
+    assert by_url["https://service-a.example.com"]["trial_allowed"] is True
+    assert by_url["https://service-b.example.com"]["trial_allowed"] is False
+
+
+def test_migration_0006_stranded_trial_recovers_and_permits_new_spend(
+    reset_database: None,
+) -> None:
+    _downgrade_to_pre_0006()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '0',
+                      '0', '0', %s, %s, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:erc8004:migration-agent",
+                "10.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+                "0xwallet",
+                "cw_0006_001",
+            ),
+        )
+        _insert_breaker_state(
+            service_url=_SERVICE_URL, state="half_open", failure_count=3, trial_allowed=False
+        )
+
+    apply_migrations(_DATABASE_URL)
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    payments = RecordingPaymentExecutor()
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=payments,
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=CircuitBreaker(store=breaker_store),
+    )
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+        breaker_store=breaker_store,
+    )
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+
+    response = client.post(
+        f"/api/v1/mandates/{mandate_id}/spend",
+        json={
+            "task_id": "new-task",
+            "purpose": "buy a research report",
+            "service_url": _SERVICE_URL,
+            "amount": "1.00",
+        },
+    )
+
+    assert response.status_code == 200
+    document = response.json()
+    assert document["outcome"] == "permitted"
+    assert payments.calls == [(_SERVICE_URL, "1.00")]
+    status = client.get(f"/api/v1/mandates/{mandate_id}/status").json()
+    breaker = next(
+        state for state in status["breaker_state"] if state["service_url"] == _SERVICE_URL
+    )
+    assert breaker["state"] == "closed"

@@ -205,13 +205,81 @@ def test_open_to_half_open_sets_trial_allowed(store: PostgresBreakerStateStore) 
     assert state.trial_allowed is True
 
 
+def test_concurrent_consume_trial_permits_only_one_owner(store: PostgresBreakerStateStore) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    _insert_state(
+        service_url="https://service-a.example.com", state="half_open", trial_allowed=True
+    )
+
+    barrier = threading.Barrier(6)
+
+    def acquire(worker: str) -> BreakerState | None:
+        barrier.wait(timeout=10)
+        return store.consume_trial(
+            service_url="https://service-a.example.com",
+            owner=worker,
+            now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        )
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(acquire, f"worker-{index}") for index in range(6)]
+        results = [future.result(timeout=20) for future in futures]
+
+    winners = [result for result in results if result is not None]
+    assert len(winners) == 1
+    assert winners[0].trial_allowed is False
+    assert winners[0].trial_owner in {f"worker-{index}" for index in range(6)}
+    remaining = store.list_states_for_services(["https://service-a.example.com"])
+    assert remaining[0].trial_allowed is False
+    assert remaining[0].trial_owner is not None
+    assert (
+        store.consume_trial(
+            service_url="https://service-a.example.com",
+            owner="worker-late",
+            now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        )
+        is None
+    )
+
+
+def test_record_failure_clears_trial_owner(store: PostgresBreakerStateStore) -> None:
+    _insert_state(
+        service_url="https://service-a.example.com", state="half_open", trial_allowed=True
+    )
+    store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+
+    state = store.record_failure(
+        service_url="https://service-a.example.com",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert state.state == "open"
+    assert state.trial_owner is None
+    assert state.trial_started_at is None
+
+
 def test_consume_trial_consumes_the_single_trial(store: PostgresBreakerStateStore) -> None:
     _insert_state(
         service_url="https://service-a.example.com", state="half_open", trial_allowed=True
     )
 
-    first = store.consume_trial(service_url="https://service-a.example.com")
-    second = store.consume_trial(service_url="https://service-a.example.com")
+    first = store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    second = store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
 
     assert first is not None
     assert first.trial_allowed is False

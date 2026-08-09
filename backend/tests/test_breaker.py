@@ -113,6 +113,59 @@ def test_open_breaker_stays_open_before_cooldown() -> None:
     assert breaker.state_for(service_url=_SERVICE).state == "open"
 
 
+def test_consume_trial_records_owner_and_start_time() -> None:
+    clock = FakeClock()
+    breaker = _breaker(clock)
+    for _ in range(3):
+        breaker.record_failure(service_url=_SERVICE)
+    clock.advance(60)
+    breaker.state_for(service_url=_SERVICE)
+
+    consumed = breaker.consume_trial(service_url=_SERVICE, owner="worker-1")
+
+    assert consumed is not None
+    assert consumed.trial_allowed is False
+    assert consumed.trial_owner == "worker-1"
+    assert consumed.trial_started_at == clock()
+
+
+def test_expired_trial_returns_to_a_state_that_permits_one_new_trial() -> None:
+    clock = FakeClock()
+    breaker = _breaker(clock)
+    for _ in range(3):
+        breaker.record_failure(service_url=_SERVICE)
+    clock.advance(60)
+    breaker.state_for(service_url=_SERVICE)
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
+    assert breaker.state_for(service_url=_SERVICE).trial_allowed is False
+
+    clock.advance(60)
+
+    recovered = breaker.state_for(service_url=_SERVICE)
+    assert recovered.state == "half_open"
+    assert recovered.trial_allowed is True
+    assert recovered.trial_owner is None
+    assert recovered.trial_started_at is None
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-2") is not None
+
+
+def test_live_trial_stays_fail_closed_before_expiry() -> None:
+    clock = FakeClock()
+    breaker = _breaker(clock)
+    for _ in range(3):
+        breaker.record_failure(service_url=_SERVICE)
+    clock.advance(60)
+    breaker.state_for(service_url=_SERVICE)
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
+
+    clock.advance(30)
+
+    state = breaker.state_for(service_url=_SERVICE)
+    assert state.state == "half_open"
+    assert state.trial_allowed is False
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-2") is None
+
+
 def test_half_open_trial_success_closes_the_breaker() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
@@ -120,7 +173,7 @@ def test_half_open_trial_success_closes_the_breaker() -> None:
         breaker.record_failure(service_url=_SERVICE)
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
-    assert breaker.consume_trial(service_url=_SERVICE) is not None
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
 
     breaker.record_success(service_url=_SERVICE)
 
@@ -136,7 +189,7 @@ def test_half_open_trial_failure_reopens_the_breaker() -> None:
         breaker.record_failure(service_url=_SERVICE)
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
-    assert breaker.consume_trial(service_url=_SERVICE) is not None
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
 
     breaker.record_failure(service_url=_SERVICE)
 
@@ -153,8 +206,8 @@ def test_only_one_trial_is_allowed() -> None:
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
 
-    assert breaker.consume_trial(service_url=_SERVICE) is not None
-    assert breaker.consume_trial(service_url=_SERVICE) is None
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
+    assert breaker.consume_trial(service_url=_SERVICE, owner="worker-2") is None
 
 
 def test_unknown_outcomes_count_as_failures() -> None:

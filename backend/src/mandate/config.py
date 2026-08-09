@@ -129,6 +129,15 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="How long a service stays OPEN before a HALF_OPEN trial is allowed.",
     ),
+    ConfigurationVariable(
+        name="CIRCUIT_BREAKER_TRIAL_TIMEOUT_SECONDS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description=(
+            "How long one consumed HALF_OPEN trial may stay exclusive before "
+            "an abandoned worker's lease expires."
+        ),
+    ),
 )
 
 
@@ -189,6 +198,7 @@ class ApiSettings(BaseSettings):
     payment_timeout_seconds: float = 30.0
     circuit_breaker_failure_threshold: int = 3
     circuit_breaker_cooldown_seconds: float = 60.0
+    circuit_breaker_trial_timeout_seconds: float = 60.0
     fee_wallet_address: str | None = None
     fee_percentage: float = 0.01
     arc_rpc_url: str | None = None

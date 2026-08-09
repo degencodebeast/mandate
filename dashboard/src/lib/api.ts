@@ -55,6 +55,8 @@ export interface BreakerStateRecord {
   failure_count: number;
   last_failure_at: string | null;
   trial_allowed: boolean;
+  trial_owner: string | null;
+  trial_started_at: string | null;
 }
 
 export interface ReceiptRecord {
