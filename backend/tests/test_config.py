@@ -117,3 +117,23 @@ def test_trial_timeout_rejects_infinity() -> None:
 def test_trial_timeout_rejects_nan() -> None:
     with pytest.raises(ValidationError):
         ApiSettings(circuit_breaker_trial_timeout_seconds=float("nan"))
+
+
+def test_cooldown_timeout_rejects_zero() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_cooldown_seconds=0.0)
+
+
+def test_cooldown_timeout_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_cooldown_seconds=-1.0)
+
+
+def test_cooldown_timeout_rejects_infinity() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_cooldown_seconds=float("inf"))
+
+
+def test_cooldown_timeout_rejects_nan() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(circuit_breaker_cooldown_seconds=float("nan"))

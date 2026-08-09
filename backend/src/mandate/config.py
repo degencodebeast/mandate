@@ -6,6 +6,7 @@ The table is the single source of truth for the settings each process loads.
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -232,7 +233,7 @@ class ApiSettings(BaseSettings):
         """
         if value <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
-        if value != value or value in (float("inf"), float("-inf")):
+        if not math.isfinite(value):
             raise ValueError("timeout_seconds must be a finite number")
         return value
 
