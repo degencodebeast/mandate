@@ -71,6 +71,11 @@ class Mandate:
     circle_wallet_id: str | None
     created_at: datetime
 
+    @property
+    def fees_paid(self) -> str:
+        """Alias for fees_total kept for the dashboard's flat status shape."""
+        return self.fees_total
+
 
 def _money(value: Any) -> str:
     """Render a numeric column as a plain decimal string."""

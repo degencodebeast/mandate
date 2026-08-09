@@ -123,6 +123,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="Fraction of each payment collected as the Mandate fee (default 0.01).",
     ),
+    ConfigurationVariable(
+        name="ARC_RPC_URL",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="JSON-RPC URL for the Arc testnet, used by the receipt reader.",
+    ),
+    ConfigurationVariable(
+        name="RECEIPT_READER_SCRIPT",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Filesystem path to the Node viem script that reads ReceiptRecorded events.",
+    ),
 )
 
 
@@ -184,6 +196,8 @@ class ApiSettings(BaseSettings):
     payment_timeout_seconds: float = 30.0
     fee_wallet_address: str | None = None
     fee_percentage: float = 0.01
+    arc_rpc_url: str | None = None
+    receipt_reader_script: str | None = None
 
     @field_validator("fee_percentage")
     @classmethod

@@ -41,6 +41,11 @@ from mandate.fees import CircleCliFeeCollector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
+from mandate.persistence.breaker_store import (
+    BreakerState,
+    BreakerStateStore,
+    PostgresBreakerStateStore,
+)
 from mandate.persistence.intent_store import Intent, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -53,7 +58,7 @@ from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder
 from mandate.reconciliation import CircleCliSettlementInspector
 from mandate.spend import MandateSpendService, SpendResponse
-from mandate.status import MandateStatus, MandateStatusService
+from mandate.status import MandateStatusService
 from mandate.wallets import WalletBinder
 
 
@@ -190,6 +195,15 @@ def create_app(
     def me(identity: identity_dependency) -> JSONResponse:
         return JSONResponse(content={"user_id": identity.subject})
 
+    @app.get("/api/v1/mandates")
+    def list_mandates(identity: identity_dependency) -> JSONResponse:
+        if active_status is None:
+            raise StarletteHTTPException(status_code=503)
+        mandates = active_status.list_mandates(user_id=identity.subject)
+        return JSONResponse(
+            content={"mandates": [_mandate_to_json(mandate) for mandate in mandates]}
+        )
+
     @app.post("/api/v1/mandates")
     def create_mandate(
         command: CreateMandateRequest,
@@ -259,30 +273,40 @@ def create_app(
             raise StarletteHTTPException(status_code=404) from None
         return JSONResponse(content=_spend_to_json(result))
 
+    @app.get("/api/v1/mandates/{mandate_id}")
+    def get_mandate(
+        mandate_id: uuid.UUID,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        return _render_status(mandate_id, identity, active_status)
+
     @app.get("/api/v1/mandates/{mandate_id}/status")
     def mandate_status(
         mandate_id: uuid.UUID,
         identity: identity_dependency,
     ) -> JSONResponse:
-        if active_store is None or active_spend is None:
+        return _render_status(mandate_id, identity, active_status)
+
+    @app.get("/api/v1/mandates/{mandate_id}/receipts")
+    def list_mandate_receipts(
+        mandate_id: uuid.UUID,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_store is None:
             raise StarletteHTTPException(status_code=503)
         try:
-            mandate = active_store.get_mandate(user_id=identity.subject, mandate_id=mandate_id)
+            mandate = active_store.get_mandate(
+                user_id=identity.subject, mandate_id=mandate_id
+            )
         except NotFoundError:
             raise StarletteHTTPException(status_code=404) from None
-        intents = active_spend.list_intents(mandate_id=mandate_id)
+        receipts = (
+            active_receipts.list_receipts(user_id=mandate.agent_identity)
+            if active_receipts is not None
+            else []
+        )
         return JSONResponse(
-            content={
-                "mandate": {
-                    "id": str(mandate.id),
-                    "status": mandate.status,
-                    "spent_total": mandate.spent_total,
-                    "fees_total": mandate.fees_total,
-                    "budget": mandate.budget,
-                    "per_call_cap": mandate.per_call_cap,
-                },
-                "intents": [_intent_to_json(intent) for intent in intents],
-            }
+            content={"receipts": [_receipt_to_json(receipt) for receipt in receipts]}
         )
 
     return app
@@ -411,3 +435,79 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "fee_amount": intent.fee_amount,
         "fee_tx_hash": intent.fee_tx_hash,
     }
+
+
+def _mandate_to_json(mandate: Mandate) -> dict[str, object]:
+    """Render one mandate as a safe JSON document for list endpoints."""
+    return {
+        "id": str(mandate.id),
+        "user_id": mandate.user_id,
+        "agent_identity": mandate.agent_identity,
+        "budget": mandate.budget,
+        "per_call_cap": mandate.per_call_cap,
+        "allowed_services": list(mandate.allowed_services),
+        "expiry": mandate.expiry.isoformat() if mandate.expiry else None,
+        "status": mandate.status,
+        "spent_total": mandate.spent_total,
+        "fees_total": mandate.fees_total,
+        "fees_paid": mandate.fees_total,
+        "wallet_address": mandate.wallet_address,
+        "circle_wallet_id": mandate.circle_wallet_id,
+        "created_at": mandate.created_at.isoformat(),
+    }
+
+
+def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
+    """Render one breaker state row as a safe JSON document."""
+    return {
+        "service_url": state.service_url,
+        "state": state.state,
+        "failure_count": state.failure_count,
+        "last_failure_at": state.last_failure_at.isoformat()
+        if state.last_failure_at
+        else None,
+        "trial_allowed": state.trial_allowed,
+    }
+
+
+def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
+    """Render one on-Arc receipt as a safe JSON document."""
+    return {
+        "user_id": receipt.user_id,
+        "task_id": receipt.task_id,
+        "purpose_hash": receipt.purpose_hash,
+        "service_url": receipt.service_url,
+        "amount": receipt.amount,
+        "tx_hash": receipt.tx_hash,
+        "timestamp": receipt.timestamp.isoformat(),
+    }
+
+
+def _render_status(
+    mandate_id: uuid.UUID,
+    identity: PrivyIdentity,
+    status_service: MandateStatusService | None,
+) -> JSONResponse:
+    """Build the flat status document consumed by the dashboard."""
+    if status_service is None:
+        raise StarletteHTTPException(status_code=503)
+    try:
+        document = status_service.status(
+            user_id=identity.subject, mandate_id=mandate_id
+        )
+    except NotFoundError:
+        raise StarletteHTTPException(status_code=404) from None
+    return JSONResponse(
+        content={
+            "mandate": _mandate_to_json(document.mandate),
+            "spent_total": document.mandate.spent_total,
+            "fees_paid": document.mandate.fees_total,
+            "fees_total": document.mandate.fees_total,
+            "remaining_budget": document.remaining_budget,
+            "intents": [_intent_to_json(intent) for intent in document.recent_intents],
+            "recent_intents": [_intent_to_json(intent) for intent in document.recent_intents],
+            "breaker_state": [
+                _breaker_state_to_json(state) for state in document.breaker_states
+            ],
+        }
+    )
