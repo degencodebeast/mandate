@@ -48,12 +48,10 @@ export default function ReceiptsPage() {
 
   const flat: { receipt: ReceiptRecord; mandate: MandateSummary }[] = [];
   let hasErrors = false;
-  let allSucceeded = true;
   if (rows) {
     for (const entry of rows) {
       if (entry.error) {
         hasErrors = true;
-        allSucceeded = false;
       }
       for (const receipt of entry.receipts) {
         flat.push({ receipt, mandate: entry.mandate });
