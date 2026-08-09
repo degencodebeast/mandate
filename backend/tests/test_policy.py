@@ -10,11 +10,13 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from mandate.persistence.breaker_store import BreakerState
 from mandate.persistence.mandate_store import Mandate
 from mandate.spend.policy import (
     ALLOW,
     BLOCKED,
     SpendContext,
+    breaker_closed,
     budget_remaining,
     evaluate,
     mandate_active,
@@ -54,9 +56,33 @@ def _mandate(
 
 
 def _context(
-    mandate: Mandate, *, service_url: str = "https://service-a.example.com", amount: str = "1.00"
+    mandate: Mandate,
+    *,
+    service_url: str = "https://service-a.example.com",
+    amount: str = "1.00",
+    breaker: BreakerState | None = None,
 ) -> SpendContext:
-    return SpendContext(mandate=mandate, service_url=service_url, amount=amount, now=_NOW)
+    return SpendContext(
+        mandate=mandate,
+        service_url=service_url,
+        amount=amount,
+        now=_NOW,
+        breaker=breaker,
+    )
+
+
+def _breaker_state(
+    *,
+    state: str,
+    trial_allowed: bool = False,
+) -> BreakerState:
+    return BreakerState(
+        service_url="https://service-a.example.com",
+        state=state,
+        failure_count=3,
+        last_failure_at=_NOW,
+        trial_allowed=trial_allowed,
+    )
 
 
 def test_allows_a_valid_spend() -> None:
@@ -145,3 +171,49 @@ def test_inactive_mandate_outcome_is_named() -> None:
     result = mandate_active(_context(_mandate(status="expired")))
 
     assert result.outcome == "blocked: mandate_inactive"
+
+
+def test_breaker_closed_blocks_open_breaker() -> None:
+    breaker = _breaker_state(state="open")
+    result = breaker_closed(_context(_mandate(), breaker=breaker))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "breaker_open"
+    assert result.outcome == "blocked: breaker_open"
+    assert result.reason == "circuit breaker open: service temporarily unavailable"
+
+
+def test_breaker_closed_allows_closed_breaker() -> None:
+    breaker = _breaker_state(state="closed")
+    result = breaker_closed(_context(_mandate(), breaker=breaker))
+
+    assert result.decision == ALLOW
+
+
+def test_breaker_closed_allows_half_open_breaker_with_trial() -> None:
+    breaker = _breaker_state(state="half_open", trial_allowed=True)
+    result = breaker_closed(_context(_mandate(), breaker=breaker))
+
+    assert result.decision == ALLOW
+
+
+def test_breaker_closed_allows_when_no_breaker_state() -> None:
+    result = breaker_closed(_context(_mandate()))
+
+    assert result.decision == ALLOW
+
+
+def test_breaker_closed_blocks_half_open_without_trial() -> None:
+    breaker = _breaker_state(state="half_open", trial_allowed=False)
+    result = breaker_closed(_context(_mandate(), breaker=breaker))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "breaker_open"
+
+
+def test_evaluate_includes_breaker_closed_check() -> None:
+    breaker = _breaker_state(state="open")
+    result = evaluate(_context(_mandate(), breaker=breaker))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "breaker_open"

@@ -41,11 +41,7 @@ from mandate.fees import CircleCliFeeCollector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
-from mandate.persistence.breaker_store import (
-    BreakerState,
-    BreakerStateStore,
-    PostgresBreakerStateStore,
-)
+from mandate.persistence.breaker_store import BreakerStateStore, PostgresBreakerStateStore
 from mandate.persistence.intent_store import Intent, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -57,8 +53,8 @@ from mandate.persistence.mandate_store import (
 from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder
 from mandate.reconciliation import CircleCliSettlementInspector
-from mandate.spend import MandateSpendService, SpendResponse
-from mandate.status import MandateStatusService
+from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
+from mandate.status import MandateStatus, MandateStatusService
 from mandate.wallets import WalletBinder
 
 
@@ -151,11 +147,13 @@ def create_app(
         if active_settings.database_url is not None
         else None
     )
-    active_spend = spend_service or _spend_service_from_settings(active_settings, active_store)
     active_breaker = breaker_store or (
         PostgresBreakerStateStore(active_settings.database_url)
         if active_settings.database_url is not None
         else None
+    )
+    active_spend = spend_service or _spend_service_from_settings(
+        active_settings, active_store, active_breaker
     )
     active_status = status_service or _status_service_from_settings(
         active_settings, active_store, active_breaker
@@ -334,6 +332,7 @@ def create_app(
 def _spend_service_from_settings(
     settings: ApiSettings,
     store: MandateStore | None,
+    breaker_store: BreakerStateStore | None,
 ) -> MandateSpendService | None:
     """Build the production spend service when every dependency is configured."""
     if store is None or settings.receipt_registry_address is None:
@@ -357,6 +356,15 @@ def _spend_service_from_settings(
         chain=settings.circle_chain,
         timeout_seconds=settings.reconciliation_timeout_seconds,
     )
+    breaker = (
+        CircuitBreaker(
+            store=breaker_store,
+            failure_threshold=settings.circuit_breaker_failure_threshold,
+            cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
+        )
+        if breaker_store is not None
+        else None
+    )
     fee_collector = (
         CircleCliFeeCollector(
             chain=settings.circle_chain,
@@ -375,6 +383,7 @@ def _spend_service_from_settings(
         fee_collector=fee_collector,
         fee_wallet_address=settings.fee_wallet_address,
         fee_percentage=settings.fee_percentage,
+        breaker=breaker,
     )
 
 

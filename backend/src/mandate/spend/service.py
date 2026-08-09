@@ -59,6 +59,7 @@ from mandate.payments import (
     PaymentExecutor,
     PaymentUnknownError,
 )
+from mandate.persistence.breaker_store import ScriptedBreakerStateStore
 from mandate.persistence.intent_store import (
     DuplicateIntentError,
     Intent,
@@ -70,6 +71,7 @@ from mandate.reconciliation import (
     ReconciliationTimeoutError,
     SettlementInspector,
 )
+from mandate.spend.breaker import BREAKER_OPEN_REASON, CircuitBreaker
 from mandate.spend.policy import SpendContext, evaluate
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -138,6 +140,7 @@ class MandateSpendService:
         fee_collector: FeeCollector | None = None,
         fee_wallet_address: str | None = None,
         fee_percentage: float = 0.01,
+        breaker: CircuitBreaker | None = None,
         now: Now | None = None,
     ) -> None:
         self._mandate_store = mandate_store
@@ -149,6 +152,7 @@ class MandateSpendService:
         self._fee_collector = fee_collector
         self._fee_wallet_address = fee_wallet_address
         self._fee_percentage = fee_percentage
+        self._breaker = breaker or CircuitBreaker(store=ScriptedBreakerStateStore())
         self._now = now or (lambda: datetime.now(UTC))
 
     def spend(
@@ -180,8 +184,15 @@ class MandateSpendService:
             if raced is None:
                 raise
             return self._existing_intent_response(raced, mandate, task_id=task_id)
+        breaker_state = self._breaker.state_for(service_url=service_url)
         result = evaluate(
-            SpendContext(mandate=mandate, service_url=service_url, amount=amount, now=now)
+            SpendContext(
+                mandate=mandate,
+                service_url=service_url,
+                amount=amount,
+                now=now,
+                breaker=breaker_state,
+            )
         )
         if result.decision == "BLOCKED":
             blocked = self._intent_store.transition(intent_id=intent.id, status="blocked")
@@ -192,6 +203,17 @@ class MandateSpendService:
                 receipt=None,
                 spent_total=mandate.spent_total,
             )
+        if breaker_state.state == "half_open":
+            trial = self._breaker.allow_trial(service_url=service_url, state=breaker_state)
+            if trial is None:
+                blocked = self._intent_store.transition(intent_id=intent.id, status="blocked")
+                return SpendResponse(
+                    outcome="blocked: breaker_open",
+                    reason=BREAKER_OPEN_REASON,
+                    intent=blocked,
+                    receipt=None,
+                    spent_total=mandate.spent_total,
+                )
         settling = self._intent_store.transition(intent_id=intent.id, status="settling")
         try:
             tx_hash = self._payment_executor.execute_payment(
@@ -199,6 +221,7 @@ class MandateSpendService:
                 amount=amount,
             )
         except PaymentUnknownError:
+            self._breaker.record_failure(service_url=service_url)
             return self._route_unknown_outcome(
                 settling=settling,
                 mandate=mandate,
@@ -208,7 +231,9 @@ class MandateSpendService:
                 amount=amount,
             )
         except PaymentExecutionError as error:
+            self._breaker.record_failure(service_url=service_url)
             return self._blocked_payment_failed(settling, mandate, error)
+        self._breaker.record_success(service_url=service_url)
         return self._settle(
             intent=settling,
             mandate=mandate,
@@ -307,6 +332,12 @@ class MandateSpendService:
         The intent transitions NOT_SETTLED → PENDING → SETTLING and pays once
         more. retry_count is consumed so no second retry is possible.
         """
+        breaker_state = self._breaker.state_for(service_url=intent.service_url)
+        if breaker_state.state == "open":
+            return self._breaker_blocked_response(intent, mandate)
+        trial = self._breaker.allow_trial(service_url=intent.service_url, state=breaker_state)
+        if trial is None:
+            return self._breaker_blocked_response(intent, mandate)
         pending = self._intent_store.transition(
             intent_id=intent.id, status="pending", retry_count=intent.retry_count + 1
         )
@@ -317,6 +348,7 @@ class MandateSpendService:
                 amount=settling.amount,
             )
         except PaymentUnknownError:
+            self._breaker.record_failure(service_url=settling.service_url)
             return self._route_unknown_outcome(
                 settling=settling,
                 mandate=mandate,
@@ -326,7 +358,9 @@ class MandateSpendService:
                 amount=settling.amount,
             )
         except PaymentExecutionError as error:
+            self._breaker.record_failure(service_url=settling.service_url)
             return self._blocked_payment_failed(settling, mandate, error)
+        self._breaker.record_success(service_url=settling.service_url)
         return self._settle(
             intent=settling,
             mandate=mandate,
@@ -396,6 +430,19 @@ class MandateSpendService:
             intent=failed,
             receipt=None,
             spent_total=mandate.spent_total,
+        )
+
+    def _breaker_blocked_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
+        """Block a payment attempt because the service's breaker is OPEN.
+
+        The intent keeps its current state (for example NOT_SETTLED after
+        reconciliation) so a later call can retry once the breaker recovers.
+        """
+        return self._blocked_response(
+            intent,
+            mandate,
+            outcome="blocked: breaker_open",
+            reason=BREAKER_OPEN_REASON,
         )
 
     def _reconciled_settled_response(

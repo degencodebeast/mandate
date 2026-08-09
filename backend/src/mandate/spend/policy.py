@@ -17,7 +17,9 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
+from mandate.persistence.breaker_store import BreakerState
 from mandate.persistence.mandate_store import Mandate
+from mandate.spend.breaker import BREAKER_OPEN_REASON
 
 ALLOW: Literal["ALLOW"] = "ALLOW"
 BLOCKED: Literal["BLOCKED"] = "BLOCKED"
@@ -30,6 +32,7 @@ _OUTCOME_REASONS: dict[str, str] = {
     "service_not_allowed": "blocked: service_not_allowed",
     "per_call_cap_exceeded": "blocked: per_call_cap_exceeded",
     "budget_exceeded": "blocked: budget_exceeded",
+    "breaker_open": "blocked: breaker_open",
 }
 
 
@@ -41,6 +44,7 @@ class SpendContext:
     service_url: str
     amount: str
     now: datetime
+    breaker: BreakerState | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,23 @@ def budget_remaining(context: SpendContext) -> SpendResult:
     return _block("budget_exceeded", "The mandate budget does not cover the amount.")
 
 
+def breaker_closed(context: SpendContext) -> SpendResult:
+    """Allow only when the circuit breaker for the service is not OPEN.
+
+    A HALF_OPEN breaker allows its single trial payment; a HALF_OPEN breaker
+    whose trial is already consumed blocks. A CLOSED breaker (or an absent
+    breaker row, meaning no failures yet) allows.
+    """
+    breaker = context.breaker
+    if breaker is None or breaker.state == "closed":
+        return _allow()
+    if breaker.state == "open":
+        return _block("breaker_open", BREAKER_OPEN_REASON)
+    if breaker.state == "half_open" and not breaker.trial_allowed:
+        return _block("breaker_open", BREAKER_OPEN_REASON)
+    return _allow()
+
+
 def evaluate(context: SpendContext, checks: list[Check] | None = None) -> SpendResult:
     """Compose the checks with AND semantics; return the first blocking result."""
     for check in checks or _DEFAULT_CHECKS:
@@ -129,4 +150,5 @@ _DEFAULT_CHECKS: tuple[Check, ...] = (
     service_allowed,
     per_call_cap,
     budget_remaining,
+    breaker_closed,
 )

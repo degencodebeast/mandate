@@ -34,3 +34,15 @@ def test_fee_wallet_address_defaults_to_absent() -> None:
     settings = ApiSettings()
 
     assert settings.fee_wallet_address is None
+
+
+def test_circuit_breaker_threshold_defaults_to_three() -> None:
+    settings = ApiSettings()
+
+    assert settings.circuit_breaker_failure_threshold == 3
+
+
+def test_circuit_breaker_cooldown_defaults_to_sixty_seconds() -> None:
+    settings = ApiSettings()
+
+    assert settings.circuit_breaker_cooldown_seconds == 60.0

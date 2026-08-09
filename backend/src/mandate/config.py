@@ -124,22 +124,16 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         description="Fraction of each payment collected as the Mandate fee (default 0.01).",
     ),
     ConfigurationVariable(
-        name="ARC_RPC_URL",
+        name="CIRCUIT_BREAKER_FAILURE_THRESHOLD",
         owners=frozenset({Service.API}),
         secret=False,
-        description="JSON-RPC URL for the Arc testnet, used by the receipt reader.",
+        description="Consecutive failures or unknown outcomes that trip the breaker for a service.",
     ),
     ConfigurationVariable(
-        name="RECEIPT_READER_SCRIPT",
+        name="CIRCUIT_BREAKER_COOLDOWN_SECONDS",
         owners=frozenset({Service.API}),
         secret=False,
-        description="Filesystem path to the Node viem script that reads ReceiptRecorded events.",
-    ),
-    ConfigurationVariable(
-        name="DASHBOARD_ORIGINS",
-        owners=frozenset({Service.API}),
-        secret=False,
-        description="Comma-separated list of dashboard origins allowed by CORS.",
+        description="How long a service stays OPEN before a HALF_OPEN trial is allowed.",
     ),
 )
 
@@ -200,6 +194,8 @@ class ApiSettings(BaseSettings):
     circle_chain: str = "ARC-TESTNET"
     reconciliation_timeout_seconds: float = 30.0
     payment_timeout_seconds: float = 30.0
+    circuit_breaker_failure_threshold: int = 3
+    circuit_breaker_cooldown_seconds: float = 60.0
     fee_wallet_address: str | None = None
     fee_percentage: float = 0.01
     arc_rpc_url: str | None = None
