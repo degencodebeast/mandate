@@ -7,6 +7,7 @@ test database.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -209,7 +210,6 @@ def test_open_to_half_open_sets_trial_allowed(store: PostgresBreakerStateStore) 
 
 
 def test_concurrent_consume_trial_permits_only_one_owner(store: PostgresBreakerStateStore) -> None:
-    import threading
     from concurrent.futures import ThreadPoolExecutor
 
     _insert_state(
