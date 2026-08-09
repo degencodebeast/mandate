@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -212,3 +212,22 @@ class ApiSettings(BaseSettings):
         if value < 0 or value > 1:
             raise ValueError("fee_percentage must be a fraction between 0 and 1")
         return value
+
+    @model_validator(mode="after")
+    def trial_timeout_exceeds_payment_timeout(self) -> ApiSettings:
+        """Reject a trial lease shorter than the payment call window.
+
+        The half-open trial is consumed before ``execute_payment`` runs. The
+        payment call may run for up to ``payment_timeout_seconds``. The trial
+        lease must be strictly longer than that window, so a trial can never
+        expire while its owner could still be issuing a Payment Authorization
+        (ADR-0032, ticket 10f gate). Defaults alone are not sufficient because
+        deployment settings can override them, so the relation fails closed.
+        """
+        if self.circuit_breaker_trial_timeout_seconds <= self.payment_timeout_seconds:
+            raise ValueError(
+                "circuit_breaker_trial_timeout_seconds must be greater than "
+                "payment_timeout_seconds so a half-open trial cannot expire "
+                "while its owner may still be issuing a Payment Authorization"
+            )
+        return self

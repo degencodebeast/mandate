@@ -81,17 +81,28 @@ class CircuitBreaker:
                     state = recovered
         return state
 
-    def record_failure(self, *, service_url: str) -> BreakerState:
-        """Count one failure or unknown outcome toward the trip threshold."""
+    def record_failure(self, *, service_url: str, owner: str) -> BreakerState:
+        """Count one failure or unknown outcome toward the trip threshold.
+
+        The outcome write is owner-aware (ticket 10f): a stale owner whose trial
+        already expired and was re-acquired cannot reopen a trial held by a new
+        owner.
+        """
         return self._store.record_failure(
             service_url=service_url,
+            owner=owner,
             now=self._now(),
             failure_threshold=self._failure_threshold,
         )
 
-    def record_success(self, *, service_url: str) -> BreakerState:
-        """Reset the breaker to CLOSED after a confirmed settlement."""
-        return self._store.record_success(service_url=service_url)
+    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+        """Reset the breaker to CLOSED after a confirmed settlement.
+
+        The outcome write is owner-aware (ticket 10f): a stale owner whose trial
+        already expired and was re-acquired cannot close a trial held by a new
+        owner.
+        """
+        return self._store.record_success(service_url=service_url, owner=owner)
 
     def consume_trial(self, *, service_url: str, owner: str) -> BreakerState | None:
         """Consume the single HALF_OPEN trial, or None when unavailable.

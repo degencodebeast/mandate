@@ -54,8 +54,8 @@ def test_three_failures_open_the_breaker() -> None:
     breaker = _breaker(clock)
 
     for _ in range(2):
-        breaker.record_failure(service_url=_SERVICE)
-    breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
+    breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     state = breaker.state_for(service_url=_SERVICE)
     assert state.state == "open"
@@ -67,7 +67,7 @@ def test_two_failures_leave_the_breaker_closed() -> None:
     breaker = _breaker(FakeClock())
 
     for _ in range(2):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     state = breaker.state_for(service_url=_SERVICE)
     assert state.state == "closed"
@@ -78,9 +78,9 @@ def test_success_resets_failure_count_and_closes() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
-    breaker.record_success(service_url=_SERVICE)
+    breaker.record_success(service_url=_SERVICE, owner="worker-1")
 
     state = breaker.state_for(service_url=_SERVICE)
     assert state.state == "closed"
@@ -92,7 +92,7 @@ def test_open_breaker_recovers_to_half_open_after_cooldown() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     assert breaker.state_for(service_url=_SERVICE).state == "open"
 
     clock.advance(60)
@@ -106,7 +106,7 @@ def test_open_breaker_stays_open_before_cooldown() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     clock.advance(30)
 
@@ -117,7 +117,7 @@ def test_consume_trial_records_owner_and_start_time() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
 
@@ -133,7 +133,7 @@ def test_expired_trial_returns_to_a_state_that_permits_one_new_trial() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
     assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
@@ -153,7 +153,7 @@ def test_live_trial_stays_fail_closed_before_expiry() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
     assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
@@ -170,12 +170,12 @@ def test_half_open_trial_success_closes_the_breaker() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
     assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
 
-    breaker.record_success(service_url=_SERVICE)
+    breaker.record_success(service_url=_SERVICE, owner="worker-1")
 
     state = breaker.state_for(service_url=_SERVICE)
     assert state.state == "closed"
@@ -186,12 +186,12 @@ def test_half_open_trial_failure_reopens_the_breaker() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
     assert breaker.consume_trial(service_url=_SERVICE, owner="worker-1") is not None
 
-    breaker.record_failure(service_url=_SERVICE)
+    breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     state = breaker.state_for(service_url=_SERVICE)
     assert state.state == "open"
@@ -202,7 +202,7 @@ def test_only_one_trial_is_allowed() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
     clock.advance(60)
     breaker.state_for(service_url=_SERVICE)
 
@@ -214,7 +214,7 @@ def test_unknown_outcomes_count_as_failures() -> None:
     breaker = _breaker(FakeClock())
 
     for _ in range(3):
-        breaker.record_failure(service_url=_SERVICE)
+        breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     assert breaker.state_for(service_url=_SERVICE).state == "open"
 
@@ -222,9 +222,9 @@ def test_unknown_outcomes_count_as_failures() -> None:
 def test_mixed_failures_and_unknowns_open_the_breaker() -> None:
     breaker = _breaker(FakeClock())
 
-    breaker.record_failure(service_url=_SERVICE)
-    breaker.record_failure(service_url=_SERVICE)
-    breaker.record_failure(service_url=_SERVICE)
+    breaker.record_failure(service_url=_SERVICE, owner="worker-1")
+    breaker.record_failure(service_url=_SERVICE, owner="worker-1")
+    breaker.record_failure(service_url=_SERVICE, owner="worker-1")
 
     assert breaker.state_for(service_url=_SERVICE).state == "open"
 
@@ -233,7 +233,7 @@ def test_breakers_are_isolated_per_service_url() -> None:
     clock = FakeClock()
     breaker = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure(service_url="https://service-a.example.com")
+        breaker.record_failure(service_url="https://service-a.example.com", owner="worker-1")
 
     assert breaker.state_for(service_url="https://service-a.example.com").state == "open"
     assert breaker.state_for(service_url="https://service-b.example.com").state == "closed"

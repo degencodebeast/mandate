@@ -64,10 +64,12 @@ class ForbiddenPaymentExecutor:
 class FailingBreakerStateStore(ScriptedBreakerStateStore):
     """Fail the breaker success write to prove the reference is stored first."""
 
-    def record_success(self, *, service_url: str) -> BreakerState:
+    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
         raise RuntimeError("The breaker store failed.")
 
-    def record_failure(self, *, service_url: str, now: Any, failure_threshold: int) -> BreakerState:
+    def record_failure(
+        self, *, service_url: str, owner: str, now: Any, failure_threshold: int
+    ) -> BreakerState:
         raise RuntimeError("The breaker store failed.")
 
 

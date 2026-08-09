@@ -10,6 +10,7 @@ clock; the Postgres stores use the real test database.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -75,19 +76,79 @@ class RecordingPaymentExecutor:
         return self.tx_hash
 
 
+class HeldPaymentExecutor:
+    """Block inside execute_payment until the test releases the hold.
+
+    This reproduces the gate scenario where a half-open trial owner is still
+    inside the payment adapter when the trial lease would otherwise expire.
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[tuple[str, str]] = []
+        self.tx_hash = "0xsettled"
+        self.hard_failure: PaymentExecutionError | None = None
+
+    def execute_payment(self, *, service_url: str, amount: str) -> str:
+        if self.hard_failure is not None:
+            raise self.hard_failure
+        self.calls.append((service_url, amount))
+        self.entered.set()
+        self.release.wait(timeout=20)
+        return self.tx_hash
+
+
+class TimeoutHonoringPaymentExecutor:
+    """Model the production payment timeout through the fake clock.
+
+    The real Circle CLI subprocess is bounded by PAYMENT_TIMEOUT_SECONDS. This
+    executor honors the same bound through the fake clock: it raises
+    PaymentUnknownError once the clock passes start + payment_timeout_seconds,
+    exactly as the spend service's UNKNOWN path expects. Used to prove that a
+    trial cannot expire while its owner is still inside the payment window.
+    """
+
+    def __init__(self, clock: FakeClock, payment_timeout_seconds: float) -> None:
+        self.clock = clock
+        self.payment_timeout_seconds = payment_timeout_seconds
+        self.calls: list[tuple[str, str]] = []
+        self.entered = threading.Event()
+        self.hard_failure: PaymentExecutionError | None = None
+        self._started_at: datetime | None = None
+
+    def execute_payment(self, *, service_url: str, amount: str) -> str:
+        if self.hard_failure is not None:
+            raise self.hard_failure
+        self.calls.append((service_url, amount))
+        self._started_at = self.clock()
+        self.entered.set()
+        import time
+
+        while (self.clock() - self._started_at).total_seconds() < self.payment_timeout_seconds:
+            time.sleep(0.005)
+        raise PaymentUnknownError("The payment call exceeded PAYMENT_TIMEOUT_SECONDS.")
+
+
 class Components:
     """The app and its injectable adapters, shared across tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        payments: Any | None = None,
+        trial_timeout_seconds: float = 60.0,
+        clock: FakeClock | None = None,
+    ) -> None:
         self.store = PostgresMandateStore(_DATABASE_URL)
         self.breaker_store: BreakerStateStore = PostgresBreakerStateStore(_DATABASE_URL)
-        self.payments = RecordingPaymentExecutor()
+        self.payments = payments if payments is not None else RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
-        self.clock = FakeClock()
+        self.clock = clock if clock is not None else FakeClock()
         breaker = CircuitBreaker(
             store=self.breaker_store,
             failure_threshold=3,
             cooldown_seconds=_COOLDOWN_SECONDS,
+            trial_timeout_seconds=trial_timeout_seconds,
             now=self.clock,
         )
         spend_service = MandateSpendService(
@@ -408,3 +469,66 @@ def test_abandoned_trial_recovery_keeps_service_b_isolated(
 
     assert other.json()["outcome"] == "permitted"
     assert _breaker_state(components, _SERVICE_B)["state"] == "closed"
+
+
+def test_held_trial_owner_blocks_a_second_authorization() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    held = HeldPaymentExecutor()
+    components = Components(payments=held)
+    mandate = _create_mandate(components.store)
+    held.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    held.hard_failure = None
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(lambda: _spend(components, mandate.id, task_id="task-4"))
+        assert held.entered.wait(timeout=10)
+
+        components.clock.advance(30)
+        blocked = _spend(components, mandate.id, task_id="task-5")
+
+        assert blocked.json()["outcome"] == "blocked: breaker_open"
+        assert held.calls == [(_SERVICE_A, "1.00")]
+
+        held.release.set()
+        result = future.result(timeout=20).json()
+        assert result["outcome"] == "permitted"
+
+    assert _breaker_state(components, _SERVICE_A)["state"] == "closed"
+
+
+def test_trial_lease_cannot_expire_within_the_payment_window() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    clock = FakeClock()
+    timed = TimeoutHonoringPaymentExecutor(clock, payment_timeout_seconds=30.0)
+    components = Components(payments=timed, trial_timeout_seconds=60.0, clock=clock)
+    mandate = _create_mandate(components.store)
+    timed.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    timed.hard_failure = None
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(lambda: _spend(components, mandate.id, task_id="task-4"))
+        assert timed.entered.wait(timeout=10)
+
+        components.clock.advance(30)
+
+        blocked = _spend(components, mandate.id, task_id="task-5")
+
+        assert blocked.json()["outcome"] == "blocked: breaker_open"
+        assert timed.calls == [(_SERVICE_A, "1.00")]
+
+        result = future.result(timeout=20).json()
+        assert result["outcome"] == "unknown"
+
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"

@@ -47,10 +47,10 @@ class BreakerStateStore(Protocol):
     def get_or_create_state(self, *, service_url: str) -> BreakerState: ...
 
     def record_failure(
-        self, *, service_url: str, now: datetime, failure_threshold: int
+        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
     ) -> BreakerState: ...
 
-    def record_success(self, *, service_url: str) -> BreakerState: ...
+    def record_success(self, *, service_url: str, owner: str) -> BreakerState: ...
 
     def open_to_half_open(self, *, service_url: str) -> BreakerState | None: ...
 
@@ -131,7 +131,7 @@ class PostgresBreakerStateStore:
         return self._from_row(row)
 
     def record_failure(
-        self, *, service_url: str, now: datetime, failure_threshold: int
+        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
     ) -> BreakerState:
         """Increment the failure count and trip the breaker when due.
 
@@ -139,6 +139,11 @@ class PostgresBreakerStateStore:
         trips when the incremented count reaches the threshold. last_failure_at
         is always refreshed so the OPEN cooldown restarts from this moment. A
         resolved trial clears its durable owner and start time.
+
+        The write is owner-aware (ticket 10f): a caller that does not own the
+        active trial (a stale outcome arriving after the trial expired and a new
+        owner acquired it) cannot mutate the breaker. The update applies only
+        when no trial is active or the caller owns the current trial.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
@@ -158,17 +163,31 @@ class PostgresBreakerStateStore:
                         WHEN breaker_state.failure_count + 1 >= %s THEN 'open'
                         ELSE breaker_state.state
                     END
+                WHERE breaker_state.trial_owner IS NULL
+                   OR breaker_state.trial_owner = %s
                 RETURNING service_url, failure_count, state, last_failure_at,
                           trial_allowed, trial_owner, trial_started_at
                 """,
-                (uuid.uuid4(), service_url, now, failure_threshold),
+                (uuid.uuid4(), service_url, now, failure_threshold, owner),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    _SELECT_FROM_BREAKER + "WHERE service_url = %s",
+                    (service_url,),
+                ).fetchone()
         if row is None:
             raise RuntimeError("record_failure did not return a breaker row")
         return self._from_row(row)
 
-    def record_success(self, *, service_url: str) -> BreakerState:
-        """Reset the breaker to CLOSED with a zero failure count."""
+    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+        """Reset the breaker to CLOSED with a zero failure count.
+
+        The write is owner-aware (ticket 10f): a caller that does not own the
+        active trial (a stale outcome arriving after the trial expired and a
+        new owner acquired it) cannot close the breaker under a new owner. The
+        reset applies only when no trial is active or the caller owns the
+        current trial.
+        """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
@@ -183,11 +202,18 @@ class PostgresBreakerStateStore:
                     trial_allowed = false,
                     trial_owner = NULL,
                     trial_started_at = NULL
+                WHERE breaker_state.trial_owner IS NULL
+                   OR breaker_state.trial_owner = %s
                 RETURNING service_url, failure_count, state, last_failure_at,
                           trial_allowed, trial_owner, trial_started_at
                 """,
-                (uuid.uuid4(), service_url),
+                (uuid.uuid4(), service_url, owner),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    _SELECT_FROM_BREAKER + "WHERE service_url = %s",
+                    (service_url,),
+                ).fetchone()
         if row is None:
             raise RuntimeError("record_success did not return a breaker row")
         return self._from_row(row)
@@ -298,9 +324,11 @@ class ScriptedBreakerStateStore:
         )
 
     def record_failure(
-        self, *, service_url: str, now: datetime, failure_threshold: int
+        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
     ) -> BreakerState:
         current = self.get_or_create_state(service_url=service_url)
+        if current.trial_owner is not None and current.trial_owner != owner:
+            return current
         failure_count = current.failure_count + 1
         if current.state == "half_open" or failure_count >= failure_threshold:
             state = BreakerState(
@@ -321,7 +349,10 @@ class ScriptedBreakerStateStore:
         self._states[service_url] = state
         return state
 
-    def record_success(self, *, service_url: str) -> BreakerState:
+    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+        current = self._states.get(service_url)
+        if current is not None and current.trial_owner is not None and current.trial_owner != owner:
+            return current
         state = BreakerState(
             service_url=service_url,
             state="closed",
