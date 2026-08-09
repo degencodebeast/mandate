@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { SignJWT } from "jose";
+import { randomBytes } from "node:crypto";
 
 /**
- * Issue a deterministic Privy HS256 test token for local demos.
+ * Issue a Privy-shaped HS256 token for local demos.
  *
- * The Mandate Service in MANDATE_ENV=test verifies HS256 tokens with the same
- * key, so a dashboard running in dev mode can sign tokens with this key and
- * have the backend accept them. This route only runs when
- * MANDATE_DEV_TOKEN_SECRET is set; in production (Privy is configured) it
+ * Simulates a Privy access token: the subject is a random
+ * `did:privy:demo-<hex>` per call (mimicking a fresh wallet session), the
+ * issuer/audience/algorithm match what the Mandate Service's
+ * DeterministicPrivyAdapter expects, and the token is signed with the same
+ * shared secret. The route is only enabled when
+ * `MANDATE_DEV_TOKEN_SECRET` is set; in production (Privy is configured) it
  * returns 404.
  */
 export const dynamic = "force-dynamic";
@@ -19,11 +22,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Dev token issuance is disabled." }, { status: 404 });
   }
   const body = (await request.json().catch(() => ({}))) as { sub?: unknown };
-  const sub = typeof body.sub === "string" && body.sub ? body.sub : "did:privy:operator";
+  const requested =
+    typeof body.sub === "string" && body.sub.startsWith("did:privy:") ? body.sub : null;
+  const sub = requested ?? `did:privy:demo-${randomBytes(8).toString("hex")}`;
   const now = Math.floor(Date.now() / 1000);
   const key = new TextEncoder().encode(secret);
   const token = await new SignJWT({
-    sid: "session-dev",
+    sid: `session-${randomBytes(6).toString("hex")}`,
     auth_time: now,
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
@@ -35,3 +40,4 @@ export async function POST(request: Request) {
     .sign(key);
   return NextResponse.json({ token, sub });
 }
+
