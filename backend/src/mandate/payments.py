@@ -10,11 +10,18 @@ Adapters:
   JSON output (ADR-0012). The runner is injectable so tests can script it
   without a CLI or network.
 - ScriptedPaymentExecutor: test. Returns a fixed transaction hash (ADR-0024).
+
+Outcome classes (ticket 05b):
+- PaymentExecutionError: a definite rejection. The payment did not happen, so
+  the intent blocks.
+- PaymentUnknownError: the call timed out or returned no usable response. Money
+  may have moved, so the intent becomes UNKNOWN and reconciliation runs.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -46,30 +53,40 @@ class CircleCliPaymentExecutor:
         wallet_address: str,
         chain: str = "ARC-TESTNET",
         runner: Callable[[Sequence[str]], str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> None:
         self._wallet_address = wallet_address
         self._chain = chain
         self._runner = runner
+        self._timeout_seconds = timeout_seconds
 
     def execute_payment(self, *, service_url: str, amount: str) -> str:
         """Run the CLI payment and return the settlement transaction hash."""
-        output = run_cli(
-            [
-                "circle",
-                "services",
-                "pay",
-                service_url,
-                "--address",
-                self._wallet_address,
-                "--chain",
-                self._chain,
-                "--max-amount",
-                amount,
-                "--output",
-                "json",
-            ],
-            self._runner,
-        )
+        try:
+            output = run_cli(
+                [
+                    "circle",
+                    "services",
+                    "pay",
+                    service_url,
+                    "--address",
+                    self._wallet_address,
+                    "--chain",
+                    self._chain,
+                    "--max-amount",
+                    amount,
+                    "--output",
+                    "json",
+                ],
+                self._runner,
+                timeout=self._timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise PaymentUnknownError("The payment call timed out.") from error
+        except subprocess.CalledProcessError as error:
+            raise PaymentUnknownError(
+                "The payment call failed without a usable response."
+            ) from error
         return _extract_tx_hash(output)
 
 
@@ -88,13 +105,17 @@ def _extract_tx_hash(output: str) -> str:
 
     The CLI prints the service response body, so the settlement hash may live
     in a top-level field or in a nested payment detail object. Look through the
-    known field names in order and fail closed when none is present.
+    known field names in order. A document that names an ``error`` is a definite
+    rejection. A document without a usable hash is an unknown outcome: the
+    response was lost, so money may have moved.
     """
     document: Mapping[str, Any]
     try:
         document = json.loads(output)
     except json.JSONDecodeError as error:
-        raise PaymentExecutionError("The Circle CLI did not return JSON output.") from error
+        raise PaymentUnknownError("The Circle CLI did not return JSON output.") from error
+    if isinstance(document.get("error"), str) and document["error"]:
+        raise PaymentExecutionError(f"The payment rail rejected the call: {document['error']}")
     for key in ("txHash", "transactionHash", "transaction_id", "hash"):
         if isinstance(document.get(key), str) and document[key]:
             return document[key]
@@ -103,8 +124,16 @@ def _extract_tx_hash(output: str) -> str:
         for key in ("txHash", "transactionHash", "hash"):
             if isinstance(nested.get(key), str) and nested[key]:
                 return nested[key]
-    raise PaymentExecutionError("The Circle CLI output has no transaction hash.")
+    raise PaymentUnknownError("The Circle CLI output has no usable transaction hash.")
 
 
 class PaymentExecutionError(RuntimeError):
-    """The payment rail did not return a usable transaction hash."""
+    """The payment rail definitively rejected the call."""
+
+
+class PaymentUnknownError(RuntimeError):
+    """The payment call timed out or returned no usable response.
+
+    The outcome is unknown: money may have moved on Arc even though the agent
+    never received a response. The intent must reconcile before any retry.
+    """

@@ -40,7 +40,7 @@ from mandate.config import ApiSettings, Service, assert_secret_boundary
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
-from mandate.persistence.intent_store import PostgresIntentStore
+from mandate.persistence.intent_store import Intent, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     MandateParameters,
     MandateStore,
@@ -48,6 +48,7 @@ from mandate.persistence.mandate_store import (
     PostgresMandateStore,
 )
 from mandate.receipts import ArcReceiptRecorder
+from mandate.reconciliation import CircleCliSettlementInspector
 from mandate.spend import MandateSpendService, SpendResponse
 from mandate.wallets import WalletBinder
 
@@ -241,6 +242,31 @@ def create_app(
             raise StarletteHTTPException(status_code=404) from None
         return JSONResponse(content=_spend_to_json(result))
 
+    @app.get("/api/v1/mandates/{mandate_id}/status")
+    def mandate_status(
+        mandate_id: uuid.UUID,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_store is None or active_spend is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            mandate = active_store.get_mandate(user_id=identity.subject, mandate_id=mandate_id)
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        intents = active_spend.list_intents(mandate_id=mandate_id)
+        return JSONResponse(
+            content={
+                "mandate": {
+                    "id": str(mandate.id),
+                    "status": mandate.status,
+                    "spent_total": mandate.spent_total,
+                    "budget": mandate.budget,
+                    "per_call_cap": mandate.per_call_cap,
+                },
+                "intents": [_intent_to_json(intent) for intent in intents],
+            }
+        )
+
     return app
 
 
@@ -259,17 +285,24 @@ def _spend_service_from_settings(
     payment_executor = CircleCliPaymentExecutor(
         wallet_address=settings.service_wallet_address,
         chain=settings.circle_chain,
+        timeout_seconds=settings.payment_timeout_seconds,
     )
     receipt_recorder = ArcReceiptRecorder(
         registry_address=settings.receipt_registry_address,
         wallet_address=settings.service_wallet_address,
         chain=settings.circle_chain,
     )
+    settlement_inspector = CircleCliSettlementInspector(
+        chain=settings.circle_chain,
+        timeout_seconds=settings.reconciliation_timeout_seconds,
+    )
     return MandateSpendService(
         mandate_store=store,
         intent_store=intent_store,
         payment_executor=payment_executor,
         receipt_recorder=receipt_recorder,
+        settlement_inspector=settlement_inspector,
+        reconciliation_timeout_seconds=settings.reconciliation_timeout_seconds,
     )
 
 
@@ -279,17 +312,7 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
     document: dict[str, object] = {
         "outcome": response.outcome,
         "reason": response.reason,
-        "intent": {
-            "id": str(intent.id),
-            "mandate_id": str(intent.mandate_id),
-            "purpose_hash": intent.purpose_hash,
-            "service_url": intent.service_url,
-            "amount": intent.amount,
-            "status": intent.status,
-            "tx_hash": intent.tx_hash,
-            "created_at": intent.created_at.isoformat(),
-            "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
-        },
+        "intent": _intent_to_json(intent),
         "spent_total": response.spent_total,
     }
     if response.receipt is None:
@@ -306,3 +329,19 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
             "intent_state": receipt.intent_state,
         }
     return document
+
+
+def _intent_to_json(intent: Intent) -> dict[str, object]:
+    """Render one intent as a safe JSON document."""
+    return {
+        "id": str(intent.id),
+        "mandate_id": str(intent.mandate_id),
+        "purpose_hash": intent.purpose_hash,
+        "service_url": intent.service_url,
+        "amount": intent.amount,
+        "status": intent.status,
+        "tx_hash": intent.tx_hash,
+        "created_at": intent.created_at.isoformat(),
+        "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
+        "retry_count": intent.retry_count,
+    }

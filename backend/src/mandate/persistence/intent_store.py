@@ -5,7 +5,9 @@ store owns the intents table. It creates an intent in the PENDING state and
 transitions it through the execution-safety state machine (ADR-0031).
 
 The intents table exists in migration 0001. Ticket 04 exercises the
-PENDING → SETTLING → SETTLED and PENDING → BLOCKED legs. The UNIQUE
+PENDING → SETTLING → SETTLED and PENDING → BLOCKED legs. Ticket 05 adds the
+dedupe and lock legs. Ticket 05b adds the UNKNOWN → RECONCILING → SETTLED /
+NOT_SETTLED legs and the retry_count used to bound one safe retry. The UNIQUE
 (mandate_id, purpose_hash) constraint means one economic intent maps to at most
 one row.
 """
@@ -44,6 +46,8 @@ class IntentStore(Protocol):
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None: ...
 
+    def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]: ...
+
     def transition(
         self,
         *,
@@ -51,6 +55,7 @@ class IntentStore(Protocol):
         status: str,
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
+        retry_count: int | None = None,
     ) -> Intent: ...
 
 
@@ -67,6 +72,7 @@ class Intent:
     tx_hash: str | None
     created_at: datetime
     settled_at: datetime | None
+    retry_count: int
 
 
 class PostgresIntentStore:
@@ -93,8 +99,8 @@ class PostgresIntentStore:
                     """
                     INSERT INTO intents (
                         id, mandate_id, purpose_hash, service_url, amount,
-                        status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        status, created_at, retry_count
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         intent_id,
@@ -104,6 +110,7 @@ class PostgresIntentStore:
                         amount,
                         "pending",
                         created_at,
+                        0,
                     ),
                 )
         except psycopg_errors.UniqueViolation as error:
@@ -120,6 +127,7 @@ class PostgresIntentStore:
             tx_hash=None,
             created_at=created_at,
             settled_at=None,
+            retry_count=0,
         )
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None:
@@ -128,7 +136,7 @@ class PostgresIntentStore:
             row = connection.execute(
                 """
                 SELECT id, mandate_id, purpose_hash, service_url, amount,
-                       status, tx_hash, created_at, settled_at
+                       status, tx_hash, created_at, settled_at, retry_count
                 FROM intents
                 WHERE mandate_id = %s AND purpose_hash = %s
                 """,
@@ -138,6 +146,22 @@ class PostgresIntentStore:
             return None
         return self._from_row(row)
 
+    def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]:
+        """Return the newest intents for a mandate, for the status read."""
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, mandate_id, purpose_hash, service_url, amount,
+                       status, tx_hash, created_at, settled_at, retry_count
+                FROM intents
+                WHERE mandate_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (mandate_id, limit),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def transition(
         self,
         *,
@@ -145,6 +169,7 @@ class PostgresIntentStore:
         status: str,
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
+        retry_count: int | None = None,
     ) -> Intent:
         """Update the intent state and return the updated row."""
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
@@ -152,12 +177,13 @@ class PostgresIntentStore:
                 """
                 UPDATE intents
                 SET status = %s, tx_hash = COALESCE(%s, tx_hash),
-                    settled_at = COALESCE(%s, settled_at)
+                    settled_at = COALESCE(%s, settled_at),
+                    retry_count = COALESCE(%s, retry_count)
                 WHERE id = %s
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
-                          status, tx_hash, created_at, settled_at
+                          status, tx_hash, created_at, settled_at, retry_count
                 """,
-                (status, tx_hash, settled_at, intent_id),
+                (status, tx_hash, settled_at, retry_count, intent_id),
             ).fetchone()
         if row is None:
             raise IntentNotFoundError("The intent does not exist.")
@@ -174,6 +200,7 @@ class PostgresIntentStore:
             tx_hash=row["tx_hash"],
             created_at=row["created_at"],
             settled_at=row["settled_at"],
+            retry_count=row["retry_count"],
         )
 
 

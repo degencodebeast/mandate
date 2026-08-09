@@ -33,6 +33,7 @@ from mandate.persistence.mandate_store import (
 )
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
+from mandate.reconciliation import ScriptedSettlementInspector, SettlementState
 from mandate.spend import MandateSpendService
 from mandate.spend.service import purpose_hash
 
@@ -73,6 +74,9 @@ class Components:
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
+            settlement_inspector=ScriptedSettlementInspector(
+                state=SettlementState(settled=False, tx_hash=None)
+            ),
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
@@ -366,6 +370,9 @@ def test_spend_requires_auth() -> None:
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
+        settlement_inspector=ScriptedSettlementInspector(
+            state=SettlementState(settled=False, tx_hash=None)
+        ),
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),

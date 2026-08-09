@@ -99,6 +99,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="Mandate Service wallet address that signs payments and receipts.",
     ),
+    ConfigurationVariable(
+        name="RECONCILIATION_TIMEOUT_SECONDS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="How long reconciliation waits for Arc before the intent stays UNKNOWN.",
+    ),
+    ConfigurationVariable(
+        name="PAYMENT_TIMEOUT_SECONDS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="How long one Circle CLI payment call may run before it is an unknown outcome.",
+    ),
 )
 
 
@@ -156,3 +168,5 @@ class ApiSettings(BaseSettings):
     receipt_registry_address: str | None = None
     service_wallet_address: str | None = None
     circle_chain: str = "ARC-TESTNET"
+    reconciliation_timeout_seconds: float = 30.0
+    payment_timeout_seconds: float = 30.0

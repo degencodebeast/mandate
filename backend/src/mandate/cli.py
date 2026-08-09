@@ -15,8 +15,13 @@ from collections.abc import Callable, Sequence
 def run_cli(
     command: Sequence[str],
     runner: Callable[[Sequence[str]], str] | None = None,
+    timeout: float | None = None,
 ) -> str:
-    """Run a fixed Circle CLI command, or delegate to an injected test runner."""
+    """Run a fixed Circle CLI command, or delegate to an injected test runner.
+
+    A timeout bounds the subprocess when no runner is injected. The injected
+    runner owns its own timing, so tests never rely on wall-clock time.
+    """
     if runner is not None:
         return runner(command)
     completed = subprocess.run(  # noqa: S603 - fixed literal list, no shell, no user input
@@ -24,5 +29,6 @@ def run_cli(
         capture_output=True,
         check=True,
         text=True,
+        timeout=timeout,
     )
     return completed.stdout

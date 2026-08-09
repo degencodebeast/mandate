@@ -12,11 +12,18 @@ from mandate.spend.policy import (
     per_call_cap,
     service_allowed,
 )
-from mandate.spend.service import MandateSpendService, SpendResponse
+from mandate.spend.service import (
+    OUTCOME_NOT_SETTLED,
+    OUTCOME_RECONCILING,
+    MandateSpendService,
+    SpendResponse,
+)
 
 __all__ = [
     "ALLOW",
     "BLOCKED",
+    "OUTCOME_NOT_SETTLED",
+    "OUTCOME_RECONCILING",
     "MandateSpendService",
     "SpendContext",
     "SpendResponse",

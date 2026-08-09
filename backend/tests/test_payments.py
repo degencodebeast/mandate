@@ -14,6 +14,7 @@ import pytest
 from mandate.payments import (
     CircleCliPaymentExecutor,
     PaymentExecutionError,
+    PaymentUnknownError,
     ScriptedPaymentExecutor,
     _extract_tx_hash,
 )
@@ -71,14 +72,19 @@ def test_extract_tx_hash_reads_nested_payment_field() -> None:
     assert _extract_tx_hash(document) == "0xabc"
 
 
-def test_extract_tx_hash_raises_on_missing_hash() -> None:
-    with pytest.raises(PaymentExecutionError):
+def test_extract_tx_hash_raises_unknown_on_missing_hash() -> None:
+    with pytest.raises(PaymentUnknownError):
         _extract_tx_hash('{"status": "ok"}')
 
 
-def test_extract_tx_hash_raises_on_non_json() -> None:
-    with pytest.raises(PaymentExecutionError):
+def test_extract_tx_hash_raises_unknown_on_non_json() -> None:
+    with pytest.raises(PaymentUnknownError):
         _extract_tx_hash("not json at all")
+
+
+def test_extract_tx_hash_raises_definite_on_explicit_error() -> None:
+    with pytest.raises(PaymentExecutionError):
+        _extract_tx_hash('{"error": "insufficient balance"}')
 
 
 def test_arc_receipt_recorder_builds_record_command() -> None:
