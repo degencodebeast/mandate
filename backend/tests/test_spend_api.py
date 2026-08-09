@@ -443,6 +443,29 @@ def test_spend_rejects_infinite_amount(components: Components) -> None:
     assert components.payments.calls == []
 
 
+def test_spend_rejects_oversized_exponent_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    response = _spend(components, mandate.id, amount="1e1000000")
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
+def test_create_mandate_rejects_oversized_exponent_budget(components: Components) -> None:
+    response = components.client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "1e1000000",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_spend_settles_with_fee_split_to_fee_wallet(components: Components) -> None:
     mandate = _create_mandate(components.store)
 

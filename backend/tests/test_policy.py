@@ -284,6 +284,20 @@ def test_amount_valid_rejects_negative() -> None:
     assert result.rule == "invalid_amount"
 
 
+def test_amount_valid_rejects_oversized_exponent() -> None:
+    result = amount_valid(_context(_mandate(), amount="1e1000000"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_undersized_exponent() -> None:
+    result = amount_valid(_context(_mandate(), amount="1e-20000"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
 def test_amount_valid_allows_finite_positive() -> None:
     result = amount_valid(_context(_mandate(), amount="0.01"))
 

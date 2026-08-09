@@ -160,13 +160,13 @@ def amount_valid(context: SpendContext) -> SpendResult:
     """Allow only when the amount is a finite, positive decimal.
 
     Non-finite, zero, and negative amounts are rejected before authority
-    changes (spec implementation decisions).
+    changes (spec implementation decisions). A finite amount with an exponent
+    so large that Postgres cannot store it is also rejected.
     """
-    value = _as_decimal(context.amount)
-    if not value.is_finite():
-        return _block("invalid_amount", "The amount must be finite.")
-    if value <= 0:
-        return _block("invalid_amount", "The amount must be positive.")
+    try:
+        finite_positive_decimal(context.amount)
+    except ValueError as error:
+        return _block("invalid_amount", str(error))
     return _allow()
 
 
@@ -244,6 +244,36 @@ def _allow() -> SpendResult:
 
 def _block(rule: str, reason: str) -> SpendResult:
     return SpendResult(decision=BLOCKED, rule=rule, reason=reason)
+
+
+# Postgres numeric holds at most 131072 digits before the decimal point and
+# 16383 after it. Money amounts never need anywhere near that range, but a
+# finite exponent such as 1e1000000 would be rejected by the database. The
+# validator rejects such values up front so no authority change or payment
+# adapter call can depend on them.
+_MAX_ADJUSTED_EXPONENT = 131071
+_MIN_ADJUSTED_EXPONENT = -16383
+
+
+def finite_positive_decimal(value: str) -> Decimal:
+    """Parse a finite, positive decimal amount or raise ``ValueError``.
+
+    ``NaN``, ``Infinity``, overflowing exponents, zero, and negative values are
+    rejected so no authority change ever depends on a malformed amount.
+    """
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"Not a decimal number: {value!r}") from error
+    if not amount.is_finite():
+        raise ValueError(f"Not a finite number: {value!r}")
+    if amount <= 0:
+        raise ValueError(f"Not a positive number: {value!r}")
+    if amount.adjusted() > _MAX_ADJUSTED_EXPONENT:
+        raise ValueError(f"Amount exponent is too large: {value!r}")
+    if amount.adjusted() < _MIN_ADJUSTED_EXPONENT:
+        raise ValueError(f"Amount exponent is too small: {value!r}")
+    return amount
 
 
 def _as_decimal(value: str) -> Decimal:
