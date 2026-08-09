@@ -44,6 +44,8 @@ class IntentStore(Protocol):
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None: ...
 
+    def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]: ...
+
     def transition(
         self,
         *,
@@ -137,6 +139,22 @@ class PostgresIntentStore:
         if row is None:
             return None
         return self._from_row(row)
+
+    def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]:
+        """Return the newest intents for a mandate, newest first."""
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, mandate_id, purpose_hash, service_url, amount,
+                       status, tx_hash, created_at, settled_at
+                FROM intents
+                WHERE mandate_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (mandate_id, limit),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
 
     def transition(
         self,

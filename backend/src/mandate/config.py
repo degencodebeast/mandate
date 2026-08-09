@@ -99,6 +99,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="Mandate Service wallet address that signs payments and receipts.",
     ),
+    ConfigurationVariable(
+        name="ARC_RPC_URL",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Arc JSON-RPC endpoint the service reads ReceiptRecorded events from.",
+    ),
+    ConfigurationVariable(
+        name="RECEIPT_READER_SCRIPT",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Path to the viem script that reads ReceiptRecorded events from Arc.",
+    ),
 )
 
 
@@ -156,3 +168,5 @@ class ApiSettings(BaseSettings):
     receipt_registry_address: str | None = None
     service_wallet_address: str | None = None
     circle_chain: str = "ARC-TESTNET"
+    arc_rpc_url: str | None = None
+    receipt_reader_script: str | None = None

@@ -34,6 +34,7 @@ def _mandate(
     expiry: datetime | None = None,
     status: str = "active",
     spent_total: str = "0",
+    fees_paid: str = "0",
 ) -> Mandate:
     return Mandate(
         id=uuid.uuid4(),
@@ -45,6 +46,7 @@ def _mandate(
         expiry=expiry,
         status=status,
         spent_total=spent_total,
+        fees_paid=fees_paid,
         wallet_address="0xwallet",
         circle_wallet_id="cw_1",
         created_at=datetime(2026, 8, 1, tzinfo=UTC),
