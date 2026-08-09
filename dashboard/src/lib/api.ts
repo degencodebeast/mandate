@@ -112,7 +112,7 @@ export class MandateClient {
   constructor(options: MandateClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.getAccessToken = options.getAccessToken;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   }
 
   async me(): Promise<{ user_id: string }> {

@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@/lib/auth";
+import { useAuth, useLiveCounter } from "@/lib/auth";
 
 /**
  * AuthGuard gates a page on a signed-in user. While loading it shows a
@@ -19,6 +19,7 @@ export function AuthGuard({
 }) {
   const auth = useAuth();
   const router = useRouter();
+  const liveCounter = useLiveCounter();
 
   useEffect(() => {
     if (auth.status === "guest") {
@@ -27,14 +28,12 @@ export function AuthGuard({
   }, [auth.status, router]);
 
   useEffect(() => {
-    if (live && auth.status === "authenticated") {
-      auth.setLive(true);
-      return () => {
-        auth.setLive(false);
-      };
-    }
-    return undefined;
-  }, [live, auth, auth.status, auth.setLive]);
+    if (!live) return undefined;
+    liveCounter.setLive(true);
+    return () => {
+      liveCounter.setLive(false);
+    };
+  }, [live, liveCounter]);
 
   if (auth.status !== "authenticated" && auth.status !== "live") {
     return (

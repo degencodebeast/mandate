@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AuthProvider } from "@/lib/auth";
+import { AuthProvider, LiveCounterProvider } from "@/lib/auth";
 import { AuthRoot } from "@/lib/AuthRoot";
 import { Shell } from "@/components/Shell";
 
@@ -15,11 +15,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <AuthProvider>
-          <AuthRoot>
-            <Shell>{children}</Shell>
-          </AuthRoot>
-        </AuthProvider>
+        <LiveCounterProvider>
+          <AuthProvider>
+            <AuthRoot>
+              <Shell>{children}</Shell>
+            </AuthRoot>
+          </AuthProvider>
+        </LiveCounterProvider>
       </body>
     </html>
   );

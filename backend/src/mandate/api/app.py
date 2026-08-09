@@ -170,6 +170,25 @@ def create_app(
         openapi_url=None,
     )
 
+    from fastapi.middleware.cors import CORSMiddleware
+
+    dashboard_origins_raw = (
+        active_settings.dashboard_origins
+        or "http://localhost:3000,http://localhost:3010,http://localhost:3011,http://localhost:3012"
+    )
+    dashboard_origins = [
+        origin.strip()
+        for origin in dashboard_origins_raw.split(",")
+        if origin.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=dashboard_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    )
+
     @app.get("/health")
     def health() -> JSONResponse:
         document = build_service_health(

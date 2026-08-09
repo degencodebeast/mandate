@@ -22,12 +22,38 @@ export interface AuthState {
   status: "loading" | "guest" | "authenticated" | "live";
   accessToken: string | null;
   userId: string | null;
-  setLive: (live: boolean) => void;
   signIn: (token: string, userId: string) => void;
   signOut: () => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
+const LiveContext = createContext<{ liveCount: number; setLive: (live: boolean) => void } | null>(null);
+
+/**
+ * LiveCount is a separate context so the authority banner can react to the
+ * "live" state without forcing a re-render of the whole auth tree on every
+ * keystroke. The live state is the number of subscribers currently holding
+ * a live session (e.g. an open live view page). When > 0, the banner is live.
+ */
+export function LiveCounterProvider({ children }: { children: React.ReactNode }) {
+  const [count, setCount] = useState(0);
+  const setLive = useCallback((live: boolean) => {
+    setCount((current) => {
+      if (live && current === 0) return 1;
+      if (!live && current === 1) return 0;
+      return current;
+    });
+  }, []);
+  return <LiveContext.Provider value={{ liveCount: count, setLive }}>{children}</LiveContext.Provider>;
+}
+
+export function useLiveCounter() {
+  const ctx = useContext(LiveContext);
+  if (!ctx) {
+    throw new Error("useLiveCounter must be used inside <LiveCounterProvider>");
+  }
+  return ctx;
+}
 
 const STORAGE_KEY = "mandate.dev.token";
 
@@ -68,50 +94,45 @@ function writeStored(value: StoredToken | null): void {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<{ accessToken: string | null; userId: string | null; live: boolean }>({
+  const [state, setState] = useState<{ accessToken: string | null; userId: string | null }>({
     accessToken: null,
     userId: null,
-    live: false,
   });
   const [hydrated, setHydrated] = useState(false);
+  const live = useLiveCounter();
 
   useEffect(() => {
     const stored = readStored();
     if (stored) {
-      setState({ accessToken: stored.token, userId: stored.userId, live: false });
+      setState({ accessToken: stored.token, userId: stored.userId });
     }
     setHydrated(true);
   }, []);
 
   const signIn = useCallback((token: string, userId: string) => {
-    setState({ accessToken: token, userId, live: false });
+    setState({ accessToken: token, userId });
     writeStored({ token, userId });
   }, []);
 
   const signOut = useCallback(() => {
-    setState({ accessToken: null, userId: null, live: false });
+    setState({ accessToken: null, userId: null });
     writeStored(null);
-  }, []);
-
-  const setLive = useCallback((live: boolean) => {
-    setState((prev) => (prev.live === live ? prev : { ...prev, live }));
   }, []);
 
   const value = useMemo<AuthState>(() => {
     let status: AuthState["status"];
     if (!hydrated) status = "loading";
     else if (!state.accessToken) status = "guest";
-    else if (state.live) status = "live";
+    else if (live.liveCount > 0) status = "live";
     else status = "authenticated";
     return {
       status,
       accessToken: state.accessToken,
       userId: state.userId,
-      setLive,
       signIn,
       signOut,
     };
-  }, [hydrated, state.accessToken, state.userId, state.live, setLive, signIn, signOut]);
+  }, [hydrated, state.accessToken, state.userId, live.liveCount, signIn, signOut]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

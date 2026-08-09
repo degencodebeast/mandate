@@ -135,6 +135,12 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="Filesystem path to the Node viem script that reads ReceiptRecorded events.",
     ),
+    ConfigurationVariable(
+        name="DASHBOARD_ORIGINS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Comma-separated list of dashboard origins allowed by CORS.",
+    ),
 )
 
 
@@ -198,6 +204,7 @@ class ApiSettings(BaseSettings):
     fee_percentage: float = 0.01
     arc_rpc_url: str | None = None
     receipt_reader_script: str | None = None
+    dashboard_origins: str | None = None
 
     @field_validator("fee_percentage")
     @classmethod
