@@ -400,6 +400,7 @@ class ScriptedBreakerStateStore:
                 failure_count=failure_count,
                 last_failure_at=now,
                 trial_allowed=False,
+                trial_epoch=current.trial_epoch,
             )
         else:
             state = BreakerState(
@@ -408,6 +409,7 @@ class ScriptedBreakerStateStore:
                 failure_count=failure_count,
                 last_failure_at=now,
                 trial_allowed=False,
+                trial_epoch=current.trial_epoch,
             )
         self._states[service_url] = state
         return state
@@ -422,6 +424,7 @@ class ScriptedBreakerStateStore:
             failure_count=0,
             last_failure_at=None,
             trial_allowed=False,
+            trial_epoch=current.trial_epoch if current is not None else 0,
         )
         self._states[service_url] = state
         return state

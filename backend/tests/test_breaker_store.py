@@ -346,6 +346,88 @@ def test_scripted_record_success_from_stale_owner_is_a_noop() -> None:
     assert state.trial_owner == "worker-1"
 
 
+def _scripted_replaced_trial(scripted: ScriptedBreakerStateStore) -> None:
+    """Consume a trial with worker-1, expire it, and consume with worker-2."""
+    scripted.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    scripted.recover_expired_trial(
+        service_url="https://service-a.example.com",
+        cutoff=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    scripted.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+
+
+def test_scripted_stale_owner_success_after_replacement_failure_is_a_noop() -> None:
+    scripted = ScriptedBreakerStateStore(
+        [
+            BreakerState(
+                service_url="https://service-a.example.com",
+                state="open",
+                failure_count=3,
+                last_failure_at=datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
+                trial_allowed=False,
+            )
+        ]
+    )
+    scripted.open_to_half_open(service_url="https://service-a.example.com")
+    _scripted_replaced_trial(scripted)
+    failed = scripted.record_failure(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        trial_epoch=2,
+        now=datetime(2026, 8, 9, 12, 2, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    assert failed.state == "open"
+
+    stale = scripted.record_success(
+        service_url="https://service-a.example.com", owner="worker-1", trial_epoch=1
+    )
+
+    assert stale.state == "open"
+    assert stale.trial_owner is None
+    assert stale.failure_count == failed.failure_count
+
+
+def test_scripted_stale_owner_failure_after_replacement_success_is_a_noop() -> None:
+    scripted = ScriptedBreakerStateStore(
+        [
+            BreakerState(
+                service_url="https://service-a.example.com",
+                state="open",
+                failure_count=3,
+                last_failure_at=datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
+                trial_allowed=False,
+            )
+        ]
+    )
+    scripted.open_to_half_open(service_url="https://service-a.example.com")
+    _scripted_replaced_trial(scripted)
+    succeeded = scripted.record_success(
+        service_url="https://service-a.example.com", owner="worker-2", trial_epoch=2
+    )
+    assert succeeded.state == "closed"
+    assert succeeded.failure_count == 0
+
+    stale = scripted.record_failure(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=1,
+        now=datetime(2026, 8, 9, 12, 2, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert stale.state == "closed"
+    assert stale.failure_count == 0
+
+
 def test_consume_trial_consumes_the_single_trial(store: PostgresBreakerStateStore) -> None:
     _insert_state(
         service_url="https://service-a.example.com", state="half_open", trial_allowed=True
