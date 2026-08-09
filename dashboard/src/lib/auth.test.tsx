@@ -15,6 +15,7 @@ function AuthDisplay() {
       <span data-testid="user">{auth.userId ?? "—"}</span>
       <button type="button" onClick={() => auth.signIn("abc.def.ghi", "did:privy:alice")}>Sign in</button>
       <button type="button" onClick={() => auth.signOut()}>Sign out</button>
+      <button type="button" onClick={() => auth.setLive(true)}>Set live</button>
     </div>
   );
 }
@@ -61,6 +62,25 @@ describe("AuthProvider", () => {
       expect(screen.getByTestId("status").textContent).toBe("authenticated");
     });
     expect(window.localStorage.getItem("mandate.dev.token")).toContain("did:privy:alice");
+  });
+
+  it("promotes to the live state when setLive is true", async () => {
+    render(
+      <AuthProvider>
+        <AuthDisplay />
+      </AuthProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("guest");
+    });
+    screen.getByText("Sign in").click();
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("authenticated");
+    });
+    screen.getByText("Set live").click();
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("live");
+    });
   });
 });
 

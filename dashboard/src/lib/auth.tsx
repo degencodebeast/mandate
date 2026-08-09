@@ -19,9 +19,10 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
  */
 
 export interface AuthState {
-  status: "loading" | "guest" | "authenticated";
+  status: "loading" | "guest" | "authenticated" | "live";
   accessToken: string | null;
   userId: string | null;
+  setLive: (live: boolean) => void;
   signIn: (token: string, userId: string) => void;
   signOut: () => void;
 }
@@ -67,40 +68,50 @@ function writeStored(value: StoredToken | null): void {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<{ accessToken: string | null; userId: string | null }>({
+  const [state, setState] = useState<{ accessToken: string | null; userId: string | null; live: boolean }>({
     accessToken: null,
     userId: null,
+    live: false,
   });
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const stored = readStored();
     if (stored) {
-      setState({ accessToken: stored.token, userId: stored.userId });
+      setState({ accessToken: stored.token, userId: stored.userId, live: false });
     }
     setHydrated(true);
   }, []);
 
   const signIn = useCallback((token: string, userId: string) => {
-    setState({ accessToken: token, userId });
+    setState({ accessToken: token, userId, live: false });
     writeStored({ token, userId });
   }, []);
 
   const signOut = useCallback(() => {
-    setState({ accessToken: null, userId: null });
+    setState({ accessToken: null, userId: null, live: false });
     writeStored(null);
   }, []);
 
-  const value = useMemo<AuthState>(
-    () => ({
-      status: !hydrated ? "loading" : state.accessToken ? "authenticated" : "guest",
+  const setLive = useCallback((live: boolean) => {
+    setState((prev) => (prev.live === live ? prev : { ...prev, live }));
+  }, []);
+
+  const value = useMemo<AuthState>(() => {
+    let status: AuthState["status"];
+    if (!hydrated) status = "loading";
+    else if (!state.accessToken) status = "guest";
+    else if (state.live) status = "live";
+    else status = "authenticated";
+    return {
+      status,
       accessToken: state.accessToken,
       userId: state.userId,
+      setLive,
       signIn,
       signOut,
-    }),
-    [hydrated, state.accessToken, state.userId, signIn, signOut],
-  );
+    };
+  }, [hydrated, state.accessToken, state.userId, state.live, setLive, signIn, signOut]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

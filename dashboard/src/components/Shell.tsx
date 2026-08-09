@@ -53,23 +53,28 @@ function AuthorityBanner({
   userId,
   onSignOut,
 }: {
-  state: "loading" | "guest" | "authenticated";
+  state: "loading" | "guest" | "authenticated" | "live";
   userId: string | null;
   onSignOut: () => void;
 }) {
   const label =
-    state === "authenticated"
+    state === "live"
       ? userId
-        ? `Signed in as ${formatAddress(userId, 12)}`
-        : "Signed in"
-      : state === "loading"
-        ? "Loading…"
-        : "Not signed in";
+        ? `Live · ${formatAddress(userId, 12)}`
+        : "Live"
+      : state === "authenticated"
+        ? userId
+          ? `Signed in as ${formatAddress(userId, 12)}`
+          : "Signed in"
+        : state === "loading"
+          ? "Loading…"
+          : "Not signed in";
+  const isAuthed = state === "authenticated" || state === "live";
   return (
     <div className="banner" data-state={state} role="status">
       <span className="dot" aria-hidden />
       <span style={{ flex: 1 }}>{label}</span>
-      {state === "authenticated" ? (
+      {isAuthed ? (
         <button
           type="button"
           className="btn btn-ghost btn-sm"

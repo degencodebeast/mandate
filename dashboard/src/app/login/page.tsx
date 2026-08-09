@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { decodeSubject, useAuth } from "@/lib/auth";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? null;
@@ -32,7 +33,7 @@ function LoginInner() {
   const next = search.get("next") ?? "/mandates";
 
   useEffect(() => {
-    if (auth.status === "authenticated") {
+    if (auth.status === "authenticated" || auth.status === "live") {
       router.replace(next);
     }
   }, [auth.status, next, router]);
@@ -44,44 +45,62 @@ function LoginInner() {
 }
 
 function PrivyLogin({ next }: { next: string }) {
+  const { ready, authenticated, login } = usePrivy();
+  useEffect(() => {
+    if (ready && authenticated) {
+      window.location.replace(next);
+    }
+  }, [ready, authenticated, next]);
   return (
     <section className="auth">
-      <aside className="auth-side">
-        <span className="eyebrow">Mandate · v0.1</span>
-        <h1 className="manifesto">
-          Agents can pay.<br />
-          <span className="accent">Mandate makes them pay safely.</span>
-        </h1>
-        <div className="stats">
-          <div className="stat">
-            <div className="v">$0.05</div>
-            <div className="l">per call</div>
-          </div>
-          <div className="stat">
-            <div className="v">1%</div>
-            <div className="l">fee</div>
-          </div>
-          <div className="stat">
-            <div className="v">Arc</div>
-            <div className="l">settlement</div>
-          </div>
-        </div>
-      </aside>
+      <AuthSide />
       <div className="auth-form-wrap">
         <h6 className="kicker">Sign in</h6>
         <h1>Continue with Privy</h1>
-        <p>Use your email, wallet, or social account. Mandate never holds your keys.</p>
-        <PrivyAuthButton next={next} />
+        <p>
+          Use your email, Google, GitHub, or wallet. Mandate never holds your
+          keys — Privy issues a short-lived access token that the dashboard
+          sends to the Mandate Service in <code className="mono">Authorization: Bearer</code>.
+        </p>
+        <button
+          type="button"
+          className="btn btn-primary btn-block"
+          onClick={() => {
+            login();
+          }}
+          disabled={!ready}
+        >
+          {!ready ? <span className="spinner" aria-hidden /> : "Continue with Privy"}
+        </button>
       </div>
     </section>
   );
 }
 
-function PrivyAuthButton({ next }: { next: string }) {
+function AuthSide() {
   return (
-    <a href="/api/privy/start" className="btn btn-primary btn-block">
-      Continue with Privy
-    </a>
+    <aside className="auth-side">
+      <span className="eyebrow">Mandate · v0.1</span>
+      <h1 className="manifesto">
+        Agents can pay.
+        <br />
+        <span className="accent">Mandate makes them pay safely.</span>
+      </h1>
+      <div className="stats">
+        <div className="stat">
+          <div className="v">$0.05</div>
+          <div className="l">per call</div>
+        </div>
+        <div className="stat">
+          <div className="v">1%</div>
+          <div className="l">fee</div>
+        </div>
+        <div className="stat">
+          <div className="v">Arc</div>
+          <div className="l">settlement</div>
+        </div>
+      </div>
+    </aside>
   );
 }
 
@@ -122,44 +141,25 @@ function DevLogin() {
 
   function paste() {
     setError(null);
-    const subject = decodeSubject(token);
-    if (!subject) {
+    const sub = decodeSubject(token);
+    if (!sub) {
       setError("Token is not a valid Privy access token.");
       return;
     }
-    auth.signIn(token, subject);
+    auth.signIn(token, sub);
     router.replace(next);
   }
 
   return (
     <section className="auth">
-      <aside className="auth-side">
-        <span className="eyebrow">Mandate · v0.1</span>
-        <h1 className="manifesto">
-          Agents can pay.<br />
-          <span className="accent">Mandate makes them pay safely.</span>
-        </h1>
-        <div className="stats">
-          <div className="stat">
-            <div className="v">$0.05</div>
-            <div className="l">per call</div>
-          </div>
-          <div className="stat">
-            <div className="v">1%</div>
-            <div className="l">fee</div>
-          </div>
-          <div className="stat">
-            <div className="v">Arc</div>
-            <div className="l">settlement</div>
-          </div>
-        </div>
-      </aside>
+      <AuthSide />
       <div className="auth-form-wrap">
         <h6 className="kicker">Dev sign in</h6>
         <h1>Continue</h1>
         <p>
-          Privy is not configured. Issue a local test JWT to explore the dashboard
-          against a Mandate Service running in <code className="mono">MANDATE_ENV=test</code>.
+          Privy is not configured. Issue a local test JWT to explore the
+          dashboard against a Mandate Service running in
+          <code className="mono"> MANDATE_ENV=test</code>.
         </p>
         <div className="row-2" role="tablist" style={{ marginBottom: "var(--space-4)" }}>
           <button
@@ -199,7 +199,9 @@ function DevLogin() {
                 autoComplete="off"
                 spellCheck={false}
               />
-              <span className="field-hint">This is the user_id the Mandate Service scopes data to.</span>
+              <span className="field-hint">
+                This is the user_id the Mandate Service scopes data to.
+              </span>
             </div>
             {error ? <div className="notice error">{error}</div> : null}
             <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
