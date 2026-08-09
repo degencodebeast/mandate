@@ -166,7 +166,8 @@ def _breaker_state(components: Components, service_url: str) -> dict[str, Any]:
     with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
         row = connection.execute(
             """
-            SELECT service_url, failure_count, state, last_failure_at, trial_allowed
+            SELECT service_url, failure_count, state, last_failure_at, trial_allowed,
+                   trial_owner, trial_started_at
             FROM breaker_state WHERE service_url = %s
             """,
             (service_url,),
