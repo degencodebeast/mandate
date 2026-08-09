@@ -34,7 +34,6 @@ from mandate.persistence.mandate_store import (
 )
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
-from mandate.reconciliation import ScriptedSettlementInspector, SettlementState
 from mandate.spend import MandateSpendService
 from mandate.spend.service import purpose_hash
 
@@ -90,9 +89,6 @@ class Components:
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
-            settlement_inspector=ScriptedSettlementInspector(
-                state=SettlementState(settled=False, tx_hash=None)
-            ),
             fee_collector=self.fees,
             fee_wallet_address="0xfeewallet",
             fee_percentage=0.01,
@@ -196,17 +192,17 @@ def test_spend_within_budget_settles_and_updates_spent_total(
 
 
 def test_spend_over_budget_blocks_without_paying(components: Components) -> None:
-    mandate = _create_mandate(components.store, budget="1.00", per_call_cap="5.00")
+    mandate = _create_mandate(components.store, budget="1.00", per_call_cap="1.00")
+    _spend(components, mandate.id, amount="0.75")
 
-    response = _spend(components, mandate.id, amount="2.00")
+    response = _spend(components, mandate.id, task_id="task-2", amount="0.50")
 
     assert response.status_code == 200
     document = response.json()
     assert document["outcome"] == "blocked: budget_exceeded"
     assert document["intent"]["status"] == "blocked"
     assert document["receipt"] is None
-    assert document["spent_total"] == "0"
-    assert components.payments.calls == []
+    assert len(components.payments.calls) == 1
 
 
 def test_spend_over_per_call_cap_blocks(components: Components) -> None:
@@ -288,7 +284,7 @@ def test_spend_settling_intent_returns_already_in_progress(components: Component
         service_url=_SERVICE_URL,
         amount="1.00",
     )
-    intent_store.transition(intent_id=intent.id, status="settling")
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
 
     response = _spend(components, mandate.id)
 
@@ -389,9 +385,6 @@ def test_spend_requires_auth() -> None:
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
-        settlement_inspector=ScriptedSettlementInspector(
-            state=SettlementState(settled=False, tx_hash=None)
-        ),
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -418,6 +411,33 @@ def test_spend_rejects_negative_amount(components: Components) -> None:
     mandate = _create_mandate(components.store)
 
     response = _spend(components, mandate.id, amount="-1.00")
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
+def test_spend_rejects_zero_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    response = _spend(components, mandate.id, amount="0")
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
+def test_spend_rejects_non_finite_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    response = _spend(components, mandate.id, amount="NaN")
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
+def test_spend_rejects_infinite_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    response = _spend(components, mandate.id, amount="Infinity")
 
     assert response.status_code == 422
     assert components.payments.calls == []
@@ -452,9 +472,6 @@ def test_spend_fee_transfer_failure_still_settles_payment(components: Components
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
-        settlement_inspector=ScriptedSettlementInspector(
-            state=SettlementState(settled=False, tx_hash=None)
-        ),
         fee_collector=FailingFeeCollector(),
         fee_wallet_address="0xfeewallet",
         fee_percentage=0.01,
@@ -499,9 +516,6 @@ def test_spend_receipt_failure_blocks_fee_transfer(components: Components) -> No
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=FailingReceiptRecorder(),
-        settlement_inspector=ScriptedSettlementInspector(
-            state=SettlementState(settled=False, tx_hash=None)
-        ),
         fee_collector=fees,
         fee_wallet_address="0xfeewallet",
         fee_percentage=0.01,
@@ -545,9 +559,6 @@ def test_spend_without_fee_config_collects_no_fee(components: Components) -> Non
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
-        settlement_inspector=ScriptedSettlementInspector(
-            state=SettlementState(settled=False, tx_hash=None)
-        ),
     )
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     app = create_app(
@@ -592,3 +603,109 @@ def test_status_shows_total_fees_paid_per_mandate(components: Components) -> Non
     assert len(settled) == 2
     assert all(intent["fee_amount"] == "0.010000" for intent in settled)
     assert all(intent["fee_tx_hash"] == "0xfeepaid" for intent in settled)
+
+
+def test_spend_concurrent_distinct_intents_cannot_exceed_budget(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store, budget="1.00", per_call_cap="1.00")
+    gate = threading.Event()
+    components.payments.gate = gate
+    barrier = threading.Barrier(2)
+
+    def spend_call(task_id: str) -> dict[str, Any]:
+        barrier.wait(timeout=5)
+        client = TestClient(components.app)
+        client.headers["Authorization"] = components.client.headers["Authorization"]
+        response = client.post(
+            f"/api/v1/mandates/{mandate.id}/spend",
+            json={
+                "task_id": task_id,
+                "purpose": "buy a research report",
+                "service_url": _SERVICE_URL,
+                "amount": "0.75",
+            },
+        )
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(spend_call, f"task-{index}") for index in range(2)]
+        deadline = time.monotonic() + 10
+        while sum(1 for future in futures if future.done()) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        gate.set()
+        documents = [future.result(timeout=10) for future in futures]
+
+    outcomes = [document["outcome"] for document in documents]
+    assert outcomes.count("permitted") == 1
+    assert outcomes.count("blocked: budget_exceeded") == 1
+    assert len(components.payments.calls) == 1
+    assert len(components.receipts.recorded) == 1
+    status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+    assert status["mandate"]["spent_total"] == "0.75"
+    assert status["mandate"]["reserved_total"] == "0.00"
+
+
+def test_spend_failed_admission_releases_no_authority_another_caller_owns(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store, budget="1.00", per_call_cap="1.00")
+    gate = threading.Event()
+    components.payments.gate = gate
+    barrier = threading.Barrier(2)
+
+    def spend_call(task_id: str) -> dict[str, Any]:
+        barrier.wait(timeout=5)
+        client = TestClient(components.app)
+        client.headers["Authorization"] = components.client.headers["Authorization"]
+        response = client.post(
+            f"/api/v1/mandates/{mandate.id}/spend",
+            json={
+                "task_id": task_id,
+                "purpose": "buy a research report",
+                "service_url": _SERVICE_URL,
+                "amount": "0.75",
+            },
+        )
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(spend_call, f"task-{index}") for index in range(2)]
+        deadline = time.monotonic() + 10
+        while sum(1 for future in futures if future.done()) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        denied = next(future.result(timeout=1) for future in futures if future.done())
+        status_while_held = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+        assert status_while_held["mandate"]["reserved_total"] == "0.75"
+        gate.set()
+        documents = [future.result(timeout=10) for future in futures]
+
+    outcomes = [document["outcome"] for document in documents]
+    assert outcomes.count("permitted") == 1
+    assert outcomes.count("blocked: budget_exceeded") == 1
+    assert denied["outcome"] == "blocked: budget_exceeded"
+    assert len(components.payments.calls) == 1
+    status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+    assert status["mandate"]["spent_total"] == "0.75"
+    assert status["mandate"]["reserved_total"] == "0.00"
+
+
+def test_spend_unknown_intent_returns_wait_or_request_review(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent_hash = purpose_hash("task-1", "buy a research report")
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    intent_store.transition(intent_id=intent.id, status="unknown", expected_status="pending")
+
+    response = _spend(components, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "unknown"
+    assert document["action"] in ("wait", "request_review")
+    assert document["receipt"] is None
+    assert components.payments.calls == []

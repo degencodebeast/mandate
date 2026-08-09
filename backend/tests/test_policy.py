@@ -16,12 +16,14 @@ from mandate.spend.policy import (
     ALLOW,
     BLOCKED,
     SpendContext,
+    amount_valid,
     breaker_closed,
     budget_remaining,
     evaluate,
     mandate_active,
     mandate_not_expired,
     per_call_cap,
+    per_call_cap_within_budget,
     service_allowed,
 )
 
@@ -36,6 +38,7 @@ def _mandate(
     expiry: datetime | None = None,
     status: str = "active",
     spent_total: str = "0",
+    reserved_total: str = "0",
     fees_paid: str = "0",
 ) -> Mandate:
     return Mandate(
@@ -48,6 +51,7 @@ def _mandate(
         expiry=expiry,
         status=status,
         spent_total=spent_total,
+        reserved_total=reserved_total,
         fees_total="0",
         wallet_address="0xwallet",
         circle_wallet_id="cw_1",
@@ -126,6 +130,199 @@ def test_service_allowed_blocks_unknown_service() -> None:
 def test_service_allowed_matches_url_prefix_pattern() -> None:
     mandate = _mandate(allowed_services=["https://service-a.example.com"])
     result = service_allowed(_context(mandate, service_url="https://service-a.example.com/path"))
+
+    assert result.decision == ALLOW
+
+
+def test_service_allowed_rejects_prefix_confusion_host() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(
+        _context(mandate, service_url="https://service-a.example.com.evil.test/pay")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_user_information_attack() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(
+        _context(mandate, service_url="https://service-a.example.com@evil.test/pay")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_similar_hostname() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(_context(mandate, service_url="https://service-a.example.com.evil"))
+
+    assert result.decision == BLOCKED
+
+
+def test_service_allowed_matches_default_port_explicitly() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(_context(mandate, service_url="https://service-a.example.com:443/pay"))
+
+    assert result.decision == ALLOW
+
+
+def test_service_allowed_rejects_other_port() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(
+        _context(mandate, service_url="https://service-a.example.com:8443/pay")
+    )
+
+    assert result.decision == BLOCKED
+
+
+def test_service_allowed_rejects_non_http_scheme() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(_context(mandate, service_url="file:///etc/passwd"))
+
+    assert result.decision == BLOCKED
+
+
+def test_service_allowed_rejects_invalid_port() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com"])
+    result = service_allowed(
+        _context(mandate, service_url="https://service-a.example.com:99999/pay")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_respects_path_boundary() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com/api"])
+    result = service_allowed(
+        _context(mandate, service_url="https://service-a.example.com/api-evil")
+    )
+
+    assert result.decision == BLOCKED
+
+
+def test_service_allowed_allows_exact_path() -> None:
+    mandate = _mandate(allowed_services=["https://service-a.example.com/api"])
+    result = service_allowed(_context(mandate, service_url="https://service-a.example.com/api"))
+
+    assert result.decision == ALLOW
+
+
+def test_service_allowed_rejects_child_path_of_path_scoped_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay/attacker?mode=two")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_changed_query_on_exact_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=two")
+    )
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_rejects_dropped_query_on_exact_entry() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(_context(mandate, service_url="https://trusted.example/api/pay"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "service_not_allowed"
+
+
+def test_service_allowed_allows_exact_url_with_query() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example/api/pay?mode=one"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=one")
+    )
+
+    assert result.decision == ALLOW
+
+
+def test_service_allowed_origin_entry_allows_child_path_and_query() -> None:
+    mandate = _mandate(allowed_services=["https://trusted.example"])
+    result = service_allowed(
+        _context(mandate, service_url="https://trusted.example/api/pay?mode=one")
+    )
+
+    assert result.decision == ALLOW
+
+
+def test_amount_valid_rejects_non_finite() -> None:
+    result = amount_valid(_context(_mandate(), amount="NaN"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_negative_infinity() -> None:
+    result = amount_valid(_context(_mandate(), amount="-Infinity"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_zero() -> None:
+    result = amount_valid(_context(_mandate(), amount="0"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_negative() -> None:
+    result = amount_valid(_context(_mandate(), amount="-1.00"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_allows_finite_positive() -> None:
+    result = amount_valid(_context(_mandate(), amount="0.01"))
+
+    assert result.decision == ALLOW
+
+
+def test_evaluate_rejects_invalid_amount_before_other_checks() -> None:
+    mandate = _mandate()
+    result = evaluate(_context(mandate, amount="NaN"))
+
+    assert result.rule == "invalid_amount"
+
+
+def test_per_call_cap_within_budget_blocks_cap_over_budget() -> None:
+    mandate = _mandate(budget="1.00", per_call_cap="2.00")
+    result = per_call_cap_within_budget(_context(mandate, amount="1.00"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "per_call_cap_exceeds_budget"
+
+
+def test_per_call_cap_within_budget_allows_cap_equal_to_budget() -> None:
+    mandate = _mandate(budget="1.00", per_call_cap="1.00")
+    result = per_call_cap_within_budget(_context(mandate, amount="1.00"))
+
+    assert result.decision == ALLOW
+
+
+def test_budget_remaining_blocks_reserved_authority() -> None:
+    mandate = _mandate(budget="1.00", reserved_total="0.75")
+    result = budget_remaining(_context(mandate, amount="0.50"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "budget_exceeded"
+
+
+def test_budget_remaining_allows_within_reserved_remaining() -> None:
+    mandate = _mandate(budget="1.00", reserved_total="0.25")
+    result = budget_remaining(_context(mandate, amount="0.50"))
 
     assert result.decision == ALLOW
 

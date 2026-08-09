@@ -21,11 +21,12 @@ resolve ``Annotated[...]`` dependency aliases.
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from mandate.api.connection import build_connection_string
@@ -41,7 +42,11 @@ from mandate.fees import CircleCliFeeCollector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
-from mandate.persistence.breaker_store import BreakerStateStore, PostgresBreakerStateStore
+from mandate.persistence.breaker_store import (
+    BreakerState,
+    BreakerStateStore,
+    PostgresBreakerStateStore,
+)
 from mandate.persistence.intent_store import Intent, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -52,10 +57,26 @@ from mandate.persistence.mandate_store import (
 )
 from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder
-from mandate.reconciliation import CircleCliSettlementInspector
 from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
-from mandate.status import MandateStatus, MandateStatusService
+from mandate.status import MandateStatusService
 from mandate.wallets import WalletBinder
+
+
+def _positive_finite_decimal(value: str) -> Decimal:
+    """Parse a finite, positive decimal amount or reject it.
+
+    ``NaN``, ``Infinity``, overflowing exponents, zero, and negative values are
+    rejected so no authority change ever depends on a malformed amount.
+    """
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError("must be a decimal number") from error
+    if not amount.is_finite():
+        raise ValueError("must be a finite number")
+    if amount <= 0:
+        raise ValueError("must be greater than zero")
+    return amount
 
 
 class CreateMandateRequest(BaseModel):
@@ -64,19 +85,33 @@ class CreateMandateRequest(BaseModel):
     budget: str
     per_call_cap: str
     allowed_services: list[str] = Field(default_factory=list)
-    expiry: str | None = None
+    expiry: datetime | None = None
 
     @field_validator("budget", "per_call_cap")
     @classmethod
-    def non_negative_amount(cls, value: str) -> str:
-        """Reject negative amounts."""
-        try:
-            amount = float(value)
-        except ValueError as error:
-            raise ValueError("must be a decimal number") from error
-        if amount < 0:
-            raise ValueError("must not be negative")
+    def finite_positive_amount(cls, value: str) -> str:
+        """Reject non-finite, zero, and negative amounts."""
+        _positive_finite_decimal(value)
         return value
+
+    @field_validator("expiry")
+    @classmethod
+    def expiry_is_typed_and_future(cls, value: datetime | None) -> datetime | None:
+        """Normalize the expiry to UTC and reject an already-expired authority."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        if value <= datetime.now(UTC):
+            raise ValueError("expiry must be in the future")
+        return value
+
+    @model_validator(mode="after")
+    def per_call_cap_within_budget(self) -> "CreateMandateRequest":
+        """Reject a per-call cap that exceeds the Mandate total."""
+        if Decimal(self.per_call_cap) > Decimal(self.budget):
+            raise ValueError("per_call_cap cannot exceed budget")
+        return self
 
 
 class SpendRequest(BaseModel):
@@ -89,26 +124,10 @@ class SpendRequest(BaseModel):
 
     @field_validator("amount")
     @classmethod
-    def non_negative_amount(cls, value: str) -> str:
-        """Reject negative or malformed amounts."""
-        try:
-            amount = float(value)
-        except ValueError as error:
-            raise ValueError("must be a decimal number") from error
-        if amount < 0:
-            raise ValueError("must not be negative")
+    def finite_positive_amount(cls, value: str) -> str:
+        """Reject non-finite, zero, and negative amounts."""
+        _positive_finite_decimal(value)
         return value
-
-
-def _parse_expiry(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    from datetime import datetime as _datetime
-
-    parsed = _datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 def create_app(
@@ -175,9 +194,7 @@ def create_app(
         or "http://localhost:3000,http://localhost:3010,http://localhost:3011,http://localhost:3012"
     )
     dashboard_origins = [
-        origin.strip()
-        for origin in dashboard_origins_raw.split(",")
-        if origin.strip()
+        origin.strip() for origin in dashboard_origins_raw.split(",") if origin.strip()
     ]
     app.add_middleware(
         CORSMiddleware,
@@ -238,7 +255,7 @@ def create_app(
             budget=command.budget,
             per_call_cap=command.per_call_cap,
             allowed_services=command.allowed_services,
-            expiry=_parse_expiry(command.expiry),
+            expiry=command.expiry,
         )
         mandate = active_store.create_mandate(
             user_id=identity.subject,
@@ -256,6 +273,7 @@ def create_app(
             "expiry": mandate.expiry.isoformat() if mandate.expiry else None,
             "status": mandate.status,
             "spent_total": mandate.spent_total,
+            "reserved_total": mandate.reserved_total,
             "fees_total": mandate.fees_total,
             "wallet_address": mandate.wallet_address,
             "circle_wallet_id": mandate.circle_wallet_id,
@@ -312,9 +330,7 @@ def create_app(
         if active_store is None:
             raise StarletteHTTPException(status_code=503)
         try:
-            mandate = active_store.get_mandate(
-                user_id=identity.subject, mandate_id=mandate_id
-            )
+            mandate = active_store.get_mandate(user_id=identity.subject, mandate_id=mandate_id)
         except NotFoundError:
             raise StarletteHTTPException(status_code=404) from None
         receipts = (
@@ -352,10 +368,6 @@ def _spend_service_from_settings(
         wallet_address=settings.service_wallet_address,
         chain=settings.circle_chain,
     )
-    settlement_inspector = CircleCliSettlementInspector(
-        chain=settings.circle_chain,
-        timeout_seconds=settings.reconciliation_timeout_seconds,
-    )
     breaker = (
         CircuitBreaker(
             store=breaker_store,
@@ -378,8 +390,6 @@ def _spend_service_from_settings(
         intent_store=intent_store,
         payment_executor=payment_executor,
         receipt_recorder=receipt_recorder,
-        settlement_inspector=settlement_inspector,
-        reconciliation_timeout_seconds=settings.reconciliation_timeout_seconds,
         fee_collector=fee_collector,
         fee_wallet_address=settings.fee_wallet_address,
         fee_percentage=settings.fee_percentage,
@@ -426,6 +436,7 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
     document: dict[str, object] = {
         "outcome": response.outcome,
         "reason": response.reason,
+        "action": response.action,
         "intent": _intent_to_json(intent),
         "spent_total": response.spent_total,
     }
@@ -477,6 +488,7 @@ def _mandate_to_json(mandate: Mandate) -> dict[str, object]:
         "expiry": mandate.expiry.isoformat() if mandate.expiry else None,
         "status": mandate.status,
         "spent_total": mandate.spent_total,
+        "reserved_total": mandate.reserved_total,
         "fees_total": mandate.fees_total,
         "fees_paid": mandate.fees_total,
         "wallet_address": mandate.wallet_address,
@@ -491,9 +503,7 @@ def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
         "service_url": state.service_url,
         "state": state.state,
         "failure_count": state.failure_count,
-        "last_failure_at": state.last_failure_at.isoformat()
-        if state.last_failure_at
-        else None,
+        "last_failure_at": state.last_failure_at.isoformat() if state.last_failure_at else None,
         "trial_allowed": state.trial_allowed,
     }
 
@@ -520,9 +530,7 @@ def _render_status(
     if status_service is None:
         raise StarletteHTTPException(status_code=503)
     try:
-        document = status_service.status(
-            user_id=identity.subject, mandate_id=mandate_id
-        )
+        document = status_service.status(user_id=identity.subject, mandate_id=mandate_id)
     except NotFoundError:
         raise StarletteHTTPException(status_code=404) from None
     return JSONResponse(
@@ -534,8 +542,6 @@ def _render_status(
             "remaining_budget": document.remaining_budget,
             "intents": [_intent_to_json(intent) for intent in document.recent_intents],
             "recent_intents": [_intent_to_json(intent) for intent in document.recent_intents],
-            "breaker_state": [
-                _breaker_state_to_json(state) for state in document.breaker_states
-            ],
+            "breaker_state": [_breaker_state_to_json(state) for state in document.breaker_states],
         }
     )

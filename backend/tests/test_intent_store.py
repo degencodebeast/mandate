@@ -16,6 +16,7 @@ import pytest
 from mandate.persistence.intent_store import (
     DuplicateIntentError,
     PostgresIntentStore,
+    UnexpectedIntentStateError,
 )
 from mandate.persistence.mandate_store import MandateParameters, PostgresMandateStore
 from mandate.persistence.migrations import apply_migrations
@@ -78,7 +79,9 @@ def test_transition_to_settling(
         amount="0.50",
     )
 
-    settling = intent_store.transition(intent_id=intent.id, status="settling")
+    settling = intent_store.transition(
+        intent_id=intent.id, status="settling", expected_status="pending"
+    )
 
     assert settling.status == "settling"
 
@@ -94,10 +97,12 @@ def test_transition_to_settled_records_tx_and_time(
         amount="0.50",
     )
     settled_at = datetime(2026, 8, 8, 12, 30, tzinfo=UTC)
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
 
     settled = intent_store.transition(
         intent_id=intent.id,
         status="settled",
+        expected_status="settling",
         tx_hash="0xsettled",
         settled_at=settled_at,
     )
@@ -118,9 +123,12 @@ def test_transition_to_settled_records_fee_fields(
         amount="1.00",
     )
 
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+
     settled = intent_store.transition(
         intent_id=intent.id,
         status="settled",
+        expected_status="settling",
         tx_hash="0xsettled",
         settled_at=datetime(2026, 8, 8, 12, 30, tzinfo=UTC),
         fee_amount="0.010000",
@@ -142,9 +150,43 @@ def test_transition_to_blocked(
         amount="0.50",
     )
 
-    blocked = intent_store.transition(intent_id=intent.id, status="blocked")
+    blocked = intent_store.transition(
+        intent_id=intent.id, status="blocked", expected_status="pending"
+    )
 
     assert blocked.status == "blocked"
+
+
+def test_transition_requires_expected_prior_state(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-cas",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+
+    with pytest.raises(UnexpectedIntentStateError):
+        intent_store.transition(intent_id=intent.id, status="settled", expected_status="pending")
+
+
+def test_transition_cas_does_not_overwrite_a_foreign_state(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-cas2",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+
+    with pytest.raises(UnexpectedIntentStateError):
+        intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
 
 
 def test_get_intent_returns_matching_intent(

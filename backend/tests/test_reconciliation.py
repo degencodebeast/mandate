@@ -1,16 +1,15 @@
-"""UNKNOWN-outcome handling and reconciliation against Arc (ticket 05b).
+"""UNKNOWN-outcome handling (ticket 10d).
 
 The seam is the Mandate Service API. Given a payment that times out or returns
-no usable response, the intent must move to UNKNOWN, retries must freeze, and
-the service must reconcile against Arc settlement state before allowing any
-further action. Tests inject scripted adapters (ADR-0024) so no network, Circle
-CLI, or real Arc is used. The Postgres stores use the real test database.
+no usable response, the intent must move to UNKNOWN and stay frozen. The
+permitted actions are WAIT or REQUEST_REVIEW. No reconciliation call, no safe
+retry, and no second Payment Authorization may occur. Tests inject scripted
+adapters (ADR-0024) so no network, Circle CLI, or real Arc is used. The Postgres
+stores use the real test database.
 """
 
 from __future__ import annotations
 
-import threading
-import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -22,7 +21,6 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.fees import ScriptedFeeCollector
 from mandate.payments import PaymentUnknownError
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
@@ -32,11 +30,6 @@ from mandate.persistence.mandate_store import (
 )
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
-from mandate.reconciliation import (
-    ReconciliationTimeoutError,
-    ScriptedSettlementInspector,
-    SettlementState,
-)
 from mandate.spend import MandateSpendService
 from mandate.spend.service import purpose_hash
 
@@ -58,25 +51,10 @@ class TimeoutPaymentExecutor:
         raise PaymentUnknownError("The payment call timed out.")
 
 
-class RetryPaymentExecutor:
-    """Raise an unknown outcome once, then settle. No network."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
-        self.calls.append((service_url, amount))
-        if len(self.calls) == 1:
-            raise PaymentUnknownError("The payment call timed out.")
-        return "0xsettled"
-
-
 def _build_app(
     store: PostgresMandateStore,
     payments: Any,
     receipts: ScriptedReceiptRecorder,
-    inspector: ScriptedSettlementInspector,
-    fees: ScriptedFeeCollector | None = None,
 ) -> TestClient:
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     spend_service = MandateSpendService(
@@ -84,11 +62,6 @@ def _build_app(
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=payments,
         receipt_recorder=receipts,
-        settlement_inspector=inspector,
-        reconciliation_timeout_seconds=30.0,
-        fee_collector=fees,
-        fee_wallet_address="0xfeewallet" if fees is not None else None,
-        fee_percentage=0.01,
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -146,157 +119,81 @@ def _spend(
     )
 
 
-def test_timeout_reconcile_settled_returns_receipt_no_second_payment(
+def test_timeout_intent_becomes_unknown_and_returns_request_review(
     client: TestClient,
 ) -> None:
     store = PostgresMandateStore(_DATABASE_URL)
     mandate = _create_mandate(store)
     receipts = ScriptedReceiptRecorder()
     payments = TimeoutPaymentExecutor()
-    inspector = ScriptedSettlementInspector(
-        state=SettlementState(settled=True, tx_hash="0xreconciled")
-    )
-    client = _build_app(store, payments, receipts, inspector)
+    client = _build_app(store, payments, receipts)
 
     response = _spend(client, mandate.id)
 
     assert response.status_code == 200
     document = response.json()
-    assert document["outcome"] == "blocked: duplicate_intent"
-    assert document["reason"] == "duplicate intent: reconciled, already settled"
-    assert document["intent"]["status"] == "settled"
-    assert document["intent"]["tx_hash"] == "0xreconciled"
-    assert document["receipt"] is not None
-    assert document["receipt"]["tx_hash"] == "0xreconciled"
-    assert document["receipt"]["intent_state"] == "settled"
-    assert document["spent_total"] == "1.00"
-    assert len(payments.calls) == 1
-    assert len(receipts.recorded) == 1
-
-
-def test_timeout_reconcile_settled_splits_fee(client: TestClient) -> None:
-    store = PostgresMandateStore(_DATABASE_URL)
-    mandate = _create_mandate(store)
-    receipts = ScriptedReceiptRecorder()
-    payments = TimeoutPaymentExecutor()
-    fees = ScriptedFeeCollector()
-    inspector = ScriptedSettlementInspector(
-        state=SettlementState(settled=True, tx_hash="0xreconciled")
-    )
-    client = _build_app(store, payments, receipts, inspector, fees=fees)
-
-    response = _spend(client, mandate.id)
-
-    document = response.json()
-    assert document["outcome"] == "blocked: duplicate_intent"
-    assert document["intent"]["status"] == "settled"
-    assert document["intent"]["fee_amount"] == "0.010000"
-    assert document["intent"]["fee_tx_hash"] == "0xfeepaid"
-    assert document["receipt"]["fee_amount"] == "0.010000"
-    assert document["receipt"]["fee_tx_hash"] == "0xfeepaid"
-    assert document["spent_total"] == "1.00"
-    assert fees.calls == [("0xwallet123", "0xfeewallet", "0.010000")]
-    status = client.get(f"/api/v1/mandates/{mandate.id}/status")
-    assert status.json()["mandate"]["fees_total"] == "0.010000"
-
-
-def test_timeout_reconcile_not_settled_safe_retry_settles_once(
-    client: TestClient,
-) -> None:
-    store = PostgresMandateStore(_DATABASE_URL)
-    mandate = _create_mandate(store)
-    receipts = ScriptedReceiptRecorder()
-    payments = RetryPaymentExecutor()
-    inspector = ScriptedSettlementInspector(state=SettlementState(settled=False, tx_hash=None))
-    client = _build_app(store, payments, receipts, inspector)
-
-    first = _spend(client, mandate.id)
-    assert first.json()["outcome"] == "unknown: not_settled"
-    assert first.json()["reason"] == "reconciled: not settled, one safe retry allowed"
-    assert first.json()["intent"]["status"] == "not_settled"
-    assert first.json()["receipt"] is None
-
-    retry = _spend(client, mandate.id)
-    document = retry.json()
-    assert document["outcome"] == "permitted"
-    assert document["intent"]["status"] == "settled"
-    assert document["intent"]["tx_hash"] == "0xsettled"
-    assert document["receipt"] is not None
-    assert document["receipt"]["tx_hash"] == "0xsettled"
-    assert document["receipt"]["intent_state"] == "settled"
-    assert document["spent_total"] == "1.00"
-    assert len(payments.calls) == 2
-    assert len(receipts.recorded) == 1
-
-
-def test_timeout_unknown_concurrent_retry_returns_reconciling(
-    client: TestClient,
-) -> None:
-    store = PostgresMandateStore(_DATABASE_URL)
-    mandate = _create_mandate(store)
-    receipts = ScriptedReceiptRecorder()
-    payments = TimeoutPaymentExecutor()
-    gate = threading.Event()
-    inspector = ScriptedSettlementInspector(
-        state=SettlementState(settled=True, tx_hash="0xreconciled"), gate=gate
-    )
-    client = _build_app(store, payments, receipts, inspector)
-
-    def first_spend() -> None:
-        _spend(client, mandate.id)
-
-    thread = threading.Thread(target=first_spend)
-    thread.start()
-
-    intent_store = PostgresIntentStore(_DATABASE_URL)
-    intent_hash = purpose_hash("task-1", "buy a research report")
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        intent = intent_store.get_intent(mandate_id=mandate.id, purpose_hash=intent_hash)
-        if intent is not None and intent.status in ("unknown", "reconciling"):
-            break
-        time.sleep(0.01)
-
-    concurrent = _spend(client, mandate.id)
-    gate.set()
-    thread.join(timeout=5)
-
-    document = concurrent.json()
-    assert document["outcome"] == "unknown: reconciling"
-    assert document["reason"] == "reconciling, retries frozen"
-    assert document["intent"]["status"] in ("unknown", "reconciling")
-    assert document["receipt"] is None
-
-
-def test_reconciliation_timeout_keeps_intent_unknown(client: TestClient) -> None:
-    store = PostgresMandateStore(_DATABASE_URL)
-    mandate = _create_mandate(store)
-    receipts = ScriptedReceiptRecorder()
-    payments = TimeoutPaymentExecutor()
-    inspector = ScriptedSettlementInspector(
-        state=None, timeout=ReconciliationTimeoutError("Arc is unreachable.")
-    )
-    client = _build_app(store, payments, receipts, inspector)
-
-    response = _spend(client, mandate.id)
-
-    document = response.json()
-    assert document["outcome"] == "unknown: reconciling"
-    assert document["reason"] == "reconciling, retries frozen"
+    assert document["outcome"] == "unknown"
+    assert document["action"] in ("wait", "request_review")
     assert document["intent"]["status"] == "unknown"
     assert document["receipt"] is None
     assert len(payments.calls) == 1
+    assert receipts.recorded == []
 
 
-def test_status_reads_unknown_intent_reconciliation_state(client: TestClient) -> None:
+def test_unknown_intent_second_spend_returns_frozen_no_new_authorization(
+    client: TestClient,
+) -> None:
     store = PostgresMandateStore(_DATABASE_URL)
     mandate = _create_mandate(store)
     receipts = ScriptedReceiptRecorder()
     payments = TimeoutPaymentExecutor()
-    inspector = ScriptedSettlementInspector(
-        state=None, timeout=ReconciliationTimeoutError("Arc is unreachable.")
+    client = _build_app(store, payments, receipts)
+
+    first = _spend(client, mandate.id)
+    second = _spend(client, mandate.id)
+
+    assert first.json()["outcome"] == "unknown"
+    second_document = second.json()
+    assert second_document["outcome"] == "unknown"
+    assert second_document["action"] in ("wait", "request_review")
+    assert second_document["intent"]["status"] == "unknown"
+    assert second_document["receipt"] is None
+    assert len(payments.calls) == 1
+    assert receipts.recorded == []
+
+
+def test_unknown_intent_different_service_still_frozen(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent_hash = purpose_hash("task-1", "buy a research report")
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
     )
-    client = _build_app(store, payments, receipts, inspector)
+    intent_store.transition(intent_id=intent.id, status="unknown", expected_status="pending")
+    payments = TimeoutPaymentExecutor()
+    receipts = ScriptedReceiptRecorder()
+    client = _build_app(store, payments, receipts)
+
+    response = _spend(client, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "unknown"
+    assert document["action"] in ("wait", "request_review")
+    assert document["intent"]["status"] == "unknown"
+    assert document["receipt"] is None
+    assert payments.calls == []
+
+
+def test_status_reads_unknown_intent_state(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    receipts = ScriptedReceiptRecorder()
+    payments = TimeoutPaymentExecutor()
+    client = _build_app(store, payments, receipts)
     _spend(client, mandate.id)
 
     response = client.get(f"/api/v1/mandates/{mandate.id}/status")
@@ -307,3 +204,5 @@ def test_status_reads_unknown_intent_reconciliation_state(client: TestClient) ->
     unknown = [intent for intent in document["intents"] if intent["status"] == "unknown"]
     assert len(unknown) == 1
     assert unknown[0]["purpose_hash"] == purpose_hash("task-1", "buy a research report")
+    assert document["mandate"]["reserved_total"] == "1.00"
+    assert document["mandate"]["spent_total"] == "0"

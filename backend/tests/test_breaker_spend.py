@@ -33,7 +33,6 @@ from mandate.persistence.mandate_store import (
 )
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
-from mandate.reconciliation import ScriptedSettlementInspector, SettlementState
 from mandate.spend import BREAKER_OPEN_REASON, CircuitBreaker, MandateSpendService
 from mandate.status import MandateStatusService
 
@@ -98,9 +97,6 @@ class Components:
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
-            settlement_inspector=ScriptedSettlementInspector(
-                state=SettlementState(settled=False, tx_hash=None)
-            ),
             fee_collector=self.fees,
             fee_wallet_address="0xfeewallet",
             fee_percentage=0.01,
@@ -215,7 +211,8 @@ def test_three_unknown_outcomes_open_breaker_and_next_spend_blocked(
 
     for task in ("task-1", "task-2", "task-3"):
         response = _spend(components, mandate.id, task_id=task)
-        assert response.json()["outcome"] == "unknown: not_settled"
+        assert response.json()["outcome"] == "unknown"
+        assert response.json()["action"] in ("wait", "request_review")
 
     assert _breaker_state(components, _SERVICE_A)["state"] == "open"
     assert _breaker_state(components, _SERVICE_A)["failure_count"] == 3

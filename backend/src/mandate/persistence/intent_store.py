@@ -6,8 +6,9 @@ transitions it through the execution-safety state machine (ADR-0031).
 
 The intents table exists in migration 0001. Ticket 04 exercises the
 PENDING → SETTLING → SETTLED and PENDING → BLOCKED legs. Ticket 05 adds the
-dedupe and lock legs. Ticket 05b adds the UNKNOWN → RECONCILING → SETTLED /
-NOT_SETTLED legs and the retry_count used to bound one safe retry. The UNIQUE
+dedupe and lock legs. Ticket 10d removes the NOT_SETTLED safe-retry and
+reconciliation legs and makes every transition compare-and-set: an update
+applies only from the expected prior state (ADR-0032). The UNIQUE
 (mandate_id, purpose_hash) constraint means one economic intent maps to at most
 one row.
 """
@@ -32,6 +33,16 @@ class IntentNotFoundError(LookupError):
     """The requested intent is absent."""
 
 
+class UnexpectedIntentStateError(ValueError):
+    """The intent is not in the expected prior state (ADR-0032).
+
+    A payment-gating transition uses compare-and-set semantics. The update
+    applies only when the intent is in the expected prior state. When it is
+    not, this error reports the mismatch so the caller can route by the real
+    state instead of issuing another Payment Authorization.
+    """
+
+
 class IntentStore(Protocol):
     """The persistence seam for intent lifecycle."""
 
@@ -53,6 +64,7 @@ class IntentStore(Protocol):
         *,
         intent_id: uuid.UUID,
         status: str,
+        expected_status: str,
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
         retry_count: int | None = None,
@@ -175,13 +187,20 @@ class PostgresIntentStore:
         *,
         intent_id: uuid.UUID,
         status: str,
+        expected_status: str,
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
         retry_count: int | None = None,
         fee_amount: str | None = None,
         fee_tx_hash: str | None = None,
     ) -> Intent:
-        """Update the intent state and return the updated row."""
+        """Update the intent state with compare-and-set semantics (ADR-0032).
+
+        The update applies only when the intent is in ``expected_status``. When
+        it is not, the transition raises ``UnexpectedIntentStateError`` instead
+        of overwriting a state owned by another caller. This is the durable
+        guarantee that a payment-permitting transition has one owner.
+        """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
@@ -191,16 +210,45 @@ class PostgresIntentStore:
                     retry_count = COALESCE(%s, retry_count),
                     fee_amount = COALESCE(%s, fee_amount),
                     fee_tx_hash = COALESCE(%s, fee_tx_hash)
-                WHERE id = %s
+                WHERE id = %s AND status = %s
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash
                 """,
-                (status, tx_hash, settled_at, retry_count, fee_amount, fee_tx_hash, intent_id),
+                (
+                    status,
+                    tx_hash,
+                    settled_at,
+                    retry_count,
+                    fee_amount,
+                    fee_tx_hash,
+                    intent_id,
+                    expected_status,
+                ),
             ).fetchone()
         if row is None:
-            raise IntentNotFoundError("The intent does not exist.")
+            raise self._state_mismatch_error(intent_id, expected_status)
         return self._from_row(row)
+
+    def _state_mismatch_error(self, intent_id: uuid.UUID, expected_status: str) -> Exception:
+        """Return the typed error for a failed compare-and-set transition.
+
+        The intent either does not exist or is in a different state. Both are
+        reported so the caller never issues a Payment Authorization from a state
+        it does not own.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                SELECT status FROM intents WHERE id = %s
+                """,
+                (intent_id,),
+            ).fetchone()
+        if row is None:
+            return IntentNotFoundError("The intent does not exist.")
+        return UnexpectedIntentStateError(
+            f"Intent {intent_id} is {row['status']}, not {expected_status}."
+        )
 
     def _from_row(self, row: dict[str, Any]) -> Intent:
         return Intent(
