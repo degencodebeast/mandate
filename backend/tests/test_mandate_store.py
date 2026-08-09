@@ -50,6 +50,7 @@ def test_create_mandate_persists_all_fields(store: PostgresMandateStore) -> None
     ]
     assert mandate.status == "active"
     assert mandate.spent_total == "0"
+    assert mandate.fees_paid == "0"
     assert mandate.agent_identity == ""
     assert mandate.wallet_address is None
     assert mandate.circle_wallet_id is None
@@ -121,3 +122,17 @@ def test_get_mandate_raises_not_found_for_other_user(store: PostgresMandateStore
 
     with pytest.raises(LookupError):
         store.get_mandate(user_id="did:privy:user-y", mandate_id=created.id)
+
+
+def test_record_spend_increments_spent_total(store: PostgresMandateStore) -> None:
+    created = store.create_mandate(
+        user_id="did:privy:user-z",
+        parameters=MandateParameters(
+            budget="5.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+
+    updated = store.record_spend(mandate_id=created.id, amount="1.25")
+
+    assert updated.spent_total == "1.25"
+    assert updated.fees_paid == "0"

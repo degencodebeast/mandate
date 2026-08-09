@@ -1,0 +1,138 @@
+"""Receipt reader adapter tests.
+
+The seam is the ReceiptReader. It lists on-Arc receipts for a user's ERC-8004
+agent identity by reading ReceiptRecorded events from the Receipt Registry
+contract on Arc (ADR-0016). The production adapter runs a viem script via
+subprocess (ADR-0012); tests script the runner so no Node, viem, or network is
+required (ADR-0024).
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from datetime import UTC, datetime
+
+import pytest
+
+from mandate.receipt_reader import (
+    ArcReceipt,
+    ReceiptReadError,
+    ScriptedReceiptReader,
+    ViemReceiptReader,
+    _parse_receipts,
+)
+
+
+def test_scripted_reader_returns_fixed_receipts() -> None:
+    receipt = ArcReceipt(
+        user_id="did:erc8004:agent",
+        task_id="task-1",
+        purpose_hash="hash-1",
+        service_url="https://service-a.example.com",
+        amount="1.00",
+        tx_hash="0xsettled",
+        timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+    )
+
+    reader = ScriptedReceiptReader([receipt])
+
+    assert reader.list_receipts(user_id="did:erc8004:agent") == [receipt]
+
+
+def test_scripted_reader_defaults_to_empty() -> None:
+    reader = ScriptedReceiptReader()
+
+    assert reader.list_receipts(user_id="did:erc8004:agent") == []
+
+
+def test_parse_receipts_reads_all_fields() -> None:
+    output = json.dumps(
+        [
+            {
+                "userId": "did:erc8004:agent",
+                "taskId": "task-1",
+                "purposeHash": "hash-1",
+                "serviceUrl": "https://service-a.example.com",
+                "amount": "1.00",
+                "txHash": "0xsettled",
+                "timestamp": 1783600000,
+            }
+        ]
+    )
+
+    receipts = _parse_receipts(output)
+
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt.user_id == "did:erc8004:agent"
+    assert receipt.task_id == "task-1"
+    assert receipt.purpose_hash == "hash-1"
+    assert receipt.service_url == "https://service-a.example.com"
+    assert receipt.amount == "1.00"
+    assert receipt.tx_hash == "0xsettled"
+
+
+def test_parse_receipts_handles_missing_optional_fields() -> None:
+    output = json.dumps([{"amount": "0.50", "txHash": "0xabc", "userId": "", "timestamp": None}])
+
+    receipts = _parse_receipts(output)
+
+    assert len(receipts) == 1
+    assert receipts[0].user_id == ""
+    assert receipts[0].amount == "0.50"
+    assert receipts[0].tx_hash == "0xabc"
+
+
+def test_parse_receipts_rejects_missing_required_field() -> None:
+    with pytest.raises(ReceiptReadError):
+        _parse_receipts(json.dumps([{"userId": "did:erc8004:agent", "timestamp": 0}]))
+
+
+def test_parse_receipts_rejects_non_list_output() -> None:
+    with pytest.raises(ReceiptReadError):
+        _parse_receipts(json.dumps({"receipts": []}))
+
+
+def test_parse_receipts_rejects_non_json_output() -> None:
+    with pytest.raises(ReceiptReadError):
+        _parse_receipts("not json at all")
+
+
+def test_viem_reader_uses_scripted_runner() -> None:
+    calls: list[list[str]] = []
+    output = json.dumps(
+        [
+            {
+                "userId": "did:erc8004:agent",
+                "taskId": "task-1",
+                "purposeHash": "hash-1",
+                "serviceUrl": "https://service-a.example.com",
+                "amount": "1.00",
+                "txHash": "0xsettled",
+                "timestamp": 1783600000,
+            }
+        ]
+    )
+
+    def runner(command: Sequence[str]) -> str:
+        calls.append(list(command))
+        return output
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=runner,
+    )
+
+    receipts = reader.list_receipts(user_id="did:erc8004:agent")
+
+    assert len(calls) == 1
+    command = calls[0]
+    assert command[0] == "node"
+    assert "--registry" in command
+    assert "0xregistry" in command
+    assert "--user-id" in command
+    assert "did:erc8004:agent" in command
+    assert receipts[0].tx_hash == "0xsettled"

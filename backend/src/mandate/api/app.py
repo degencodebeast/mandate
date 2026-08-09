@@ -42,14 +42,17 @@ from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
 from mandate.persistence.intent_store import Intent, PostgresIntentStore
 from mandate.persistence.mandate_store import (
+    Mandate,
     MandateParameters,
     MandateStore,
     NotFoundError,
     PostgresMandateStore,
 )
+from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder
 from mandate.reconciliation import CircleCliSettlementInspector
 from mandate.spend import MandateSpendService, SpendResponse
+from mandate.status import MandateStatus, MandateStatusService
 from mandate.wallets import WalletBinder
 
 
@@ -114,6 +117,9 @@ def create_app(
     wallet_binder: WalletBinder | None = None,
     identity_registrar: AgentIdentityRegistrar | None = None,
     spend_service: MandateSpendService | None = None,
+    status_service: MandateStatusService | None = None,
+    breaker_store: BreakerStateStore | None = None,
+    receipt_reader: ReceiptReader | None = None,
 ) -> FastAPI:
     """Build the FastAPI web application.
 
@@ -140,6 +146,15 @@ def create_app(
         else None
     )
     active_spend = spend_service or _spend_service_from_settings(active_settings, active_store)
+    active_breaker = breaker_store or (
+        PostgresBreakerStateStore(active_settings.database_url)
+        if active_settings.database_url is not None
+        else None
+    )
+    active_status = status_service or _status_service_from_settings(
+        active_settings, active_store, active_breaker
+    )
+    active_receipts = receipt_reader or _receipt_reader_from_settings(active_settings)
 
     app = FastAPI(
         title="Mandate API",
@@ -303,6 +318,39 @@ def _spend_service_from_settings(
         receipt_recorder=receipt_recorder,
         settlement_inspector=settlement_inspector,
         reconciliation_timeout_seconds=settings.reconciliation_timeout_seconds,
+    )
+
+
+def _status_service_from_settings(
+    settings: ApiSettings,
+    store: MandateStore | None,
+    breaker_store: BreakerStateStore | None,
+) -> MandateStatusService | None:
+    """Build the production status service when every dependency is configured."""
+    if store is None or breaker_store is None:
+        return None
+    if settings.database_url is None:
+        return None
+    intent_store = PostgresIntentStore(settings.database_url)
+    return MandateStatusService(
+        mandate_store=store,
+        intent_store=intent_store,
+        breaker_store=breaker_store,
+    )
+
+
+def _receipt_reader_from_settings(settings: ApiSettings) -> ReceiptReader | None:
+    """Build the production viem receipt reader when every dependency is configured."""
+    if settings.receipt_registry_address is None:
+        return None
+    if settings.arc_rpc_url is None:
+        return None
+    if settings.receipt_reader_script is None:
+        return None
+    return ViemReceiptReader(
+        registry_address=settings.receipt_registry_address,
+        rpc_url=settings.arc_rpc_url,
+        script=settings.receipt_reader_script,
     )
 
 

@@ -64,6 +64,7 @@ class Mandate:
     expiry: datetime | None
     status: str
     spent_total: str
+    fees_paid: str
     wallet_address: str | None
     circle_wallet_id: str | None
     created_at: datetime
@@ -97,9 +98,9 @@ class PostgresMandateStore:
                 """
                 INSERT INTO mandates (
                     id, user_id, agent_identity, budget, per_call_cap,
-                    allowed_services, expiry, status, spent_total,
+                    allowed_services, expiry, status, spent_total, fees_paid,
                     wallet_address, circle_wallet_id, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     mandate_id,
@@ -110,6 +111,7 @@ class PostgresMandateStore:
                     Jsonb(parameters.allowed_services),
                     parameters.expiry,
                     "active",
+                    "0",
                     "0",
                     wallet_address,
                     circle_wallet_id,
@@ -124,7 +126,7 @@ class PostgresMandateStore:
             row = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total,
+                       allowed_services, expiry, status, spent_total, fees_paid,
                        wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE id = %s AND user_id = %s
@@ -141,7 +143,7 @@ class PostgresMandateStore:
             rows = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total,
+                       allowed_services, expiry, status, spent_total, fees_paid,
                        wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE user_id = %s
@@ -165,7 +167,7 @@ class PostgresMandateStore:
                 SET spent_total = spent_total + %s
                 WHERE id = %s
                 RETURNING id, user_id, agent_identity, budget, per_call_cap,
-                          allowed_services, expiry, status, spent_total,
+                          allowed_services, expiry, status, spent_total, fees_paid,
                           wallet_address, circle_wallet_id, created_at
                 """,
                 (amount, mandate_id),
@@ -185,6 +187,7 @@ class PostgresMandateStore:
             expiry=row["expiry"],
             status=row["status"],
             spent_total=_money(row["spent_total"]),
+            fees_paid=_money(row["fees_paid"]),
             wallet_address=row["wallet_address"],
             circle_wallet_id=row["circle_wallet_id"],
             created_at=row["created_at"],

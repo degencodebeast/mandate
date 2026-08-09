@@ -171,3 +171,78 @@ def test_duplicate_purpose_hash_raises(
             service_url="https://service-a.example.com",
             amount="0.50",
         )
+
+
+def test_list_intents_returns_newest_first(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate_id = _mandate_id(mandate_store)
+    first = intent_store.create_intent(
+        mandate_id=mandate_id,
+        purpose_hash="hash-7",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    second = intent_store.create_intent(
+        mandate_id=mandate_id,
+        purpose_hash="hash-8",
+        service_url="https://service-a.example.com",
+        amount="0.75",
+    )
+
+    listed = intent_store.list_intents(mandate_id=mandate_id)
+
+    assert [intent.id for intent in listed] == [second.id, first.id]
+
+
+def test_list_intents_respects_limit(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate_id = _mandate_id(mandate_store)
+    for index in range(5):
+        intent_store.create_intent(
+            mandate_id=mandate_id,
+            purpose_hash=f"hash-limit-{index}",
+            service_url="https://service-a.example.com",
+            amount="0.10",
+        )
+
+    listed = intent_store.list_intents(mandate_id=mandate_id, limit=2)
+
+    assert len(listed) == 2
+
+
+def test_list_intents_scopes_by_mandate(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    first_mandate = mandate_store.create_mandate(
+        user_id="did:privy:user",
+        parameters=MandateParameters(
+            budget="10.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    second_mandate = mandate_store.create_mandate(
+        user_id="did:privy:user",
+        parameters=MandateParameters(
+            budget="10.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    intent_store.create_intent(
+        mandate_id=first_mandate.id,
+        purpose_hash="hash-a",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.create_intent(
+        mandate_id=second_mandate.id,
+        purpose_hash="hash-b",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+
+    listed = intent_store.list_intents(mandate_id=first_mandate.id)
+
+    assert [intent.purpose_hash for intent in listed] == ["hash-a"]
