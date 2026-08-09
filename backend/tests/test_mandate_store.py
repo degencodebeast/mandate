@@ -136,17 +136,3 @@ def test_record_spend_increments_spent_total(store: PostgresMandateStore) -> Non
 
     assert updated.spent_total == "1.25"
     assert updated.fees_paid == "0"
-
-
-def test_record_fees_increments_fees_paid(store: PostgresMandateStore) -> None:
-    created = store.create_mandate(
-        user_id="did:privy:user-w",
-        parameters=MandateParameters(
-            budget="5.00", per_call_cap="1.00", allowed_services=[], expiry=None
-        ),
-    )
-
-    updated = store.record_fees(mandate_id=created.id, amount="0.01")
-
-    assert updated.fees_paid == "0.01"
-    assert updated.spent_total == "0"

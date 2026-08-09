@@ -422,6 +422,8 @@ def _status_to_json(status: MandateStatus) -> dict[str, object]:
     mandate = status.mandate
     return {
         "mandate": _mandate_to_json(mandate),
+        "spent_total": mandate.spent_total,
+        "fees_paid": mandate.fees_paid,
         "remaining_budget": status.remaining_budget,
         "recent_intents": [_intent_to_json(intent) for intent in status.recent_intents],
         "breaker_state": [_breaker_to_json(state) for state in status.breaker_states],

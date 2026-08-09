@@ -154,7 +154,8 @@ def test_get_mandate_status_returns_budget_meter_data(components: Components) ->
     document = response.json()
     assert document["mandate"]["id"] == str(mandate.id)
     assert document["mandate"]["budget"] == "10.00"
-    assert document["mandate"]["spent_total"] == "0"
+    assert document["spent_total"] == "0"
+    assert document["fees_paid"] == "0"
     assert document["remaining_budget"] == "10.00"
     assert document["recent_intents"][0]["service_url"] == _SERVICE_URL
     assert document["breaker_state"][0]["service_url"] == _SERVICE_URL

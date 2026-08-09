@@ -40,8 +40,6 @@ class MandateStore(Protocol):
 
     def record_spend(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
 
-    def record_fees(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
-
 
 @dataclass(frozen=True)
 class MandateParameters:
@@ -167,29 +165,6 @@ class PostgresMandateStore:
                 """
                 UPDATE mandates
                 SET spent_total = spent_total + %s
-                WHERE id = %s
-                RETURNING id, user_id, agent_identity, budget, per_call_cap,
-                          allowed_services, expiry, status, spent_total, fees_paid,
-                          wallet_address, circle_wallet_id, created_at
-                """,
-                (amount, mandate_id),
-            ).fetchone()
-        if row is None:
-            raise NotFoundError("Mandate not found or belongs to another user")
-        return self._from_row(row)
-
-    def record_fees(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
-        """Add one fee transfer to the mandate's fees_paid total.
-
-        The update adds the amount to the stored numeric total atomically, so a
-        concurrent fee never clobbers the running counter. It is scoped to no
-        user because the caller already resolved the mandate.
-        """
-        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
-            row = connection.execute(
-                """
-                UPDATE mandates
-                SET fees_paid = fees_paid + %s
                 WHERE id = %s
                 RETURNING id, user_id, agent_identity, budget, per_call_cap,
                           allowed_services, expiry, status, spent_total, fees_paid,
