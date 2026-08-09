@@ -452,11 +452,60 @@ def test_spend_rejects_oversized_exponent_amount(components: Components) -> None
     assert components.payments.calls == []
 
 
+def test_spend_rejects_full_fractional_scale_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    amount = "1." + ("0" * 16383) + "1"
+
+    response = _spend(components, mandate.id, amount=amount)
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
+def test_spend_rejects_unicode_decimal_amount(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    unicode_decimal = "\u0661\u066b\u0660"  # Arabic-Indic one point zero
+
+    response = _spend(components, mandate.id, amount=unicode_decimal)
+
+    assert response.status_code == 422
+    assert components.payments.calls == []
+
+
 def test_create_mandate_rejects_oversized_exponent_budget(components: Components) -> None:
     response = components.client.post(
         "/api/v1/mandates",
         json={
             "budget": "1e1000000",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_full_fractional_scale_budget(components: Components) -> None:
+    response = components.client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "1." + ("0" * 16383) + "1",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_unicode_decimal_budget(components: Components) -> None:
+    unicode_decimal = "\u0661\u066b\u0660"  # Arabic-Indic one point zero
+    response = components.client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": unicode_decimal,
             "per_call_cap": "1.00",
             "allowed_services": [],
             "expiry": None,
