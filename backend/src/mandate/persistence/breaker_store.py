@@ -32,7 +32,7 @@ from psycopg.rows import dict_row
 
 _SELECT_FROM_BREAKER = """
     SELECT service_url, failure_count, state, last_failure_at, trial_allowed,
-           trial_owner, trial_started_at
+           trial_owner, trial_started_at, trial_epoch
     FROM breaker_state
 """
 
@@ -47,10 +47,16 @@ class BreakerStateStore(Protocol):
     def get_or_create_state(self, *, service_url: str) -> BreakerState: ...
 
     def record_failure(
-        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
+        self,
+        *,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        now: datetime,
+        failure_threshold: int,
     ) -> BreakerState: ...
 
-    def record_success(self, *, service_url: str, owner: str) -> BreakerState: ...
+    def record_success(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState: ...
 
     def open_to_half_open(self, *, service_url: str) -> BreakerState | None: ...
 
@@ -69,8 +75,13 @@ class BreakerState:
 
     ``trial_owner`` and ``trial_started_at`` record the durable owner and the
     start time of the single HALF_OPEN trial when it is consumed (ticket 10f).
-    Both are NULL when no trial is active. An abandoned trial expires through
-    ``recover_expired_trial`` so the breaker can never stay blocked forever.
+    Both are NULL when no trial is active. ``trial_epoch`` is a monotonic
+    generation counter: every consume increments it and the consuming caller
+    presents that epoch when it records an outcome, so an outcome from an
+    expired or superseded trial is permanently stale even after the
+    replacement outcome clears ``trial_owner``. An abandoned trial expires
+    through ``recover_expired_trial`` so the breaker can never stay blocked
+    forever.
     """
 
     service_url: str
@@ -80,6 +91,7 @@ class BreakerState:
     trial_allowed: bool
     trial_owner: str | None = None
     trial_started_at: datetime | None = None
+    trial_epoch: int = 0
 
 
 class PostgresBreakerStateStore:
@@ -117,8 +129,8 @@ class PostgresBreakerStateStore:
                     """
                     INSERT INTO breaker_state (
                         id, service_url, failure_count, state, last_failure_at,
-                        trial_allowed, trial_owner, trial_started_at
-                    ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL)
+                        trial_allowed, trial_owner, trial_started_at, trial_epoch
+                    ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
                     """,
                     (uuid.uuid4(), service_url),
                 )
@@ -131,27 +143,37 @@ class PostgresBreakerStateStore:
         return self._from_row(row)
 
     def record_failure(
-        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
+        self,
+        *,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        now: datetime,
+        failure_threshold: int,
     ) -> BreakerState:
         """Increment the failure count and trip the breaker when due.
 
         A HALF_OPEN trial failure always trips the breaker. A CLOSED breaker
         trips when the incremented count reaches the threshold. last_failure_at
         is always refreshed so the OPEN cooldown restarts from this moment. A
-        resolved trial clears its durable owner and start time.
+        resolved trial clears its durable owner and start time but keeps its
+        durable epoch.
 
-        The write is owner-aware (ticket 10f): a caller that does not own the
-        active trial (a stale outcome arriving after the trial expired and a new
-        owner acquired it) cannot mutate the breaker. The update applies only
-        when no trial is active or the caller owns the current trial.
+        The write is epoch-aware (ticket 10f): a caller that consumed a trial
+        presents the epoch it was granted, and the outcome applies only when
+        that epoch matches the current trial epoch and the caller owns the
+        current trial. A normal CLOSED-state payment (``trial_epoch == 0``) is
+        accepted only when no trial is active. An outcome from an expired or
+        superseded trial is therefore permanently stale even after the
+        replacement outcome clears the active owner.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 INSERT INTO breaker_state (
                     id, service_url, failure_count, state, last_failure_at,
-                    trial_allowed, trial_owner, trial_started_at
-                ) VALUES (%s, %s, 1, 'closed', %s, false, NULL, NULL)
+                    trial_allowed, trial_owner, trial_started_at, trial_epoch
+                ) VALUES (%s, %s, 1, 'closed', %s, false, NULL, NULL, 0)
                 ON CONFLICT (service_url) DO UPDATE SET
                     failure_count = breaker_state.failure_count + 1,
                     last_failure_at = EXCLUDED.last_failure_at,
@@ -163,12 +185,27 @@ class PostgresBreakerStateStore:
                         WHEN breaker_state.failure_count + 1 >= %s THEN 'open'
                         ELSE breaker_state.state
                     END
-                WHERE breaker_state.trial_owner IS NULL
-                   OR breaker_state.trial_owner = %s
+                WHERE (
+                    (%s = 0 AND breaker_state.trial_owner IS NULL)
+                    OR (
+                        %s > 0
+                        AND breaker_state.trial_epoch = %s
+                        AND breaker_state.trial_owner = %s
+                    )
+                )
                 RETURNING service_url, failure_count, state, last_failure_at,
-                          trial_allowed, trial_owner, trial_started_at
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
                 """,
-                (uuid.uuid4(), service_url, now, failure_threshold, owner),
+                (
+                    uuid.uuid4(),
+                    service_url,
+                    now,
+                    failure_threshold,
+                    trial_epoch,
+                    trial_epoch,
+                    trial_epoch,
+                    owner,
+                ),
             ).fetchone()
             if row is None:
                 row = connection.execute(
@@ -179,22 +216,24 @@ class PostgresBreakerStateStore:
             raise RuntimeError("record_failure did not return a breaker row")
         return self._from_row(row)
 
-    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+    def record_success(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState:
         """Reset the breaker to CLOSED with a zero failure count.
 
-        The write is owner-aware (ticket 10f): a caller that does not own the
-        active trial (a stale outcome arriving after the trial expired and a
-        new owner acquired it) cannot close the breaker under a new owner. The
-        reset applies only when no trial is active or the caller owns the
-        current trial.
+        The write is epoch-aware (ticket 10f): a caller that consumed a trial
+        presents the epoch it was granted, and the reset applies only when that
+        epoch matches the current trial epoch and the caller owns the current
+        trial. A normal CLOSED-state payment (``trial_epoch == 0``) is accepted
+        only when no trial is active. An outcome from an expired or superseded
+        trial is therefore permanently stale even after the replacement outcome
+        clears the active owner.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 INSERT INTO breaker_state (
                     id, service_url, failure_count, state, last_failure_at,
-                    trial_allowed, trial_owner, trial_started_at
-                ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL)
+                    trial_allowed, trial_owner, trial_started_at, trial_epoch
+                ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
                 ON CONFLICT (service_url) DO UPDATE SET
                     failure_count = 0,
                     state = 'closed',
@@ -202,12 +241,25 @@ class PostgresBreakerStateStore:
                     trial_allowed = false,
                     trial_owner = NULL,
                     trial_started_at = NULL
-                WHERE breaker_state.trial_owner IS NULL
-                   OR breaker_state.trial_owner = %s
+                WHERE (
+                    (%s = 0 AND breaker_state.trial_owner IS NULL)
+                    OR (
+                        %s > 0
+                        AND breaker_state.trial_epoch = %s
+                        AND breaker_state.trial_owner = %s
+                    )
+                )
                 RETURNING service_url, failure_count, state, last_failure_at,
-                          trial_allowed, trial_owner, trial_started_at
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
                 """,
-                (uuid.uuid4(), service_url, owner),
+                (
+                    uuid.uuid4(),
+                    service_url,
+                    trial_epoch,
+                    trial_epoch,
+                    trial_epoch,
+                    owner,
+                ),
             ).fetchone()
             if row is None:
                 row = connection.execute(
@@ -228,7 +280,7 @@ class PostgresBreakerStateStore:
                     trial_owner = NULL, trial_started_at = NULL
                 WHERE service_url = %s AND state = 'open'
                 RETURNING service_url, failure_count, state, last_failure_at,
-                          trial_allowed, trial_owner, trial_started_at
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
                 """,
                 (service_url,),
             ).fetchone()
@@ -240,17 +292,19 @@ class PostgresBreakerStateStore:
         """Atomically consume the single HALF_OPEN trial, if still available.
 
         Only one caller can win the conditional update. The winner records the
-        durable trial owner and the trial start time; every other caller gets
-        None (ticket 10f, ADR-0032).
+        durable trial owner and the trial start time and advances the durable
+        trial epoch, which it must present when it records its outcome; every
+        other caller gets None (ticket 10f, ADR-0032).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE breaker_state
-                SET trial_allowed = false, trial_owner = %s, trial_started_at = %s
+                SET trial_allowed = false, trial_owner = %s, trial_started_at = %s,
+                    trial_epoch = breaker_state.trial_epoch + 1
                 WHERE service_url = %s AND state = 'half_open' AND trial_allowed = true
                 RETURNING service_url, failure_count, state, last_failure_at,
-                          trial_allowed, trial_owner, trial_started_at
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
                 """,
                 (owner, now, service_url),
             ).fetchone()
@@ -264,7 +318,9 @@ class PostgresBreakerStateStore:
         A consumed HALF_OPEN trial whose start time is older than the cutoff is
         abandoned: the worker can never record an outcome. Reset it so one new
         trial becomes available. Only one caller can win the conditional update;
-        the reset clears the durable owner and start time (ADR-0032, ticket 10f).
+        the reset clears the durable owner and start time but keeps the durable
+        epoch so a stale owner from an earlier generation can never write
+        (ADR-0032, ticket 10f).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
@@ -276,7 +332,7 @@ class PostgresBreakerStateStore:
                   AND trial_started_at IS NOT NULL
                   AND trial_started_at <= %s
                 RETURNING service_url, failure_count, state, last_failure_at,
-                          trial_allowed, trial_owner, trial_started_at
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
                 """,
                 (service_url, cutoff),
             ).fetchone()
@@ -293,6 +349,7 @@ class PostgresBreakerStateStore:
             trial_allowed=row["trial_allowed"],
             trial_owner=row["trial_owner"],
             trial_started_at=row["trial_started_at"],
+            trial_epoch=row["trial_epoch"],
         )
 
 
@@ -324,10 +381,16 @@ class ScriptedBreakerStateStore:
         )
 
     def record_failure(
-        self, *, service_url: str, owner: str, now: datetime, failure_threshold: int
+        self,
+        *,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        now: datetime,
+        failure_threshold: int,
     ) -> BreakerState:
         current = self.get_or_create_state(service_url=service_url)
-        if current.trial_owner is not None and current.trial_owner != owner:
+        if not self._epoch_claim_valid(current, owner, trial_epoch):
             return current
         failure_count = current.failure_count + 1
         if current.state == "half_open" or failure_count >= failure_threshold:
@@ -349,9 +412,9 @@ class ScriptedBreakerStateStore:
         self._states[service_url] = state
         return state
 
-    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+    def record_success(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState:
         current = self._states.get(service_url)
-        if current is not None and current.trial_owner is not None and current.trial_owner != owner:
+        if current is not None and not self._epoch_claim_valid(current, owner, trial_epoch):
             return current
         state = BreakerState(
             service_url=service_url,
@@ -363,6 +426,20 @@ class ScriptedBreakerStateStore:
         self._states[service_url] = state
         return state
 
+    def _epoch_claim_valid(self, current: BreakerState, owner: str, trial_epoch: int) -> bool:
+        """Return whether an outcome write may apply to the current state.
+
+        A caller that consumed a trial presents the epoch it was granted: the
+        outcome applies only when that epoch matches the current trial epoch
+        and the caller owns the current trial. A normal CLOSED-state payment
+        (``trial_epoch == 0``) applies only when no trial is active. An outcome
+        from an expired or superseded trial is permanently stale even after the
+        replacement outcome clears ``trial_owner``.
+        """
+        if trial_epoch == 0:
+            return current.trial_owner is None
+        return current.trial_epoch == trial_epoch and current.trial_owner == owner
+
     def open_to_half_open(self, *, service_url: str) -> BreakerState | None:
         current = self._states.get(service_url)
         if current is None or current.state != "open":
@@ -373,6 +450,7 @@ class ScriptedBreakerStateStore:
             failure_count=current.failure_count,
             last_failure_at=current.last_failure_at,
             trial_allowed=True,
+            trial_epoch=current.trial_epoch,
         )
         self._states[service_url] = state
         return state
@@ -389,6 +467,7 @@ class ScriptedBreakerStateStore:
             trial_allowed=False,
             trial_owner=owner,
             trial_started_at=now,
+            trial_epoch=current.trial_epoch + 1,
         )
         self._states[service_url] = state
         return state
@@ -409,6 +488,7 @@ class ScriptedBreakerStateStore:
             failure_count=current.failure_count,
             last_failure_at=current.last_failure_at,
             trial_allowed=True,
+            trial_epoch=current.trial_epoch,
         )
         self._states[service_url] = state
         return state

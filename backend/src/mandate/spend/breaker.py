@@ -81,28 +81,39 @@ class CircuitBreaker:
                     state = recovered
         return state
 
-    def record_failure(self, *, service_url: str, owner: str) -> BreakerState:
+    def record_failure(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState:
         """Count one failure or unknown outcome toward the trip threshold.
 
-        The outcome write is owner-aware (ticket 10f): a stale owner whose trial
-        already expired and was re-acquired cannot reopen a trial held by a new
-        owner.
+        The outcome write is epoch-aware (ticket 10f): a caller that consumed a
+        trial presents the epoch it was granted, and the store applies the write
+        only when that epoch matches the current trial epoch and the caller owns
+        the current trial. A normal CLOSED-state payment passes
+        ``trial_epoch == 0``. A stale owner from an expired or superseded trial
+        is permanently rejected even after the replacement outcome clears the
+        active owner.
         """
         return self._store.record_failure(
             service_url=service_url,
             owner=owner,
+            trial_epoch=trial_epoch,
             now=self._now(),
             failure_threshold=self._failure_threshold,
         )
 
-    def record_success(self, *, service_url: str, owner: str) -> BreakerState:
+    def record_success(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState:
         """Reset the breaker to CLOSED after a confirmed settlement.
 
-        The outcome write is owner-aware (ticket 10f): a stale owner whose trial
-        already expired and was re-acquired cannot close a trial held by a new
-        owner.
+        The outcome write is epoch-aware (ticket 10f): a caller that consumed a
+        trial presents the epoch it was granted, and the store applies the write
+        only when that epoch matches the current trial epoch and the caller owns
+        the current trial. A normal CLOSED-state payment passes
+        ``trial_epoch == 0``. A stale owner from an expired or superseded trial
+        is permanently rejected even after the replacement outcome clears the
+        active owner.
         """
-        return self._store.record_success(service_url=service_url, owner=owner)
+        return self._store.record_success(
+            service_url=service_url, owner=owner, trial_epoch=trial_epoch
+        )
 
     def consume_trial(self, *, service_url: str, owner: str) -> BreakerState | None:
         """Consume the single HALF_OPEN trial, or None when unavailable.

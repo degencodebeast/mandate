@@ -220,6 +220,9 @@ class MandateSpendService:
                 if routed is not None:
                     return routed
                 return self._breaker_blocked_response(blocked, mandate)
+            trial_epoch = trial.trial_epoch
+        else:
+            trial_epoch = 0
         settling, routed = self._transition_settling(
             intent, mandate, task_id=task_id, intent_hash=intent_hash
         )
@@ -251,7 +254,9 @@ class MandateSpendService:
                 amount=amount,
             )
         except PaymentUnknownError:
-            self._breaker.record_failure(service_url=service_url, owner=str(settling.id))
+            self._breaker.record_failure(
+                service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
+            )
             unknown, routed = self._transition_or_route(
                 settling,
                 mandate,
@@ -264,7 +269,9 @@ class MandateSpendService:
                 return routed
             return self._unknown_outcome_response(unknown, mandate, action=ACTION_REQUEST_REVIEW)
         except PaymentExecutionError as error:
-            self._breaker.record_failure(service_url=service_url, owner=str(settling.id))
+            self._breaker.record_failure(
+                service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
+            )
             self._mandate_store.release_reservation(mandate_id=mandate.id, amount=amount)
             blocked, routed = self._transition_or_route(
                 settling,
@@ -286,7 +293,9 @@ class MandateSpendService:
         referenced = self._intent_store.store_payment_reference(
             intent_id=settling.id, reference=tx_hash
         )
-        self._breaker.record_success(service_url=service_url, owner=str(settling.id))
+        self._breaker.record_success(
+            service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
+        )
         return self._finalize(
             intent=referenced,
             mandate=mandate,

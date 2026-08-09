@@ -143,6 +143,7 @@ def test_record_failure_increments_failure_count(store: PostgresBreakerStateStor
     state = store.record_failure(
         service_url="https://service-a.example.com",
         owner="worker-1",
+        trial_epoch=0,
         now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
         failure_threshold=3,
     )
@@ -160,6 +161,7 @@ def test_record_failure_opens_the_breaker_at_the_threshold(
     state = store.record_failure(
         service_url="https://service-a.example.com",
         owner="worker-1",
+        trial_epoch=0,
         now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
         failure_threshold=3,
     )
@@ -176,6 +178,7 @@ def test_record_failure_on_half_open_reopens_the_breaker(
     state = store.record_failure(
         service_url="https://service-a.example.com",
         owner="worker-1",
+        trial_epoch=0,
         now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
         failure_threshold=3,
     )
@@ -192,7 +195,9 @@ def test_record_success_resets_to_closed(store: PostgresBreakerStateStore) -> No
         last_failure_at=datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
     )
 
-    state = store.record_success(service_url="https://service-a.example.com", owner="worker-1")
+    state = store.record_success(
+        service_url="https://service-a.example.com", owner="worker-1", trial_epoch=0
+    )
 
     assert state.state == "closed"
     assert state.failure_count == 0
@@ -260,6 +265,7 @@ def test_record_failure_clears_trial_owner(store: PostgresBreakerStateStore) -> 
     state = store.record_failure(
         service_url="https://service-a.example.com",
         owner="worker-1",
+        trial_epoch=1,
         now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
         failure_threshold=3,
     )
@@ -282,6 +288,7 @@ def test_record_failure_from_stale_owner_is_a_noop(store: PostgresBreakerStateSt
     state = store.record_failure(
         service_url="https://service-a.example.com",
         owner="worker-2",
+        trial_epoch=1,
         now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
         failure_threshold=3,
     )
@@ -302,7 +309,9 @@ def test_record_success_from_stale_owner_is_a_noop(store: PostgresBreakerStateSt
         now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
     )
 
-    state = store.record_success(service_url="https://service-a.example.com", owner="worker-2")
+    state = store.record_success(
+        service_url="https://service-a.example.com", owner="worker-2", trial_epoch=1
+    )
 
     assert state.state == "half_open"
     assert state.trial_allowed is False
@@ -329,7 +338,9 @@ def test_scripted_record_success_from_stale_owner_is_a_noop() -> None:
         now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
     )
 
-    state = scripted.record_success(service_url="https://service-a.example.com", owner="worker-2")
+    state = scripted.record_success(
+        service_url="https://service-a.example.com", owner="worker-2", trial_epoch=1
+    )
 
     assert state.state == "half_open"
     assert state.trial_owner == "worker-1"
@@ -353,4 +364,134 @@ def test_consume_trial_consumes_the_single_trial(store: PostgresBreakerStateStor
 
     assert first is not None
     assert first.trial_allowed is False
+    assert first.trial_owner == "worker-1"
     assert second is None
+
+
+def test_consume_trial_increments_the_trial_epoch(store: PostgresBreakerStateStore) -> None:
+    _insert_state(
+        service_url="https://service-a.example.com", state="half_open", trial_allowed=True
+    )
+
+    first = store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    assert first is not None
+    store.recover_expired_trial(
+        service_url="https://service-a.example.com",
+        cutoff=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    second = store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+
+    assert second is not None
+    assert second.trial_epoch == first.trial_epoch + 1
+
+
+def test_stale_owner_success_after_replacement_failure_is_a_noop(
+    store: PostgresBreakerStateStore,
+) -> None:
+    _insert_state(
+        service_url="https://service-a.example.com", state="half_open", trial_allowed=True
+    )
+    store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    store.recover_expired_trial(
+        service_url="https://service-a.example.com",
+        cutoff=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    failed = store.record_failure(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        trial_epoch=2,
+        now=datetime(2026, 8, 9, 12, 2, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    assert failed.state == "open"
+
+    stale = store.record_success(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=1,
+    )
+
+    assert stale.state == "open"
+    assert stale.trial_owner is None
+    assert stale.failure_count == failed.failure_count
+
+
+def test_stale_owner_failure_after_replacement_success_is_a_noop(
+    store: PostgresBreakerStateStore,
+) -> None:
+    _insert_state(
+        service_url="https://service-a.example.com", state="half_open", trial_allowed=True
+    )
+    store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    store.recover_expired_trial(
+        service_url="https://service-a.example.com",
+        cutoff=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    store.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+    )
+    succeeded = store.record_success(
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        trial_epoch=2,
+    )
+    assert succeeded.state == "closed"
+    assert succeeded.failure_count == 0
+
+    stale = store.record_failure(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=1,
+        now=datetime(2026, 8, 9, 12, 2, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert stale.state == "closed"
+    assert stale.failure_count == 0
+
+
+def test_normal_closed_state_payments_still_record(
+    store: PostgresBreakerStateStore,
+) -> None:
+    _insert_state(service_url="https://service-a.example.com", failure_count=1)
+
+    failed = store.record_failure(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    assert failed.state == "closed"
+    assert failed.failure_count == 2
+
+    succeeded = store.record_success(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+    )
+    assert succeeded.state == "closed"
+    assert succeeded.failure_count == 0

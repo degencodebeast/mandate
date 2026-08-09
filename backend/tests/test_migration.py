@@ -370,6 +370,7 @@ def _downgrade_to_pre_0006() -> None:
     with psycopg.connect(_DATABASE_URL) as connection:
         connection.execute("ALTER TABLE breaker_state DROP COLUMN trial_owner")
         connection.execute("ALTER TABLE breaker_state DROP COLUMN trial_started_at")
+        connection.execute("ALTER TABLE breaker_state DROP COLUMN trial_epoch")
         connection.execute(
             "DELETE FROM schema_migrations WHERE version = %s",
             ("0006_trial_ownership",),
@@ -406,7 +407,7 @@ def test_migration_0006_adds_trial_ownership_columns(reset_database: None) -> No
 
     with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
         row = connection.execute(
-            "SELECT state, trial_allowed, trial_owner, trial_started_at "
+            "SELECT state, trial_allowed, trial_owner, trial_started_at, trial_epoch "
             "FROM breaker_state WHERE service_url = %s",
             ("https://service-a.example.com",),
         ).fetchone()
@@ -415,6 +416,7 @@ def test_migration_0006_adds_trial_ownership_columns(reset_database: None) -> No
     assert row["trial_allowed"] is True
     assert row["trial_owner"] is None
     assert row["trial_started_at"] is None
+    assert row["trial_epoch"] == 0
 
 
 def test_migration_0006_backfills_only_stranded_half_open_trials(
