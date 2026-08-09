@@ -25,7 +25,7 @@ from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
 from mandate.fees import ScriptedFeeCollector
-from mandate.payments import PaymentExecutionError
+from mandate.payments import PaymentExecutionError, PaymentResult
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -53,13 +53,13 @@ class RecordingPaymentExecutor:
         self.failure: PaymentExecutionError | None = None
         self.gate: threading.Event | None = None
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         if self.failure is not None:
             raise self.failure
         self.calls.append((service_url, amount))
         if self.gate is not None:
             self.gate.wait(timeout=10)
-        return self.tx_hash
+        return PaymentResult(payment_reference=self.tx_hash)
 
 
 class FailingReceiptRecorder:

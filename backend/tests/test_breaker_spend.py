@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.payments import PaymentExecutionError, PaymentUnknownError
+from mandate.payments import PaymentExecutionError, PaymentResult, PaymentUnknownError
 from mandate.persistence.breaker_store import BreakerStateStore, PostgresBreakerStateStore
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
@@ -68,13 +68,13 @@ class RecordingPaymentExecutor:
         self.hard_failure: PaymentExecutionError | None = None
         self.unknown_failure: PaymentUnknownError | None = None
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         if self.unknown_failure is not None:
             raise self.unknown_failure
         if self.hard_failure is not None:
             raise self.hard_failure
         self.calls.append((service_url, amount))
-        return self.tx_hash
+        return PaymentResult(payment_reference=self.tx_hash)
 
 
 class HeldPaymentExecutor:
@@ -91,13 +91,13 @@ class HeldPaymentExecutor:
         self.tx_hash = "0xsettled"
         self.hard_failure: PaymentExecutionError | None = None
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         if self.hard_failure is not None:
             raise self.hard_failure
         self.calls.append((service_url, amount))
         self.entered.set()
         self.release.wait(timeout=20)
-        return self.tx_hash
+        return PaymentResult(payment_reference=self.tx_hash)
 
 
 class TimeoutHonoringPaymentExecutor:
@@ -118,7 +118,7 @@ class TimeoutHonoringPaymentExecutor:
         self.hard_failure: PaymentExecutionError | None = None
         self._started_at: datetime | None = None
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         if self.hard_failure is not None:
             raise self.hard_failure
         self.calls.append((service_url, amount))

@@ -20,6 +20,12 @@ export interface ServiceConfig {
    * Empty string means "use the mock facilitator".
    */
   facilitatorUrl?: string;
+  /**
+   * True when the service runs in real-demo mode. Real-demo mode requires an
+   * official Circle Gateway facilitator URL and never falls back to the
+   * in-process mock facilitator (ticket 11).
+   */
+  realDemo: boolean;
   /** How long a timeout-mode failure holds the socket before destroying it. */
   responseTimeoutMs: number;
   syncFacilitatorOnStart: boolean;
@@ -42,6 +48,13 @@ export function loadServiceConfig(
   env: NodeJS.ProcessEnv,
   defaults: ServiceDefaults,
 ): ServiceConfig {
+  const realDemo = env.REAL_DEMO === "true";
+  const facilitatorUrl = env.FACILITATOR_URL || undefined;
+  if (realDemo && !facilitatorUrl) {
+    throw new Error(
+      "REAL_DEMO requires FACILITATOR_URL pointing at the official Circle Gateway facilitator.",
+    );
+  }
   return {
     serviceName: env.SERVICE_NAME ?? defaults.serviceName,
     port: parsePort(env.PORT, defaults.port),
@@ -50,7 +63,8 @@ export function loadServiceConfig(
     network: (env.NETWORK as Network | undefined) ?? ARC_TESTNET_NETWORK,
     failureRate: parseFloat(env.FAILURE_RATE ?? String(defaults.failureRate)),
     failureMode: parseFailureMode(env.FAILURE_MODE),
-    facilitatorUrl: env.FACILITATOR_URL || undefined,
+    facilitatorUrl,
+    realDemo,
     responseTimeoutMs: parsePositiveInt(env.RESPONSE_TIMEOUT_MS, 30_000),
     syncFacilitatorOnStart: env.SYNC_FACILITATOR !== "false",
   };

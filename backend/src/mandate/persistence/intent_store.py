@@ -36,7 +36,8 @@ from psycopg.rows import dict_row
 _SELECT_INTENT = """
     SELECT id, mandate_id, purpose_hash, service_url, amount,
            status, tx_hash, created_at, settled_at, retry_count,
-           fee_amount, fee_tx_hash, payment_reference, receipt_anchor
+           fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
+           reference_type, payment_state, batch_tx_hash
     FROM intents
 """
 
@@ -98,9 +99,25 @@ class IntentStore(Protocol):
         fee_tx_hash: str | None = None,
     ) -> Intent: ...
 
-    def store_payment_reference(self, *, intent_id: uuid.UUID, reference: str) -> Intent: ...
+    def store_payment_reference(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        reference: str,
+        reference_type: str | None = None,
+        payment_state: str | None = None,
+        batch_tx_hash: str | None = None,
+    ) -> Intent: ...
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent: ...
+
+    def store_transfer_status(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        payment_state: str,
+        batch_tx_hash: str | None = None,
+    ) -> Intent: ...
 
     def finalize_settlement(
         self,
@@ -130,6 +147,9 @@ class Intent:
     fee_tx_hash: str | None
     payment_reference: str | None = None
     receipt_anchor: str | None = None
+    reference_type: str | None = None
+    payment_state: str | None = None
+    batch_tx_hash: str | None = None
 
 
 class PostgresIntentStore:
@@ -241,7 +261,7 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash
                 """,
                 (
                     status,
@@ -258,26 +278,73 @@ class PostgresIntentStore:
             raise self._state_mismatch_error(intent_id, expected_status)
         return self._from_row(row)
 
-    def store_payment_reference(self, *, intent_id: uuid.UUID, reference: str) -> Intent:
+    def store_payment_reference(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        reference: str,
+        reference_type: str | None = None,
+        payment_state: str | None = None,
+        batch_tx_hash: str | None = None,
+    ) -> Intent:
         """Write the Payment Reference as soon as value moves (ticket 10e).
 
         The write keeps the Intent in SETTLING. It applies only to a SETTLING
         Intent, so a duplicate reference write never touches a settled or
-        blocked Intent. The stored value is write-once: a repeated write keeps
-        the original reference and never overwrites it (ADR-0032).
+        blocked Intent. The reference, reference type, and initial payment
+        state are write-once: a repeated write keeps the original values and
+        never overwrites them (ADR-0032, ticket 11). The batch transaction
+        hash is resolved later through the official status boundary, not here.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
-                SET payment_reference = COALESCE(payment_reference, %s)
+                SET payment_reference = COALESCE(payment_reference, %s),
+                    reference_type = COALESCE(reference_type, %s),
+                    payment_state = COALESCE(payment_state, %s)
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state,
+                          batch_tx_hash
                 """,
-                (reference, intent_id),
+                (reference, reference_type, payment_state, intent_id),
+            ).fetchone()
+        if row is None:
+            return self._reload(intent_id)
+        return self._from_row(row)
+
+    def store_transfer_status(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        payment_state: str,
+        batch_tx_hash: str | None = None,
+    ) -> Intent:
+        """Resolve the Payment Reference state through the official boundary.
+
+        The official Gateway x402 transfer-status interface returns the exact
+        reference's state and, once the transfer is batched, the batch-level
+        settlement transaction hash. This method records both on the Intent
+        (ticket 11). It applies to a SETTLING or SETTLED Intent and updates the
+        resolved values; it never changes the Payment Reference itself.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE intents
+                SET payment_state = %s,
+                    batch_tx_hash = COALESCE(%s, batch_tx_hash)
+                WHERE id = %s AND status IN ('settling', 'settled')
+                RETURNING id, mandate_id, purpose_hash, service_url, amount,
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash, payment_reference,
+                          receipt_anchor, reference_type, payment_state,
+                          batch_tx_hash
+                """,
+                (payment_state, batch_tx_hash, intent_id),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
@@ -302,7 +369,7 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -334,7 +401,7 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -412,7 +479,7 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash
                 """,
                 (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -482,6 +549,9 @@ class PostgresIntentStore:
             fee_tx_hash=row["fee_tx_hash"],
             payment_reference=row["payment_reference"],
             receipt_anchor=row["receipt_anchor"],
+            reference_type=row["reference_type"],
+            payment_state=row["payment_state"],
+            batch_tx_hash=row["batch_tx_hash"],
         )
 
 

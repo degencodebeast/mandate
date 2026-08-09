@@ -1,17 +1,24 @@
 """Payment execution Interface and Adapters.
 
 A PaymentExecutor executes one USDC nanopayment on behalf of the mandate wallet
-and returns the on-chain transaction hash. The Mandate Service is the only path
-to the wallet (ADR-0013): the agent never calls Circle directly.
+and returns the exact buyer-visible Payment Reference that the supported
+interface returns (ticket 11). The Mandate Service is the only path to the
+wallet (ADR-0013): the agent never calls Circle directly.
 
 Adapters:
-- CircleCliPaymentExecutor: production. Calls the Circle CLI (``circle services
-  pay``) via subprocess and parses the settlement transaction hash from the
-  JSON output (ADR-0012). The runner is injectable so tests can script it
-  without a CLI or network.
-- ScriptedPaymentExecutor: test. Returns a fixed transaction hash (ADR-0024).
+- CircleCliPaymentExecutor: production. Calls the documented Circle CLI command
+  (``circle services pay``) via subprocess and parses the settle receipt from
+  the JSON output. The Payment Reference is the Gateway x402 transfer UUID that
+  ``POST /v1/x402/settle`` returns, decoded from the CLI ``receipt`` field
+  (ticket 11). The runner is injectable so tests can script it without a CLI or
+  network.
+- ScriptedPaymentExecutor: test. Returns a fixed PaymentResult (ADR-0024).
 
-Outcome classes (ticket 05b):
+The undocumented ``circle services payments --purpose-hash`` production path is
+removed (ticket 11). The reconciliation boundary is the official Gateway x402
+transfer-status interface, implemented separately in ``gateway_status``.
+
+Outcome classes:
 - PaymentExecutionError: a definite rejection. The payment did not happen, so
   the intent blocks.
 - PaymentUnknownError: the call timed out or returned no usable response. Money
@@ -21,6 +28,7 @@ Outcome classes (ticket 05b):
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -29,24 +37,38 @@ from typing import Any, Protocol
 
 from mandate.cli import run_cli
 
+GATEWAY_X402_REFERENCE_TYPE = "gateway-x402-transfer-uuid"
+REFERENCE_TYPE_ACCEPTED_STATE = "accepted"
+
 
 class PaymentExecutor(Protocol):
-    """Execute one USDC nanopayment and return the transaction hash."""
+    """Execute one USDC nanopayment and return the Payment Result."""
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
-        """Return the on-chain transaction hash or fail closed."""
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
+        """Return the exact Payment Reference or fail closed."""
         ...
 
 
 @dataclass(frozen=True)
 class PaymentResult:
-    """The outcome of one payment call."""
+    """The exact reference the supported interface returned for one payment.
 
-    tx_hash: str
+    ``payment_reference`` is the buyer-visible value (a Gateway x402 transfer
+    UUID). ``reference_type`` names the identifier kind so a judge never
+    mistakes the reference for an on-chain transaction hash (ticket 11).
+    ``payment_state`` is the state the settle response reported
+    (``accepted``). ``batch_tx_hash`` is the optional batch-level settlement
+    transaction hash, resolved only through the official status boundary.
+    """
+
+    payment_reference: str
+    reference_type: str = GATEWAY_X402_REFERENCE_TYPE
+    payment_state: str = REFERENCE_TYPE_ACCEPTED_STATE
+    batch_tx_hash: str | None = None
 
 
 class CircleCliPaymentExecutor:
-    """Execute a nanopayment via the Circle CLI ``services pay`` command."""
+    """Execute a nanopayment via the documented ``circle services pay`` command."""
 
     def __init__(
         self,
@@ -61,8 +83,8 @@ class CircleCliPaymentExecutor:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
-        """Run the CLI payment and return the settlement transaction hash."""
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
+        """Run the CLI payment and return the exact Payment Reference."""
         try:
             output = run_cli(
                 [
@@ -88,27 +110,45 @@ class CircleCliPaymentExecutor:
             raise PaymentUnknownError(
                 "The payment call failed without a usable response."
             ) from error
-        return _extract_tx_hash(output)
+        return _extract_payment_result(output)
 
 
 class ScriptedPaymentExecutor:
-    """Return a fixed transaction hash for tests. No CLI, no network."""
+    """Return a fixed PaymentResult for tests. No CLI, no network."""
 
-    def __init__(self, *, tx_hash: str) -> None:
-        self._tx_hash = tx_hash
+    def __init__(
+        self,
+        *,
+        payment_reference: str,
+        reference_type: str = GATEWAY_X402_REFERENCE_TYPE,
+        payment_state: str = REFERENCE_TYPE_ACCEPTED_STATE,
+        batch_tx_hash: str | None = None,
+    ) -> None:
+        self._result = PaymentResult(
+            payment_reference=payment_reference,
+            reference_type=reference_type,
+            payment_state=payment_state,
+            batch_tx_hash=batch_tx_hash,
+        )
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
-        return self._tx_hash
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
+        return self._result
 
 
-def _extract_tx_hash(output: str) -> str:
-    """Read the settlement transaction hash from the CLI JSON output.
+def _extract_payment_result(output: str) -> PaymentResult:
+    """Read the exact Payment Reference from the documented CLI output.
 
-    The CLI prints the service response body, so the settlement hash may live
-    in a top-level field or in a nested payment detail object. Look through the
-    known field names in order. A document that names an ``error`` is a definite
-    rejection. A document without a usable hash is an unknown outcome: the
-    response was lost, so money may have moved.
+    ``circle services pay --output json`` prints the service response body and a
+    payment detail object. The settle receipt lives in ``payment.receipt`` as a
+    base64-encoded Gateway settle response::
+
+        {"success": true, "payer": "...", "transaction": "<uuid>", "network": "..."}
+
+    The ``transaction`` value is the exact buyer-visible Payment Reference, a
+    Gateway x402 transfer UUID (ticket 11). A document that reports a definite
+    settle failure (``success: false``) is a rejection. A document without a
+    usable reference is an unknown outcome: the response was lost, so money may
+    have moved.
     """
     document: Mapping[str, Any]
     try:
@@ -117,15 +157,31 @@ def _extract_tx_hash(output: str) -> str:
         raise PaymentUnknownError("The Circle CLI did not return JSON output.") from error
     if isinstance(document.get("error"), str) and document["error"]:
         raise PaymentExecutionError(f"The payment rail rejected the call: {document['error']}")
-    for key in ("txHash", "transactionHash", "transaction_id", "hash"):
-        if isinstance(document.get(key), str) and document[key]:
-            return document[key]
-    nested = document.get("payment")
-    if isinstance(nested, Mapping):
-        for key in ("txHash", "transactionHash", "hash"):
-            if isinstance(nested.get(key), str) and nested[key]:
-                return nested[key]
-    raise PaymentUnknownError("The Circle CLI output has no usable transaction hash.")
+    payload = document.get("data")
+    if not isinstance(payload, Mapping):
+        payload = document
+    payment = payload.get("payment")
+    if not isinstance(payment, Mapping):
+        raise PaymentUnknownError("The Circle CLI output has no payment receipt.")
+    receipt_encoded = payment.get("receipt")
+    if not isinstance(receipt_encoded, str) or not receipt_encoded:
+        raise PaymentUnknownError("The Circle CLI output has no usable payment receipt.")
+    try:
+        receipt_text = base64.b64decode(receipt_encoded).decode("utf-8")
+        receipt: Mapping[str, Any] = json.loads(receipt_text)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PaymentUnknownError("The Circle CLI payment receipt is not usable.") from error
+    if receipt.get("success") is False:
+        reason = receipt.get("errorReason") or "the settle response rejected the payment"
+        raise PaymentExecutionError(f"The payment rail rejected the call: {reason}")
+    reference = receipt.get("transaction")
+    if not isinstance(reference, str) or not reference:
+        raise PaymentUnknownError("The Circle CLI payment receipt has no Payment Reference.")
+    return PaymentResult(
+        payment_reference=reference,
+        reference_type=GATEWAY_X402_REFERENCE_TYPE,
+        payment_state=REFERENCE_TYPE_ACCEPTED_STATE,
+    )
 
 
 class PaymentExecutionError(RuntimeError):
@@ -136,5 +192,6 @@ class PaymentUnknownError(RuntimeError):
     """The payment call timed out or returned no usable response.
 
     The outcome is unknown: money may have moved on Arc even though the agent
-    never received a response. The intent must reconcile before any retry.
+    never received a response. The intent stays frozen with WAIT or
+    REQUEST_REVIEW.
     """

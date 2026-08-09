@@ -40,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from mandate.gateway_status import GatewayTransferStatusInspector, TransferLookupUnknownError
 from mandate.payments import (
     PaymentExecutionError,
     PaymentExecutor,
@@ -144,6 +145,7 @@ class MandateSpendService:
         breaker: CircuitBreaker | None = None,
         now: Now | None = None,
         receipt_reader: ReceiptReader | None = None,
+        transfer_status_inspector: GatewayTransferStatusInspector | None = None,
     ) -> None:
         self._mandate_store = mandate_store
         self._intent_store = intent_store
@@ -151,6 +153,7 @@ class MandateSpendService:
         self._receipt_recorder = receipt_recorder
         self._breaker = breaker or CircuitBreaker(store=ScriptedBreakerStateStore())
         self._receipt_reader = receipt_reader
+        self._transfer_status_inspector = transfer_status_inspector
         self._now = now or (lambda: datetime.now(UTC))
 
     def spend(
@@ -249,7 +252,7 @@ class MandateSpendService:
                 action=ACTION_NONE,
             )
         try:
-            tx_hash = self._payment_executor.execute_payment(
+            payment_result = self._payment_executor.execute_payment(
                 service_url=service_url,
                 amount=amount,
             )
@@ -291,7 +294,10 @@ class MandateSpendService:
                 action=ACTION_SWITCH_SERVICE,
             )
         referenced = self._intent_store.store_payment_reference(
-            intent_id=settling.id, reference=tx_hash
+            intent_id=settling.id,
+            reference=payment_result.payment_reference,
+            reference_type=payment_result.reference_type,
+            payment_state=payment_result.payment_state,
         )
         self._breaker.record_success(
             service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
@@ -346,6 +352,103 @@ class MandateSpendService:
             task_id=task_id,
             purpose_hash=intent_hash,
         )
+
+    def resolve_reference(
+        self,
+        *,
+        user_id: str,
+        mandate_id: uuid.UUID,
+        task_id: str,
+        purpose: str,
+    ) -> SpendResponse:
+        """Resolve the exact Payment Reference through the official boundary.
+
+        Ticket 11: an Intent whose outcome is unknown stays frozen unless the
+        official Gateway x402 transfer-status interface resolves its exact
+        reference. Missing output, a timeout, or a failed lookup proves nothing,
+        so the Intent stays UNKNOWN with WAIT or REQUEST_REVIEW. A final
+        ``completed`` state finalizes the payment (Receipt Anchor created once).
+        A final ``failed`` state is a definite rejection that blocks the Intent.
+        The payment adapter is never called again.
+        """
+        if self._transfer_status_inspector is None:
+            raise FinalizationNotPossibleError(
+                "The official Gateway status boundary is not configured."
+            )
+        mandate = self._mandate_store.get_mandate(user_id=user_id, mandate_id=mandate_id)
+        intent_hash = purpose_hash(task_id, purpose)
+        intent = self._intent_store.get_intent(mandate_id=mandate_id, purpose_hash=intent_hash)
+        if intent is None:
+            raise FinalizationNotPossibleError("There is no intent to resolve.")
+        if intent.status == "settled":
+            return self._settled_receipt_response(intent, mandate, task_id=task_id)
+        if intent.payment_reference is None:
+            raise UnresolvedPaymentReferenceError(
+                "The intent has no stored Payment Reference; it cannot be resolved."
+            )
+        try:
+            transfer = self._transfer_status_inspector.lookup_transfer(intent.payment_reference)
+        except TransferLookupUnknownError:
+            return self._frozen_unknown_response(intent, mandate)
+        resolved = self._intent_store.store_transfer_status(
+            intent_id=intent.id,
+            payment_state=transfer.payment_state,
+            batch_tx_hash=transfer.batch_tx_hash,
+        )
+        if transfer.payment_state == "failed":
+            return self._resolve_failed(intent=resolved, mandate=mandate)
+        if transfer.payment_state == "completed":
+            return self._resolve_completed(
+                intent=resolved, mandate=mandate, task_id=task_id, purpose_hash=intent_hash
+            )
+        return self._frozen_unknown_response(resolved, mandate)
+
+    def _resolve_failed(self, *, intent: Intent, mandate: Mandate) -> SpendResponse:
+        """Block an Intent whose official reference state is a final failure.
+
+        The official boundary reports ``failed``: the payment definitively did
+        not settle. The reserved authority is released and the Intent blocks.
+        """
+        self._mandate_store.release_reservation(mandate_id=mandate.id, amount=intent.amount)
+        try:
+            blocked = self._intent_store.transition(
+                intent_id=intent.id, status="blocked", expected_status="settling"
+            )
+        except UnexpectedIntentStateError:
+            blocked = (
+                self._intent_store.get_intent(
+                    mandate_id=mandate.id, purpose_hash=intent.purpose_hash
+                )
+                or intent
+            )
+        return SpendResponse(
+            outcome="blocked: payment_failed",
+            reason="The official Gateway status reports the payment failed.",
+            intent=blocked,
+            receipt=None,
+            spent_total=mandate.spent_total,
+            action=ACTION_SWITCH_SERVICE,
+        )
+
+    def _resolve_completed(
+        self,
+        *,
+        intent: Intent,
+        mandate: Mandate,
+        task_id: str,
+        purpose_hash: str,
+    ) -> SpendResponse:
+        """Finalize an Intent whose reference reached the official completed state."""
+        return self._finalize(
+            intent=intent,
+            mandate=mandate,
+            task_id=task_id,
+            purpose_hash=purpose_hash,
+        )
+
+    def _frozen_unknown_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
+        """Keep an unresolved Intent frozen with WAIT or REQUEST_REVIEW."""
+        return self._unknown_outcome_response(intent, mandate, action=ACTION_REQUEST_REVIEW)
 
     def list_intents(self, *, mandate_id: uuid.UUID) -> list[Intent]:
         """Return the recent intents for the status read (ticket 05b)."""

@@ -312,3 +312,89 @@ def test_list_intents_scopes_by_mandate(
     listed = intent_store.list_intents(mandate_id=first_mandate.id)
 
     assert [intent.purpose_hash for intent in listed] == ["hash-a"]
+
+
+def test_store_payment_reference_records_metadata(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-ref-meta",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+
+    referenced = intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+    )
+
+    assert referenced.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert referenced.reference_type == "gateway-x402-transfer-uuid"
+    assert referenced.payment_state == "accepted"
+    assert referenced.batch_tx_hash is None
+
+
+def test_store_payment_reference_metadata_is_write_once(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-ref-once",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+    )
+
+    again = intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="completed",
+    )
+
+    assert again.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert again.reference_type == "gateway-x402-transfer-uuid"
+    assert again.payment_state == "accepted"
+
+
+def test_store_transfer_status_resolves_batch_tx_hash(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-status",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+    )
+
+    resolved = intent_store.store_transfer_status(
+        intent_id=intent.id,
+        payment_state="completed",
+        batch_tx_hash="0x9a3af4c339eb81ddef60a1facb7cb6d9d6896a1fe4dbbcd755de6407886b5171",
+    )
+
+    assert resolved.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert resolved.payment_state == "completed"
+    assert resolved.batch_tx_hash == (
+        "0x9a3af4c339eb81ddef60a1facb7cb6d9d6896a1fe4dbbcd755de6407886b5171"
+    )

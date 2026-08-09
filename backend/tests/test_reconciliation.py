@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.payments import PaymentUnknownError
+from mandate.payments import PaymentResult, PaymentUnknownError
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -46,7 +46,7 @@ class TimeoutPaymentExecutor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         self.calls.append((service_url, amount))
         raise PaymentUnknownError("The payment call timed out.")
 

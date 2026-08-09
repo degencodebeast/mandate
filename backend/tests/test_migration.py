@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
+from mandate.payments import PaymentResult
 from mandate.persistence.breaker_store import PostgresBreakerStateStore
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import PostgresMandateStore
@@ -45,9 +46,9 @@ class RecordingPaymentExecutor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def execute_payment(self, *, service_url: str, amount: str) -> str:
+    def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         self.calls.append((service_url, amount))
-        return "0xsettled"
+        return PaymentResult(payment_reference="0xsettled")
 
 
 @pytest.fixture()
@@ -517,3 +518,65 @@ def test_migration_0006_stranded_trial_recovers_and_permits_new_spend(
         state for state in status["breaker_state"] if state["service_url"] == _SERVICE_URL
     )
     assert breaker["state"] == "closed"
+
+
+_0007_VERSION = "0007_reference_metadata"
+
+
+def _downgrade_to_pre_0007() -> None:
+    """Return the intents schema to the pre-0007 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("ALTER TABLE intents DROP COLUMN reference_type")
+        connection.execute("ALTER TABLE intents DROP COLUMN payment_state")
+        connection.execute("ALTER TABLE intents DROP COLUMN batch_tx_hash")
+        connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0007_VERSION,))
+
+
+def test_migration_0007_adds_reference_metadata_columns(reset_database: None) -> None:
+    _downgrade_to_pre_0007()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '0',
+                      '0', '0', NULL, NULL, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:erc8004:migration-agent",
+                "10.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO intents (
+                id, mandate_id, purpose_hash, service_url, amount, status,
+                tx_hash, created_at, settled_at, retry_count, fee_amount,
+                fee_tx_hash, payment_reference
+            ) VALUES (%s, %s, %s, %s, '0.25', 'settled', NULL, now(), now(),
+                      0, NULL, NULL, '3e80e924-6263-4393-b639-b4ab56da6925')
+            """,
+            (uuid.uuid4(), mandate_id, "legacy-0007-hash", _SERVICE_URL),
+        )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            "SELECT reference_type, payment_state, batch_tx_hash FROM intents "
+            "WHERE mandate_id = %s",
+            (mandate_id,),
+        ).fetchall()
+    assert len(rows) == 1
+    # Legacy references carry no inferable type or state; the migration must not
+    # invent one (ticket 11: never infer reference metadata).
+    assert rows[0]["reference_type"] is None
+    assert rows[0]["payment_state"] is None
+    assert rows[0]["batch_tx_hash"] is None

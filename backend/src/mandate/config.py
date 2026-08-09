@@ -107,6 +107,12 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         description="How long one Circle CLI payment call may run before it is an unknown outcome.",
     ),
     ConfigurationVariable(
+        name="GATEWAY_API_BASE_URL",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Base URL of the official Circle Gateway x402 transfer-status API.",
+    ),
+    ConfigurationVariable(
         name="FEE_WALLET_ADDRESS",
         owners=frozenset({Service.API}),
         secret=False,
@@ -197,6 +203,7 @@ class ApiSettings(BaseSettings):
     service_wallet_address: str | None = None
     circle_chain: str = "ARC-TESTNET"
     payment_timeout_seconds: float = 30.0
+    gateway_api_base_url: str = "https://gateway-api-testnet.circle.com"
     circuit_breaker_failure_threshold: int = 3
     circuit_breaker_cooldown_seconds: float = 60.0
     circuit_breaker_trial_timeout_seconds: float = 60.0

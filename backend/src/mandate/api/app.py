@@ -38,6 +38,7 @@ from mandate.auth import (
     rejecting_identity_verifier,
 )
 from mandate.config import ApiSettings, Service, assert_secret_boundary
+from mandate.gateway_status import GatewayTransferStatusInspector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
@@ -341,6 +342,29 @@ def create_app(
             raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(content=_spend_to_json(result))
 
+    @app.post("/api/v1/mandates/{mandate_id}/resolve")
+    def resolve(
+        mandate_id: uuid.UUID,
+        command: FinalizeRequest,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_spend is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            result = active_spend.resolve_reference(
+                user_id=identity.subject,
+                mandate_id=mandate_id,
+                task_id=command.task_id,
+                purpose=command.purpose,
+            )
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        except (FinalizationNotPossibleError, UnresolvedPaymentReferenceError) as error:
+            raise StarletteHTTPException(status_code=409, detail=str(error)) from None
+        except (ReceiptReadError, ReceiptWriteError) as error:
+            raise StarletteHTTPException(status_code=502, detail=str(error)) from None
+        return JSONResponse(content=_spend_to_json(result))
+
     @app.get("/api/v1/mandates/{mandate_id}")
     def get_mandate(
         mandate_id: uuid.UUID,
@@ -426,6 +450,10 @@ def _spend_service_from_settings(
         receipt_recorder=receipt_recorder,
         breaker=breaker,
         receipt_reader=receipt_reader,
+        transfer_status_inspector=GatewayTransferStatusInspector(
+            base_url=settings.gateway_api_base_url,
+            timeout_seconds=settings.payment_timeout_seconds,
+        ),
     )
 
 
@@ -507,6 +535,9 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "fee_amount": intent.fee_amount,
         "fee_tx_hash": intent.fee_tx_hash,
         "payment_reference": intent.payment_reference,
+        "reference_type": intent.reference_type,
+        "payment_state": intent.payment_state,
+        "batch_tx_hash": intent.batch_tx_hash,
         "receipt_anchor": intent.receipt_anchor,
     }
 
