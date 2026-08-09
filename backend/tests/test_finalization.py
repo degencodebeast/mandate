@@ -81,7 +81,7 @@ class FailingReceiptRecorder:
 class FailingReceiptReader:
     """Simulate an unreadable Receipt source."""
 
-    def list_receipts(self, *, user_id: str) -> list[object]:
+    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[object]:
         raise ReceiptReadError("The receipt reader failed.")
 
     def find_receipt(self, *, user_id: str, mandate_id: str, purpose_hash: str) -> object:

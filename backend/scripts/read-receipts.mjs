@@ -8,7 +8,8 @@
 // receipt objects, newest first.
 //
 // Usage:
-//   node read-receipts.mjs --registry 0x... --rpc-url https://... --user-id did:erc8004:...
+//   node read-receipts.mjs --registry 0x... --rpc-url https://... \
+//     --user-id did:erc8004:... --mandate-id <uuid>
 //
 // Install: `npm install viem` in this directory.
 
@@ -27,9 +28,11 @@ function parseArgs(argv) {
 }
 
 async function main() {
-  const { registry, "rpc-url": rpcUrl, "user-id": userId } = parseArgs(process.argv);
-  if (!registry || !rpcUrl || !userId) {
-    console.error("missing --registry, --rpc-url, or --user-id");
+  const { registry, "rpc-url": rpcUrl, "user-id": userId, "mandate-id": mandateId } = parseArgs(
+    process.argv,
+  );
+  if (!registry || !rpcUrl || !userId || !mandateId) {
+    console.error("missing --registry, --rpc-url, --user-id, or --mandate-id");
     process.exit(1);
   }
 
@@ -43,7 +46,9 @@ async function main() {
   });
 
   const receipts = logs
-    .filter((log) => log.args.userId === userId)
+    .filter(
+      (log) => log.args.userId === userId && log.args.mandateId === mandateId,
+    )
     .sort((a, b) => Number((b.args.timestamp ?? 0n) - (a.args.timestamp ?? 0n)))
     .map((log) => ({
       userId: log.args.userId,

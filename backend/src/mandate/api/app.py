@@ -371,7 +371,9 @@ def create_app(
                 status_code=503, detail="The Receipt reader is not configured."
             )
         try:
-            receipts = active_receipts.list_receipts(user_id=mandate.agent_identity)
+            receipts = active_receipts.list_receipts(
+                user_id=mandate.agent_identity, mandate_id=str(mandate.id)
+            )
         except ReceiptReadError as error:
             raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(

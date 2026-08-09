@@ -44,10 +44,15 @@ class ArcReceipt:
 
 
 class ReceiptReader(Protocol):
-    """Read on-Arc receipts for one ERC-8004 agent identity."""
+    """Read on-Arc receipts for one ERC-8004 agent identity and Mandate."""
 
-    def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
-        """Return the receipts recorded for the agent identity, newest first."""
+    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
+        """Return the receipts for the agent identity and Mandate, newest first.
+
+        The Agent Identity is user-scoped and shared across a user's Mandates,
+        so the Mandate ID is required to scope the read. Without it one Mandate
+        would see another Mandate's proof.
+        """
         ...
 
     def find_receipt(
@@ -79,8 +84,8 @@ class ViemReceiptReader:
         self._script = script
         self._runner = runner
 
-    def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
-        """Run the viem script and parse the filtered receipt list."""
+    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
+        """Run the viem script and parse the receipts for the Mandate."""
         try:
             output = run_cli(
                 [
@@ -92,6 +97,8 @@ class ViemReceiptReader:
                     self._rpc_url,
                     "--user-id",
                     user_id,
+                    "--mandate-id",
+                    mandate_id,
                 ],
                 self._runner,
             )
@@ -103,8 +110,8 @@ class ViemReceiptReader:
         self, *, user_id: str, mandate_id: str, purpose_hash: str
     ) -> ArcReceipt | None:
         """Return the receipt for one finalized Intent, or None."""
-        for receipt in self.list_receipts(user_id=user_id):
-            if receipt.mandate_id == mandate_id and receipt.purpose_hash == purpose_hash:
+        for receipt in self.list_receipts(user_id=user_id, mandate_id=mandate_id):
+            if receipt.purpose_hash == purpose_hash:
                 return receipt
         return None
 
@@ -115,15 +122,19 @@ class ScriptedReceiptReader:
     def __init__(self, receipts: list[ArcReceipt] | None = None) -> None:
         self._receipts = receipts or []
 
-    def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
-        return [receipt for receipt in self._receipts if receipt.user_id == user_id]
+    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
+        return [
+            receipt
+            for receipt in self._receipts
+            if receipt.user_id == user_id and receipt.mandate_id == mandate_id
+        ]
 
     def find_receipt(
         self, *, user_id: str, mandate_id: str, purpose_hash: str
     ) -> ArcReceipt | None:
         """Return the receipt for one finalized Intent, or None."""
-        for receipt in self.list_receipts(user_id=user_id):
-            if receipt.mandate_id == mandate_id and receipt.purpose_hash == purpose_hash:
+        for receipt in self.list_receipts(user_id=user_id, mandate_id=mandate_id):
+            if receipt.purpose_hash == purpose_hash:
                 return receipt
         return None
 

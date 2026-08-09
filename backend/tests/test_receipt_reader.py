@@ -38,13 +38,41 @@ def test_scripted_reader_returns_fixed_receipts() -> None:
 
     reader = ScriptedReceiptReader([receipt])
 
-    assert reader.list_receipts(user_id="did:erc8004:agent") == [receipt]
+    assert reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-1") == [receipt]
+
+
+def test_scripted_reader_scopes_list_by_mandate() -> None:
+    first = ArcReceipt(
+        user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
+        task_id="task-1",
+        purpose_hash="hash-1",
+        service_url="https://service-a.example.com",
+        amount="1.00",
+        tx_hash="0xsettled",
+        timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+    )
+    second = ArcReceipt(
+        user_id="did:erc8004:agent",
+        mandate_id="mandate-2",
+        task_id="task-2",
+        purpose_hash="hash-2",
+        service_url="https://service-a.example.com",
+        amount="1.00",
+        tx_hash="0xsecond",
+        timestamp=datetime(2026, 8, 8, 13, 0, tzinfo=UTC),
+    )
+    reader = ScriptedReceiptReader([first, second])
+
+    assert reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-1") == [first]
+    assert reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-2") == [second]
+    assert reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-other") == []
 
 
 def test_scripted_reader_defaults_to_empty() -> None:
     reader = ScriptedReceiptReader()
 
-    assert reader.list_receipts(user_id="did:erc8004:agent") == []
+    assert reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-1") == []
 
 
 def test_parse_receipts_reads_all_fields() -> None:
@@ -131,7 +159,7 @@ def test_viem_reader_uses_scripted_runner() -> None:
         runner=runner,
     )
 
-    receipts = reader.list_receipts(user_id="did:erc8004:agent")
+    receipts = reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-1")
 
     assert len(calls) == 1
     command = calls[0]
@@ -140,6 +168,8 @@ def test_viem_reader_uses_scripted_runner() -> None:
     assert "0xregistry" in command
     assert "--user-id" in command
     assert "did:erc8004:agent" in command
+    assert "--mandate-id" in command
+    assert "mandate-1" in command
     assert receipts[0].tx_hash == "0xsettled"
 
 

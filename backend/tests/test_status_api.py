@@ -207,6 +207,52 @@ def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
     assert document["receipts"][0]["mandate_id"] == str(mandate.id)
 
 
+def test_get_mandate_receipts_scopes_by_mandate_for_shared_agent_identity() -> None:
+    _reset_database()
+    store = PostgresMandateStore(_DATABASE_URL)
+    first = _create_mandate(store, agent_identity="did:erc8004:shared-agent")
+    second = _create_mandate(store, agent_identity="did:erc8004:shared-agent")
+    components = Components(
+        receipts=[
+            ArcReceipt(
+                user_id="did:erc8004:shared-agent",
+                mandate_id=str(first.id),
+                task_id="task-1",
+                purpose_hash="hash-1",
+                service_url=_SERVICE_URL,
+                amount="1.00",
+                tx_hash="0xfirst",
+                timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+            ),
+            ArcReceipt(
+                user_id="did:erc8004:shared-agent",
+                mandate_id=str(second.id),
+                task_id="task-2",
+                purpose_hash="hash-2",
+                service_url=_SERVICE_URL,
+                amount="1.00",
+                tx_hash="0xsecond",
+                timestamp=datetime(2026, 8, 8, 13, 0, tzinfo=UTC),
+            ),
+        ]
+    )
+
+    first_response = components.client.get(f"/api/v1/mandates/{first.id}/receipts")
+    second_response = components.client.get(f"/api/v1/mandates/{second.id}/receipts")
+
+    assert first_response.status_code == 200
+    first_document = first_response.json()
+    assert len(first_document["receipts"]) == 1
+    assert first_document["receipts"][0]["mandate_id"] == str(first.id)
+    assert first_document["receipts"][0]["tx_hash"] == "0xfirst"
+
+    assert second_response.status_code == 200
+    second_document = second_response.json()
+    assert len(second_document["receipts"]) == 1
+    assert second_document["receipts"][0]["mandate_id"] == str(second.id)
+    assert second_document["receipts"][0]["tx_hash"] == "0xsecond"
+
+
 def test_get_mandate_receipts_scopes_to_own_mandate(components: Components) -> None:
     mandate = _create_mandate(
         components.store, user_id=_OTHER_USER, agent_identity="did:erc8004:other"
