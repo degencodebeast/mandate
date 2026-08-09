@@ -121,3 +121,17 @@ def test_get_mandate_raises_not_found_for_other_user(store: PostgresMandateStore
 
     with pytest.raises(LookupError):
         store.get_mandate(user_id="did:privy:user-y", mandate_id=created.id)
+
+
+def test_record_fee_updates_fees_total(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-4",
+        parameters=MandateParameters(
+            budget="10.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+
+    updated = store.record_fee(mandate_id=mandate.id, amount="0.010000")
+
+    assert updated.fees_total == "0.010000"
+    assert updated.spent_total == "0"

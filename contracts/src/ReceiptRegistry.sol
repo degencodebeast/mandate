@@ -7,7 +7,8 @@ pragma solidity ^0.8.26;
 /// receipt, so fake receipts are impossible (ADR-0019). The dashboard reads the
 /// emitted events via viem (ADR-0006). One receipt records one settled payment:
 /// the task, the intent (purpose hash), the service, the amount, and the
-/// on-chain transaction hash of the payment.
+/// on-chain transaction hashes of the service payment and the Mandate fee
+/// transfer (ticket 07).
 contract ReceiptRegistry {
     /// @notice The single address permitted to record receipts.
     address public immutable owner;
@@ -20,6 +21,8 @@ contract ReceiptRegistry {
     /// @param amount The payment amount, kept as a string to preserve exact
     /// decimal money (repo convention: money as string).
     /// @param txHash The on-chain hash of the settled payment.
+    /// @param feeTxHash The on-chain hash of the Mandate fee transfer. It is an
+    /// empty string when no fee was collected for this payment.
     /// @param timestamp The block time when the receipt was recorded.
     event ReceiptRecorded(
         string userId,
@@ -28,6 +31,7 @@ contract ReceiptRegistry {
         string serviceUrl,
         string amount,
         string txHash,
+        string feeTxHash,
         uint256 timestamp
     );
 
@@ -44,11 +48,19 @@ contract ReceiptRegistry {
         string calldata purposeHash,
         string calldata serviceUrl,
         string calldata amount,
-        string calldata txHash
+        string calldata txHash,
+        string calldata feeTxHash
     ) external returns (uint256) {
         require(msg.sender == owner, "ReceiptRegistry: only owner");
         emit ReceiptRecorded(
-            userId, taskId, purposeHash, serviceUrl, amount, txHash, block.timestamp
+            userId,
+            taskId,
+            purposeHash,
+            serviceUrl,
+            amount,
+            txHash,
+            feeTxHash,
+            block.timestamp
         );
         return block.timestamp;
     }

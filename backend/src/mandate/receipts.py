@@ -31,6 +31,7 @@ class ReceiptRecorder(Protocol):
         service_url: str,
         amount: str,
         tx_hash: str,
+        fee_tx_hash: str,
     ) -> str:
         """Return the on-chain transaction hash of the record or fail closed."""
         ...
@@ -61,20 +62,27 @@ class ArcReceiptRecorder:
         service_url: str,
         amount: str,
         tx_hash: str,
+        fee_tx_hash: str,
     ) -> str:
-        """Call recordReceipt on the registry with the full receipt fields."""
+        """Call recordReceipt on the registry with the full receipt fields.
+
+        The fee transfer hash is recorded alongside the service payment hash
+        (ticket 07). When no fee was collected the caller passes an empty
+        string, which the on-chain receipt keeps as the absent-fee marker.
+        """
         run_cli(
             [
                 "circle",
                 "wallet",
                 "execute",
-                "recordReceipt(string,string,string,string,string,string)",
+                "recordReceipt(string,string,string,string,string,string,string)",
                 user_id,
                 task_id,
                 purpose_hash,
                 service_url,
                 amount,
                 tx_hash,
+                fee_tx_hash,
                 "--contract",
                 self._registry_address,
                 "--address",
@@ -102,6 +110,7 @@ class ScriptedReceiptRecorder:
         service_url: str,
         amount: str,
         tx_hash: str,
+        fee_tx_hash: str,
     ) -> str:
         self.recorded.append(
             {
@@ -111,6 +120,7 @@ class ScriptedReceiptRecorder:
                 "service_url": service_url,
                 "amount": amount,
                 "tx_hash": tx_hash,
+                "fee_tx_hash": fee_tx_hash,
             }
         )
         return tx_hash

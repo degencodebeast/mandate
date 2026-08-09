@@ -103,13 +103,15 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
         service_url="https://service-a.example.com",
         amount="0.50",
         tx_hash="0xsettled",
+        fee_tx_hash="0xfeepaid",
     )
 
     assert tx_hash == "0xsettled"
     command = runner.command
     assert command[:3] == ["circle", "wallet", "execute"]
-    assert "recordReceipt(string,string,string,string,string,string)" in command
+    assert "recordReceipt(string,string,string,string,string,string,string)" in command
     assert "did:erc8004:agent" in command
+    assert "0xfeepaid" in command
     assert "--contract" in command and "0xregistry" in command
     assert "--chain" in command and "ARC-TESTNET" in command
 
@@ -124,7 +126,9 @@ def test_scripted_receipt_recorder_remembers_records() -> None:
         service_url="https://service-a.example.com",
         amount="0.50",
         tx_hash="0xsettled",
+        fee_tx_hash="0xfeepaid",
     )
 
     assert len(recorder.recorded) == 1
     assert recorder.recorded[0]["task_id"] == "task-9"
+    assert recorder.recorded[0]["fee_tx_hash"] == "0xfeepaid"

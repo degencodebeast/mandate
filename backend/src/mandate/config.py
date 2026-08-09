@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -111,6 +111,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         secret=False,
         description="How long one Circle CLI payment call may run before it is an unknown outcome.",
     ),
+    ConfigurationVariable(
+        name="FEE_WALLET_ADDRESS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Address of the Mandate fee wallet that receives the per-payment fee.",
+    ),
+    ConfigurationVariable(
+        name="FEE_PERCENTAGE",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Fraction of each payment collected as the Mandate fee (default 0.01).",
+    ),
 )
 
 
@@ -170,3 +182,13 @@ class ApiSettings(BaseSettings):
     circle_chain: str = "ARC-TESTNET"
     reconciliation_timeout_seconds: float = 30.0
     payment_timeout_seconds: float = 30.0
+    fee_wallet_address: str | None = None
+    fee_percentage: float = 0.01
+
+    @field_validator("fee_percentage")
+    @classmethod
+    def fee_percentage_is_a_fraction(cls, value: float) -> float:
+        """Reject a fee percentage outside the 0..1 fraction range."""
+        if value < 0 or value > 1:
+            raise ValueError("fee_percentage must be a fraction between 0 and 1")
+        return value

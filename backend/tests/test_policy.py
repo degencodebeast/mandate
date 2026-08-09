@@ -45,6 +45,7 @@ def _mandate(
         expiry=expiry,
         status=status,
         spent_total=spent_total,
+        fees_total="0",
         wallet_address="0xwallet",
         circle_wallet_id="cw_1",
         created_at=datetime(2026, 8, 1, tzinfo=UTC),

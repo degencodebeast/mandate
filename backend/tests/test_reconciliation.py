@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
+from mandate.fees import ScriptedFeeCollector
 from mandate.payments import PaymentUnknownError
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
@@ -75,6 +76,7 @@ def _build_app(
     payments: Any,
     receipts: ScriptedReceiptRecorder,
     inspector: ScriptedSettlementInspector,
+    fees: ScriptedFeeCollector | None = None,
 ) -> TestClient:
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     spend_service = MandateSpendService(
@@ -84,6 +86,9 @@ def _build_app(
         receipt_recorder=receipts,
         settlement_inspector=inspector,
         reconciliation_timeout_seconds=30.0,
+        fee_collector=fees,
+        fee_wallet_address="0xfeewallet" if fees is not None else None,
+        fee_percentage=0.01,
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -167,6 +172,32 @@ def test_timeout_reconcile_settled_returns_receipt_no_second_payment(
     assert document["spent_total"] == "1.00"
     assert len(payments.calls) == 1
     assert len(receipts.recorded) == 1
+
+
+def test_timeout_reconcile_settled_splits_fee(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    receipts = ScriptedReceiptRecorder()
+    payments = TimeoutPaymentExecutor()
+    fees = ScriptedFeeCollector()
+    inspector = ScriptedSettlementInspector(
+        state=SettlementState(settled=True, tx_hash="0xreconciled")
+    )
+    client = _build_app(store, payments, receipts, inspector, fees=fees)
+
+    response = _spend(client, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "blocked: duplicate_intent"
+    assert document["intent"]["status"] == "settled"
+    assert document["intent"]["fee_amount"] == "0.010000"
+    assert document["intent"]["fee_tx_hash"] == "0xfeepaid"
+    assert document["receipt"]["fee_amount"] == "0.010000"
+    assert document["receipt"]["fee_tx_hash"] == "0xfeepaid"
+    assert document["spent_total"] == "1.00"
+    assert fees.calls == [("0xwallet123", "0xfeewallet", "0.010000")]
+    status = client.get(f"/api/v1/mandates/{mandate.id}/status")
+    assert status.json()["mandate"]["fees_total"] == "0.010000"
 
 
 def test_timeout_reconcile_not_settled_safe_retry_settles_once(

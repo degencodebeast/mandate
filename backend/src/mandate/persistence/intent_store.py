@@ -56,6 +56,8 @@ class IntentStore(Protocol):
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
         retry_count: int | None = None,
+        fee_amount: str | None = None,
+        fee_tx_hash: str | None = None,
     ) -> Intent: ...
 
 
@@ -73,6 +75,8 @@ class Intent:
     created_at: datetime
     settled_at: datetime | None
     retry_count: int
+    fee_amount: str | None
+    fee_tx_hash: str | None
 
 
 class PostgresIntentStore:
@@ -128,6 +132,8 @@ class PostgresIntentStore:
             created_at=created_at,
             settled_at=None,
             retry_count=0,
+            fee_amount=None,
+            fee_tx_hash=None,
         )
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None:
@@ -136,7 +142,8 @@ class PostgresIntentStore:
             row = connection.execute(
                 """
                 SELECT id, mandate_id, purpose_hash, service_url, amount,
-                       status, tx_hash, created_at, settled_at, retry_count
+                       status, tx_hash, created_at, settled_at, retry_count,
+                       fee_amount, fee_tx_hash
                 FROM intents
                 WHERE mandate_id = %s AND purpose_hash = %s
                 """,
@@ -152,7 +159,8 @@ class PostgresIntentStore:
             rows = connection.execute(
                 """
                 SELECT id, mandate_id, purpose_hash, service_url, amount,
-                       status, tx_hash, created_at, settled_at, retry_count
+                       status, tx_hash, created_at, settled_at, retry_count,
+                       fee_amount, fee_tx_hash
                 FROM intents
                 WHERE mandate_id = %s
                 ORDER BY created_at DESC
@@ -170,6 +178,8 @@ class PostgresIntentStore:
         tx_hash: str | None = None,
         settled_at: datetime | None = None,
         retry_count: int | None = None,
+        fee_amount: str | None = None,
+        fee_tx_hash: str | None = None,
     ) -> Intent:
         """Update the intent state and return the updated row."""
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
@@ -178,12 +188,15 @@ class PostgresIntentStore:
                 UPDATE intents
                 SET status = %s, tx_hash = COALESCE(%s, tx_hash),
                     settled_at = COALESCE(%s, settled_at),
-                    retry_count = COALESCE(%s, retry_count)
+                    retry_count = COALESCE(%s, retry_count),
+                    fee_amount = COALESCE(%s, fee_amount),
+                    fee_tx_hash = COALESCE(%s, fee_tx_hash)
                 WHERE id = %s
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
-                          status, tx_hash, created_at, settled_at, retry_count
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash
                 """,
-                (status, tx_hash, settled_at, retry_count, intent_id),
+                (status, tx_hash, settled_at, retry_count, fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
         if row is None:
             raise IntentNotFoundError("The intent does not exist.")
@@ -201,6 +214,8 @@ class PostgresIntentStore:
             created_at=row["created_at"],
             settled_at=row["settled_at"],
             retry_count=row["retry_count"],
+            fee_amount=_money(row["fee_amount"]) if row["fee_amount"] is not None else None,
+            fee_tx_hash=row["fee_tx_hash"],
         )
 
 
