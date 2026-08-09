@@ -33,6 +33,7 @@ class ArcReceipt:
     """One on-Arc Receipt as read from the ReceiptRecorded event."""
 
     user_id: str
+    mandate_id: str
     task_id: str
     purpose_hash: str
     service_url: str
@@ -49,11 +50,15 @@ class ReceiptReader(Protocol):
         """Return the receipts recorded for the agent identity, newest first."""
         ...
 
-    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+    def find_receipt(
+        self, *, user_id: str, mandate_id: str, purpose_hash: str
+    ) -> ArcReceipt | None:
         """Return the receipt for one finalized Intent, or None.
 
         Recovery (ticket 10e) uses this to read back the Receipt Anchor for a
-        finalized Intent instead of writing a second Receipt after a crash.
+        finalized Intent instead of writing a second Receipt after a crash. The
+        receipt is scoped by Mandate and purpose hash so one Mandate's Intent
+        never receives another Mandate's Receipt Anchor.
         """
         ...
 
@@ -94,10 +99,12 @@ class ViemReceiptReader:
             raise ReceiptReadError("The receipt reader script failed.") from error
         return _parse_receipts(output)
 
-    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+    def find_receipt(
+        self, *, user_id: str, mandate_id: str, purpose_hash: str
+    ) -> ArcReceipt | None:
         """Return the receipt for one finalized Intent, or None."""
         for receipt in self.list_receipts(user_id=user_id):
-            if receipt.purpose_hash == purpose_hash:
+            if receipt.mandate_id == mandate_id and receipt.purpose_hash == purpose_hash:
                 return receipt
         return None
 
@@ -111,10 +118,12 @@ class ScriptedReceiptReader:
     def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
         return [receipt for receipt in self._receipts if receipt.user_id == user_id]
 
-    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+    def find_receipt(
+        self, *, user_id: str, mandate_id: str, purpose_hash: str
+    ) -> ArcReceipt | None:
         """Return the receipt for one finalized Intent, or None."""
         for receipt in self.list_receipts(user_id=user_id):
-            if receipt.purpose_hash == purpose_hash:
+            if receipt.mandate_id == mandate_id and receipt.purpose_hash == purpose_hash:
                 return receipt
         return None
 
@@ -144,6 +153,7 @@ def _parse_receipts(output: str) -> list[ArcReceipt]:
         receipts.append(
             ArcReceipt(
                 user_id=_string_field(entry, "userId") or "",
+                mandate_id=_string_field(entry, "mandateId") or "",
                 task_id=_string_field(entry, "taskId") or "",
                 purpose_hash=_string_field(entry, "purposeHash") or "",
                 service_url=_string_field(entry, "serviceUrl") or "",

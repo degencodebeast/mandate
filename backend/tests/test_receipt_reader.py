@@ -27,6 +27,7 @@ from mandate.receipt_reader import (
 def test_scripted_reader_returns_fixed_receipts() -> None:
     receipt = ArcReceipt(
         user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
         task_id="task-1",
         purpose_hash="hash-1",
         service_url="https://service-a.example.com",
@@ -51,6 +52,7 @@ def test_parse_receipts_reads_all_fields() -> None:
         [
             {
                 "userId": "did:erc8004:agent",
+                "mandateId": "mandate-1",
                 "taskId": "task-1",
                 "purposeHash": "hash-1",
                 "serviceUrl": "https://service-a.example.com",
@@ -67,6 +69,7 @@ def test_parse_receipts_reads_all_fields() -> None:
     assert len(receipts) == 1
     receipt = receipts[0]
     assert receipt.user_id == "did:erc8004:agent"
+    assert receipt.mandate_id == "mandate-1"
     assert receipt.task_id == "task-1"
     assert receipt.purpose_hash == "hash-1"
     assert receipt.service_url == "https://service-a.example.com"
@@ -143,6 +146,7 @@ def test_viem_reader_uses_scripted_runner() -> None:
 def test_scripted_reader_finds_receipt_for_one_intent() -> None:
     receipt = ArcReceipt(
         user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
         task_id="task-1",
         purpose_hash="hash-1",
         service_url="https://service-a.example.com",
@@ -153,6 +157,27 @@ def test_scripted_reader_finds_receipt_for_one_intent() -> None:
     )
     reader = ScriptedReceiptReader([receipt])
 
-    assert reader.find_receipt(user_id="did:erc8004:agent", purpose_hash="hash-1") == receipt
-    assert reader.find_receipt(user_id="did:erc8004:agent", purpose_hash="absent") is None
-    assert reader.find_receipt(user_id="did:erc8004:other", purpose_hash="hash-1") is None
+    assert (
+        reader.find_receipt(
+            user_id="did:erc8004:agent", mandate_id="mandate-1", purpose_hash="hash-1"
+        )
+        == receipt
+    )
+    assert (
+        reader.find_receipt(
+            user_id="did:erc8004:agent", mandate_id="mandate-1", purpose_hash="absent"
+        )
+        is None
+    )
+    assert (
+        reader.find_receipt(
+            user_id="did:erc8004:other", mandate_id="mandate-1", purpose_hash="hash-1"
+        )
+        is None
+    )
+    assert (
+        reader.find_receipt(
+            user_id="did:erc8004:agent", mandate_id="mandate-other", purpose_hash="hash-1"
+        )
+        is None
+    )

@@ -549,6 +549,7 @@ def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
     """
     return {
         "user_id": receipt.user_id,
+        "mandate_id": receipt.mandate_id,
         "task_id": receipt.task_id,
         "purpose_hash": receipt.purpose_hash,
         "service_url": receipt.service_url,

@@ -180,10 +180,13 @@ def test_get_mandate_status_returns_404_for_unknown_mandate(components: Componen
 
 def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
     _reset_database()
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
     components = Components(
         receipts=[
             ArcReceipt(
                 user_id="did:erc8004:status-api-agent",
+                mandate_id=str(mandate.id),
                 task_id="task-1",
                 purpose_hash="hash-1",
                 service_url=_SERVICE_URL,
@@ -193,7 +196,6 @@ def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
             )
         ]
     )
-    mandate = _create_mandate(components.store)
 
     response = components.client.get(f"/api/v1/mandates/{mandate.id}/receipts")
 
@@ -202,6 +204,7 @@ def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
     assert len(document["receipts"]) == 1
     assert document["receipts"][0]["user_id"] == "did:erc8004:status-api-agent"
     assert document["receipts"][0]["tx_hash"] == "0xsettled"
+    assert document["receipts"][0]["mandate_id"] == str(mandate.id)
 
 
 def test_get_mandate_receipts_scopes_to_own_mandate(components: Components) -> None:

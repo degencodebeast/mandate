@@ -11,20 +11,24 @@ pragma solidity ^0.8.26;
 /// transfer (ticket 07).
 ///
 /// One finalized Intent can create at most one Receipt Anchor (ticket 10e,
-/// ADR-0032). The registry records which (userId, purposeHash) pair already has
-/// a Receipt and reverts a duplicate write, so restartable finalization cannot
-/// create a second Receipt for the same Intent.
+/// ADR-0032). The Intent is scoped by Mandate: the same Task and purpose can
+/// exist under different Mandates, so the registry keys each Receipt by
+/// (userId, mandateId, purposeHash) and reverts a duplicate write. This keeps
+/// one Mandate's Intent from ever receiving another Mandate's Receipt Anchor.
 contract ReceiptRegistry {
     /// @notice The single address permitted to record receipts.
     address public immutable owner;
 
-    /// @notice Tracks the finalized (userId, purposeHash) pairs that already
-    /// have a Receipt. One finalized Intent can create at most one Receipt
-    /// Anchor (ticket 10e).
-    mapping(string userId => mapping(string purposeHash => bool)) private recorded;
+    /// @notice Tracks the finalized (userId, mandateId, purposeHash) triples
+    /// that already have a Receipt. One finalized Intent can create at most one
+    /// Receipt Anchor (ticket 10e).
+    mapping(string userId => mapping(string mandateId => mapping(string purposeHash => bool)))
+        private recorded;
 
     /// @notice Emitted once per recorded receipt with every receipt field.
     /// @param userId The ERC-8004 agent identity that made the payment (ADR-0016).
+    /// @param mandateId The Mandate the Intent belongs to. It scopes the receipt
+    /// so two Mandates never share one Receipt Anchor.
     /// @param taskId The task the payment served.
     /// @param purposeHash The intent dedupe key for the (Task, Purpose) pair.
     /// @param serviceUrl The service that was paid.
@@ -36,6 +40,7 @@ contract ReceiptRegistry {
     /// @param timestamp The block time when the receipt was recorded.
     event ReceiptRecorded(
         string userId,
+        string mandateId,
         string taskId,
         string purposeHash,
         string serviceUrl,
@@ -55,6 +60,7 @@ contract ReceiptRegistry {
     /// @return The block timestamp when the receipt was recorded.
     function recordReceipt(
         string calldata userId,
+        string calldata mandateId,
         string calldata taskId,
         string calldata purposeHash,
         string calldata serviceUrl,
@@ -63,10 +69,20 @@ contract ReceiptRegistry {
         string calldata feeTxHash
     ) external returns (uint256) {
         require(msg.sender == owner, "ReceiptRegistry: only owner");
-        require(!recorded[userId][purposeHash], "ReceiptRegistry: receipt already recorded");
-        recorded[userId][purposeHash] = true;
+        require(
+            !recorded[userId][mandateId][purposeHash], "ReceiptRegistry: receipt already recorded"
+        );
+        recorded[userId][mandateId][purposeHash] = true;
         emit ReceiptRecorded(
-            userId, taskId, purposeHash, serviceUrl, amount, txHash, feeTxHash, block.timestamp
+            userId,
+            mandateId,
+            taskId,
+            purposeHash,
+            serviceUrl,
+            amount,
+            txHash,
+            feeTxHash,
+            block.timestamp
         );
         return block.timestamp;
     }

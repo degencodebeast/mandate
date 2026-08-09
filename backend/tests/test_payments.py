@@ -98,6 +98,7 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
 
     tx_hash = recorder.record_receipt(
         user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
         task_id="task-1",
         purpose_hash="hash-1",
         service_url="https://service-a.example.com",
@@ -109,8 +110,9 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
     assert tx_hash == "0xsettled"
     command = runner.command
     assert command[:3] == ["circle", "wallet", "execute"]
-    assert "recordReceipt(string,string,string,string,string,string,string)" in command
+    assert "recordReceipt(string,string,string,string,string,string,string,string)" in command
     assert "did:erc8004:agent" in command
+    assert "mandate-1" in command
     assert "0xfeepaid" in command
     assert "--contract" in command and "0xregistry" in command
     assert "--chain" in command and "ARC-TESTNET" in command
@@ -121,6 +123,7 @@ def test_scripted_receipt_recorder_remembers_records() -> None:
 
     recorder.record_receipt(
         user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
         task_id="task-9",
         purpose_hash="hash-9",
         service_url="https://service-a.example.com",
@@ -139,6 +142,7 @@ def test_scripted_receipt_recorder_rejects_duplicate_for_one_intent() -> None:
 
     recorder.record_receipt(
         user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
         task_id="task-9",
         purpose_hash="hash-9",
         service_url="https://service-a.example.com",
@@ -150,6 +154,7 @@ def test_scripted_receipt_recorder_rejects_duplicate_for_one_intent() -> None:
     with pytest.raises(ReceiptWriteError):
         recorder.record_receipt(
             user_id="did:erc8004:agent",
+            mandate_id="mandate-1",
             task_id="task-9",
             purpose_hash="hash-9",
             service_url="https://service-a.example.com",
@@ -183,6 +188,7 @@ def test_receipt_anchor_rejects_operation_id_only_document() -> None:
     with pytest.raises(ReceiptWriteError):
         recorder.record_receipt(
             user_id="did:erc8004:agent",
+            mandate_id="mandate-1",
             task_id="task-1",
             purpose_hash="hash-1",
             service_url="https://service-a.example.com",

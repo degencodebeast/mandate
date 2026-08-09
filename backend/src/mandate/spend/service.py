@@ -503,12 +503,17 @@ class MandateSpendService:
         case the anchor is read back from Arc and no second Receipt is
         written. Only when no Receipt exists is ``record_receipt`` called.
         """
-        existing = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+        existing = self._existing_receipt_anchor(
+            mandate=mandate,
+            purpose_hash=purpose_hash,
+            payment_reference=current.payment_reference,
+        )
         if existing is not None:
             return existing
         try:
             return self._receipt_recorder.record_receipt(
                 user_id=mandate.agent_identity,
+                mandate_id=str(mandate.id),
                 task_id=task_id,
                 purpose_hash=purpose_hash,
                 service_url=current.service_url,
@@ -517,19 +522,36 @@ class MandateSpendService:
                 fee_tx_hash="",
             )
         except ReceiptWriteError:
-            existing = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+            existing = self._existing_receipt_anchor(
+                mandate=mandate,
+                purpose_hash=purpose_hash,
+                payment_reference=current.payment_reference,
+            )
             if existing is not None:
                 return existing
             raise
 
-    def _existing_receipt_anchor(self, *, mandate: Mandate, purpose_hash: str) -> str | None:
-        """Read back the Receipt Anchor for one finalized Intent, or None."""
+    def _existing_receipt_anchor(
+        self, *, mandate: Mandate, purpose_hash: str, payment_reference: str | None
+    ) -> str | None:
+        """Read back the Receipt Anchor for one finalized Intent, or None.
+
+        The receipt is accepted only when it belongs to the same Mandate, the
+        same purpose hash, and the same Payment Reference as the stored Intent.
+        A different Mandate with the same Task and purpose, or a different
+        Payment Reference, is never accepted as this Intent's proof (gate
+        Critical, ticket 10e).
+        """
         if self._receipt_reader is None:
             return None
         receipt = self._receipt_reader.find_receipt(
-            user_id=mandate.agent_identity, purpose_hash=purpose_hash
+            user_id=mandate.agent_identity,
+            mandate_id=str(mandate.id),
+            purpose_hash=purpose_hash,
         )
         if receipt is None or not receipt.anchor:
+            return None
+        if payment_reference and receipt.tx_hash != payment_reference:
             return None
         return receipt.anchor
 
@@ -545,7 +567,11 @@ class MandateSpendService:
         """
         if intent.receipt_anchor is not None:
             return intent
-        anchor = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+        anchor = self._existing_receipt_anchor(
+            mandate=mandate,
+            purpose_hash=purpose_hash,
+            payment_reference=intent.payment_reference,
+        )
         if anchor is None:
             return None
         return self._intent_store.store_receipt_anchor(intent_id=intent.id, anchor=anchor)

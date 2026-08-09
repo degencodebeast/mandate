@@ -84,7 +84,7 @@ class FailingReceiptReader:
     def list_receipts(self, *, user_id: str) -> list[object]:
         raise ReceiptReadError("The receipt reader failed.")
 
-    def find_receipt(self, *, user_id: str, purpose_hash: str) -> object:
+    def find_receipt(self, *, user_id: str, mandate_id: str, purpose_hash: str) -> object:
         raise ReceiptReadError("The receipt reader failed.")
 
 
@@ -293,6 +293,7 @@ def test_recovery_after_receipt_write_but_anchor_store_lost(
     receipts = ScriptedReceiptRecorder()
     receipts.record_receipt(
         user_id="did:erc8004:finalize-agent",
+        mandate_id=str(mandate.id),
         task_id="task-1",
         purpose_hash=intent_hash,
         service_url=_SERVICE_URL,
@@ -304,6 +305,7 @@ def test_recovery_after_receipt_write_but_anchor_store_lost(
         [
             ArcReceipt(
                 user_id="did:erc8004:finalize-agent",
+                mandate_id=str(mandate.id),
                 task_id="task-1",
                 purpose_hash=intent_hash,
                 service_url=_SERVICE_URL,
@@ -588,6 +590,7 @@ def test_legacy_settled_intent_recovers_receipt_anchor(client: TestClient) -> No
         [
             ArcReceipt(
                 user_id="did:erc8004:finalize-agent",
+                mandate_id=str(mandate.id),
                 task_id="task-1",
                 purpose_hash=intent_hash,
                 service_url=_SERVICE_URL,
@@ -643,3 +646,81 @@ def test_finalize_receipt_read_failure_is_explicit_502(client: TestClient) -> No
 
     assert response.status_code == 502
     assert response.json()["detail"]
+
+
+def test_distinct_mandates_never_share_a_receipt_anchor(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    first_mandate = _create_mandate(store)
+    second_mandate = _create_mandate(store)
+
+    first_recorder = ScriptedReceiptRecorder(anchor="0xfirst-anchor")
+    first_client = _build_client(
+        payments=RecordingPaymentExecutor(tx_hash="0xfirst-payment"),
+        receipts=first_recorder,
+        store=store,
+    )
+    first = _spend(first_client, first_mandate.id)
+    assert first.status_code == 200
+    assert first.json()["receipt"]["receipt_anchor"] == "0xfirst-anchor"
+
+    second_recorder = ScriptedReceiptRecorder(anchor="0xsecond-anchor")
+    second_client = _build_client(
+        payments=RecordingPaymentExecutor(tx_hash="0xsecond-payment"),
+        receipts=second_recorder,
+        store=store,
+    )
+    second = _spend(second_client, second_mandate.id)
+    assert second.status_code == 200
+    assert second.json()["receipt"]["receipt_anchor"] == "0xsecond-anchor"
+
+    first_intent = _stored_intent(first_mandate.id, "task-1", "buy a research report")
+    second_intent = _stored_intent(second_mandate.id, "task-1", "buy a research report")
+    assert first_intent is not None and second_intent is not None
+    assert first_intent.payment_reference == "0xfirst-payment"
+    assert second_intent.payment_reference == "0xsecond-payment"
+    assert first_intent.receipt_anchor == "0xfirst-anchor"
+    assert second_intent.receipt_anchor == "0xsecond-anchor"
+
+
+def test_recovery_never_accepts_another_mandates_anchor(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    other_mandate = _create_mandate(store)
+    intent_hash = purpose_hash("task-1", "buy a research report")
+
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(intent_id=intent.id, reference="0xmy-payment")
+    store.reserve(mandate_id=mandate.id, amount="1.00")
+
+    other_receipt = ArcReceipt(
+        user_id="did:erc8004:finalize-agent",
+        mandate_id=str(other_mandate.id),
+        task_id="task-1",
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+        tx_hash="0xother-payment",
+        timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+        anchor="0xother-anchor",
+    )
+    reader = ScriptedReceiptReader([other_receipt])
+    client = _build_client(
+        payments=ForbiddenPaymentExecutor(),
+        receipts=ScriptedReceiptRecorder(anchor="0xmy-anchor"),
+        store=store,
+        reader=reader,
+    )
+
+    response = _finalize(client, mandate.id)
+
+    assert response.status_code == 200
+    document = response.json()
+    assert document["intent"]["status"] == "settled"
+    assert document["receipt"]["receipt_anchor"] == "0xmy-anchor"

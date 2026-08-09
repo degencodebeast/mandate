@@ -59,6 +59,7 @@ export interface BreakerStateRecord {
 
 export interface ReceiptRecord {
   user_id: string;
+  mandate_id: string;
   task_id: string;
   purpose_hash: string;
   service_url: string;

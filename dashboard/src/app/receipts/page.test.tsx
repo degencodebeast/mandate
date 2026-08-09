@@ -33,6 +33,7 @@ function mandate(id: string): MandateSummary {
 function receipt(anchor: string): ReceiptRecord {
   return {
     user_id: "did:erc8004:agent",
+    mandate_id: "m-1",
     task_id: "task-1",
     purpose_hash: "hash-1",
     service_url: "https://service-a.example.com",
@@ -90,6 +91,25 @@ describe("ReceiptsPage error and empty states", () => {
     expect(screen.getAllByRole("button", { name: /Retry/ }).length).toBeGreaterThan(0);
   });
 
+  it("shows successful Receipts together with per-mandate errors", async () => {
+    mockClient({
+      listMandates: async () => ({ mandates: [mandate("m-1"), mandate("m-2")] }),
+      listReceipts: async (mandateId: string) => {
+        if (mandateId === "m-1") {
+          return { receipts: [receipt("0xanchor-1")] };
+        }
+        throw new ApiError(502, "Receipt read failed on Arc", null);
+      },
+    });
+    render(<ReceiptsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Receipt read failed on Arc/)).toBeTruthy();
+    });
+    expect(screen.getByRole("link", { name: /0xanchor-1/ })).toBeTruthy();
+    expect(screen.queryByText(/No receipts yet/)).toBeNull();
+  });
+
   it("shows the empty state only when every read succeeds and the result is empty", async () => {
     mockClient({
       listMandates: async () => ({ mandates: [mandate("m-1")] }),
@@ -144,5 +164,27 @@ describe("ReceiptsPage error and empty states", () => {
     });
     expect(screen.queryByText(/Receipt read failed on Arc/)).toBeNull();
     expect(calls).toBe(2);
+  });
+
+  it("shows a loading state, not an empty state, while Retry is pending", async () => {
+    let resolveReceipts: (value: { receipts: ReceiptRecord[] }) => void = () => undefined;
+    const pending = new Promise<{ receipts: ReceiptRecord[] }>((resolve) => {
+      resolveReceipts = resolve;
+    });
+    mockClient({
+      listMandates: async () => ({ mandates: [mandate("m-1")] }),
+      listReceipts: () => pending,
+    });
+    render(<ReceiptsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Loading receipts…/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/No receipts yet/)).toBeNull();
+
+    resolveReceipts({ receipts: [receipt("0xanchor-1")] });
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /0xanchor-1/ })).toBeTruthy();
+    });
   });
 });

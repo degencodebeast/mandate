@@ -37,7 +37,7 @@ async function main() {
   const logs = await client.getLogs({
     address: registry,
     event: parseAbiItem(
-      "event ReceiptRecorded(string userId, string taskId, string purposeHash, string serviceUrl, string amount, string txHash, string feeTxHash, uint256 timestamp)",
+      "event ReceiptRecorded(string userId, string mandateId, string taskId, string purposeHash, string serviceUrl, string amount, string txHash, string feeTxHash, uint256 timestamp)",
     ),
     fromBlock: 0n,
   });
@@ -47,6 +47,7 @@ async function main() {
     .sort((a, b) => Number((b.args.timestamp ?? 0n) - (a.args.timestamp ?? 0n)))
     .map((log) => ({
       userId: log.args.userId,
+      mandateId: log.args.mandateId,
       taskId: log.args.taskId,
       purposeHash: log.args.purposeHash,
       serviceUrl: log.args.serviceUrl,

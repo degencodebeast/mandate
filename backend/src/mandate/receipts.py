@@ -35,6 +35,7 @@ class ReceiptRecorder(Protocol):
         self,
         *,
         user_id: str,
+        mandate_id: str,
         task_id: str,
         purpose_hash: str,
         service_url: str,
@@ -70,6 +71,7 @@ class ArcReceiptRecorder:
         self,
         *,
         user_id: str,
+        mandate_id: str,
         task_id: str,
         purpose_hash: str,
         service_url: str,
@@ -85,7 +87,8 @@ class ArcReceiptRecorder:
 
         The Receipt Anchor is the transaction hash of this write, parsed from
         the CLI output. It is separate from the service payment hash
-        (``tx_hash``), which the on-chain Receipt stores as a field.
+        (``tx_hash``), which the on-chain Receipt stores as a field. The
+        Mandate ID scopes the Receipt so two Mandates never share one Anchor.
         """
         try:
             output = run_cli(
@@ -93,8 +96,9 @@ class ArcReceiptRecorder:
                     "circle",
                     "wallet",
                     "execute",
-                    "recordReceipt(string,string,string,string,string,string,string)",
+                    "recordReceipt(string,string,string,string,string,string,string,string)",
                     user_id,
+                    mandate_id,
                     task_id,
                     purpose_hash,
                     service_url,
@@ -119,20 +123,22 @@ class ScriptedReceiptRecorder:
     """Return a fixed Receipt Anchor for tests. No network.
 
     The recorder mirrors the Receipt Registry contract: a second write for the
-    same (user_id, purpose_hash) pair reverts with ReceiptWriteError (ticket
-    10e). Recovery does not rely on this recorder being lenient — it reads the
-    existing anchor back from the reader instead of writing again.
+    same (user_id, mandate_id, purpose_hash) triple reverts with
+    ReceiptWriteError (ticket 10e). Recovery does not rely on this recorder
+    being lenient — it reads the existing anchor back from the reader instead
+    of writing again.
     """
 
     def __init__(self, anchor: str = "0xreceipt-anchor") -> None:
         self._anchor = anchor
-        self._anchors: dict[tuple[str, str], str] = {}
+        self._anchors: dict[tuple[str, str, str], str] = {}
         self.recorded: list[dict[str, str]] = []
 
     def record_receipt(
         self,
         *,
         user_id: str,
+        mandate_id: str,
         task_id: str,
         purpose_hash: str,
         service_url: str,
@@ -140,12 +146,13 @@ class ScriptedReceiptRecorder:
         tx_hash: str,
         fee_tx_hash: str,
     ) -> str:
-        key = (user_id, purpose_hash)
+        key = (user_id, mandate_id, purpose_hash)
         if key in self._anchors:
             raise ReceiptWriteError("ReceiptRegistry: receipt already recorded")
         self.recorded.append(
             {
                 "user_id": user_id,
+                "mandate_id": mandate_id,
                 "task_id": task_id,
                 "purpose_hash": purpose_hash,
                 "service_url": service_url,
@@ -158,9 +165,9 @@ class ScriptedReceiptRecorder:
         self._anchors[key] = anchor
         return anchor
 
-    def existing_anchor(self, *, user_id: str, purpose_hash: str) -> str | None:
+    def existing_anchor(self, *, user_id: str, mandate_id: str, purpose_hash: str) -> str | None:
         """Return the anchor already recorded for one Intent, or None."""
-        return self._anchors.get((user_id, purpose_hash))
+        return self._anchors.get((user_id, mandate_id, purpose_hash))
 
 
 def _extract_receipt_anchor(output: str) -> str:
