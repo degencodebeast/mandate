@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.fees import ScriptedFeeCollector
 from mandate.payments import PaymentExecutionError, PaymentUnknownError
 from mandate.persistence.breaker_store import BreakerStateStore, PostgresBreakerStateStore
 from mandate.persistence.intent_store import PostgresIntentStore
@@ -84,7 +83,6 @@ class Components:
         self.breaker_store: BreakerStateStore = PostgresBreakerStateStore(_DATABASE_URL)
         self.payments = RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
-        self.fees = ScriptedFeeCollector()
         self.clock = FakeClock()
         breaker = CircuitBreaker(
             store=self.breaker_store,
@@ -97,9 +95,6 @@ class Components:
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
-            fee_collector=self.fees,
-            fee_wallet_address="0xfeewallet",
-            fee_percentage=0.01,
             breaker=breaker,
             now=self.clock,
         )

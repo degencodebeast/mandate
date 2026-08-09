@@ -66,14 +66,7 @@ contract ReceiptRegistry {
         require(!recorded[userId][purposeHash], "ReceiptRegistry: receipt already recorded");
         recorded[userId][purposeHash] = true;
         emit ReceiptRecorded(
-            userId,
-            taskId,
-            purposeHash,
-            serviceUrl,
-            amount,
-            txHash,
-            feeTxHash,
-            block.timestamp
+            userId, taskId, purposeHash, serviceUrl, amount, txHash, feeTxHash, block.timestamp
         );
         return block.timestamp;
     }

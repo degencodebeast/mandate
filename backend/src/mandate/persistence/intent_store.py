@@ -102,21 +102,11 @@ class IntentStore(Protocol):
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent: ...
 
-    def store_fee_fields(
-        self,
-        *,
-        intent_id: uuid.UUID,
-        fee_amount: str | None,
-        fee_tx_hash: str | None,
-    ) -> Intent: ...
-
     def finalize_settlement(
         self,
         *,
         intent_id: uuid.UUID,
         settled_at: datetime,
-        fee_amount: str | None,
-        fee_tx_hash: str | None,
     ) -> Intent: ...
 
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
@@ -299,14 +289,16 @@ class PostgresIntentStore:
         The Receipt Anchor is the Arc transaction that wrote the Receipt
         (CONTEXT.md). It stays separate from the Payment Reference. The stored
         value is write-once: one finalized Intent can create at most one Receipt
-        Anchor, so a repeated write keeps the original anchor.
+        Anchor, so a repeated write keeps the original anchor. The write applies
+        to a SETTLING Intent during finalization and to a legacy SETTLED Intent
+        whose anchor was recovered from Arc (ticket 10e).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
                 SET receipt_anchor = COALESCE(receipt_anchor, %s)
-                WHERE id = %s AND status = 'settling'
+                WHERE id = %s AND status IN ('settling', 'settled')
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
@@ -325,12 +317,12 @@ class PostgresIntentStore:
         fee_amount: str | None,
         fee_tx_hash: str | None,
     ) -> Intent:
-        """Persist the fee outcome before the Intent settles (ticket 10e).
+        """Persist the fee outcome before the Intent settles.
 
-        The fee fields are stored as soon as the fee is collected so a resumed
-        finalization never collects the fee twice. A fee that failed to move is
-        stored with a NULL fee transaction hash and is never counted in the
-        mandate's fees_total. Stored fee evidence is write-once.
+        The Fee is outside the submission boundary (ADR-0034) and the service
+        does not collect fees. This method exists so the schema-level fee
+        columns stay write-once for any caller that still stores a fee; the
+        active spend service never calls it.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
@@ -355,8 +347,8 @@ class PostgresIntentStore:
         *,
         intent_id: uuid.UUID,
         settled_at: datetime,
-        fee_amount: str | None,
-        fee_tx_hash: str | None,
+        fee_amount: str | None = None,
+        fee_tx_hash: str | None = None,
     ) -> Intent:
         """Settle one SETTLING Intent and book the spend exactly once.
 

@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.fees import FeeTransferError, ScriptedFeeCollector
+from mandate.fees import ScriptedFeeCollector
 from mandate.payments import PaymentExecutionError
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
@@ -62,13 +62,6 @@ class RecordingPaymentExecutor:
         return self.tx_hash
 
 
-class FailingFeeCollector:
-    """Raise a fee transfer error on every fee collection. No network."""
-
-    def collect_fee(self, *, wallet_address: str, fee_wallet_address: str, amount: str) -> str:
-        raise FeeTransferError("The fee transfer call failed.")
-
-
 class FailingReceiptRecorder:
     """Raise on every receipt record. No network."""
 
@@ -89,9 +82,6 @@ class Components:
             intent_store=PostgresIntentStore(_DATABASE_URL),
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
-            fee_collector=self.fees,
-            fee_wallet_address="0xfeewallet",
-            fee_percentage=0.01,
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
@@ -515,7 +505,7 @@ def test_create_mandate_rejects_unicode_decimal_budget(components: Components) -
     assert response.status_code == 422
 
 
-def test_spend_settles_with_fee_split_to_fee_wallet(components: Components) -> None:
+def test_spend_does_not_collect_fee(components: Components) -> None:
     mandate = _create_mandate(components.store)
 
     response = _spend(components, mandate.id)
@@ -524,63 +514,20 @@ def test_spend_settles_with_fee_split_to_fee_wallet(components: Components) -> N
     document = response.json()
     assert document["outcome"] == "permitted"
     assert document["intent"]["status"] == "settled"
-    assert document["intent"]["fee_amount"] == "0.010000"
-    assert document["intent"]["fee_tx_hash"] == "0xfeepaid"
+    assert document["intent"]["fee_amount"] is None
+    assert document["intent"]["fee_tx_hash"] is None
     assert document["receipt"]["tx_hash"] == "0xsettled"
-    assert document["receipt"]["fee_amount"] == "0.010000"
-    assert document["receipt"]["fee_tx_hash"] == "0xfeepaid"
+    assert document["receipt"]["fee_amount"] is None
+    assert document["receipt"]["fee_tx_hash"] is None
     assert document["spent_total"] == "1.00"
     assert components.payments.calls == [(_SERVICE_URL, "1.00")]
-    assert components.fees.calls == [("0xwallet123", "0xfeewallet", "0.010000")]
+    assert components.fees.calls == []
     assert len(components.receipts.recorded) == 1
     assert components.receipts.recorded[0]["tx_hash"] == "0xsettled"
     assert components.receipts.recorded[0]["fee_tx_hash"] == ""
 
 
-def test_spend_fee_transfer_failure_still_settles_payment(components: Components) -> None:
-    mandate = _create_mandate(components.store)
-    spend_service = MandateSpendService(
-        mandate_store=components.store,
-        intent_store=PostgresIntentStore(_DATABASE_URL),
-        payment_executor=RecordingPaymentExecutor(),
-        receipt_recorder=ScriptedReceiptRecorder(),
-        fee_collector=FailingFeeCollector(),
-        fee_wallet_address="0xfeewallet",
-        fee_percentage=0.01,
-    )
-    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
-    app = create_app(
-        settings=ApiSettings(database_url=_DATABASE_URL),
-        identity_verifier=verifier,
-        mandate_store=components.store,
-        spend_service=spend_service,
-    )
-    client = TestClient(app)
-    client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
-
-    response = client.post(
-        f"/api/v1/mandates/{mandate.id}/spend",
-        json={
-            "task_id": "task-1",
-            "purpose": "buy a research report",
-            "service_url": _SERVICE_URL,
-            "amount": "1.00",
-        },
-    )
-
-    assert response.status_code == 200
-    document = response.json()
-    assert document["outcome"] == "permitted"
-    assert document["intent"]["status"] == "settled"
-    assert document["intent"]["fee_amount"] == "0.010000"
-    assert document["intent"]["fee_tx_hash"] is None
-    assert document["receipt"]["tx_hash"] == "0xsettled"
-    assert document["receipt"]["fee_amount"] == "0.010000"
-    assert document["receipt"]["fee_tx_hash"] is None
-    assert document["spent_total"] == "1.00"
-
-
-def test_spend_receipt_failure_blocks_fee_transfer(components: Components) -> None:
+def test_spend_receipt_failure_leaves_recoverable_settling(components: Components) -> None:
     mandate = _create_mandate(components.store)
     fees = ScriptedFeeCollector()
     spend_service = MandateSpendService(
@@ -588,9 +535,6 @@ def test_spend_receipt_failure_blocks_fee_transfer(components: Components) -> No
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=FailingReceiptRecorder(),
-        fee_collector=fees,
-        fee_wallet_address="0xfeewallet",
-        fee_percentage=0.01,
     )
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     app = create_app(
@@ -621,10 +565,11 @@ def test_spend_receipt_failure_blocks_fee_transfer(components: Components) -> No
     )
     assert intent is not None
     assert intent.status == "settling"
+    assert intent.payment_reference == "0xsettled"
     assert intent.fee_amount is None
 
 
-def test_spend_without_fee_config_collects_no_fee(components: Components) -> None:
+def test_spend_collects_no_fee(components: Components) -> None:
     mandate = _create_mandate(components.store)
     spend_service = MandateSpendService(
         mandate_store=components.store,
@@ -660,7 +605,7 @@ def test_spend_without_fee_config_collects_no_fee(components: Components) -> Non
     assert document["intent"]["fee_tx_hash"] is None
 
 
-def test_status_shows_total_fees_paid_per_mandate(components: Components) -> None:
+def test_status_shows_zero_fees_paid_per_mandate(components: Components) -> None:
     mandate = _create_mandate(components.store)
     _spend(components, mandate.id, task_id="task-1")
     _spend(components, mandate.id, task_id="task-2")
@@ -670,11 +615,11 @@ def test_status_shows_total_fees_paid_per_mandate(components: Components) -> Non
     assert response.status_code == 200
     document = response.json()
     assert document["mandate"]["spent_total"] == "2.00"
-    assert document["mandate"]["fees_total"] == "0.020000"
+    assert document["mandate"]["fees_total"] == "0"
     settled = [intent for intent in document["intents"] if intent["status"] == "settled"]
     assert len(settled) == 2
-    assert all(intent["fee_amount"] == "0.010000" for intent in settled)
-    assert all(intent["fee_tx_hash"] == "0xfeepaid" for intent in settled)
+    assert all(intent["fee_amount"] is None for intent in settled)
+    assert all(intent["fee_tx_hash"] is None for intent in settled)
 
 
 def test_spend_concurrent_distinct_intents_cannot_exceed_budget(

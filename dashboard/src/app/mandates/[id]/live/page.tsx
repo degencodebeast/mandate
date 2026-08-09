@@ -71,6 +71,7 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
     void loadReceipts();
     pollRef.current = window.setInterval(() => {
       void load();
+      void loadReceipts();
     }, POLL_INTERVAL_MS);
     return () => {
       mountedRef.current = false;
@@ -200,6 +201,13 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
       {receiptError ? (
         <div className="notice error" role="alert">
           Receipt read failed: {receiptError}. The Arc proof cannot be shown right now.
+          <button
+            className="btn btn-secondary"
+            style={{ marginLeft: "var(--space-3)" }}
+            onClick={() => void loadReceipts()}
+          >
+            Retry
+          </button>
         </div>
       ) : (
         <ReceiptList receipts={receipts} />

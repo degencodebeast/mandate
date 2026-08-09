@@ -503,7 +503,7 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 /* Receipt row */
 .receipt-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 120px 100px 140px;
+  grid-template-columns: 1fr 1fr 110px 90px 130px 140px;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);

@@ -38,7 +38,6 @@ from mandate.auth import (
     rejecting_identity_verifier,
 )
 from mandate.config import ApiSettings, Service, assert_secret_boundary
-from mandate.fees import CircleCliFeeCollector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
@@ -315,6 +314,8 @@ def create_app(
             )
         except NotFoundError:
             raise StarletteHTTPException(status_code=404) from None
+        except ReceiptReadError as error:
+            raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(content=_spend_to_json(result))
 
     @app.post("/api/v1/mandates/{mandate_id}/finalize")
@@ -336,7 +337,7 @@ def create_app(
             raise StarletteHTTPException(status_code=404) from None
         except (FinalizationNotPossibleError, UnresolvedPaymentReferenceError) as error:
             raise StarletteHTTPException(status_code=409, detail=str(error)) from None
-        except ReceiptWriteError as error:
+        except (ReceiptReadError, ReceiptWriteError) as error:
             raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(content=_spend_to_json(result))
 
@@ -413,22 +414,13 @@ def _spend_service_from_settings(
         else None
     )
     receipt_reader = _receipt_reader_from_settings(settings)
-    fee_collector = (
-        CircleCliFeeCollector(
-            chain=settings.circle_chain,
-            timeout_seconds=settings.payment_timeout_seconds,
-        )
-        if settings.fee_wallet_address is not None
-        else None
-    )
+    if receipt_reader is None:
+        return None
     return MandateSpendService(
         mandate_store=store,
         intent_store=intent_store,
         payment_executor=payment_executor,
         receipt_recorder=receipt_recorder,
-        fee_collector=fee_collector,
-        fee_wallet_address=settings.fee_wallet_address,
-        fee_percentage=settings.fee_percentage,
         breaker=breaker,
         receipt_reader=receipt_reader,
     )

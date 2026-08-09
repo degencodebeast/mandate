@@ -73,6 +73,13 @@ export default function ReceiptsPage() {
           <span className="spinner" aria-hidden />
           <div className="empty-title">Loading receipts…</div>
         </div>
+      ) : rows.length === 0 ? (
+        <div className="empty">
+          <div className="empty-title">No receipts yet</div>
+          <div className="empty-body">
+            Once an agent settles a payment, the receipt will appear here.
+          </div>
+        </div>
       ) : (
         <>
           {rows.some((entry) => entry.error) ? (
@@ -96,6 +103,14 @@ export default function ReceiptsPage() {
               </div>
             ) : null,
           )}
+          {flat.length === 0 ? (
+            <div className="empty">
+              <div className="empty-title">No receipts yet</div>
+              <div className="empty-body">
+                Once an agent settles a payment, the receipt will appear here.
+              </div>
+            </div>
+          ) : null}
         </>
       )}
       {rows !== null && flat.length > 0 ? (

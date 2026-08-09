@@ -21,10 +21,11 @@ Intent transition and one valid Budget Reservation (ticket 10d, ADR-0032):
    Payment Authorization is ever issued for an UNKNOWN intent.
 
 Finalization (ticket 10e, ADR-0032) is restartable. The service writes the
-Payment Reference as soon as value moves, records the Receipt Anchor once,
-collects the fee once, and then settles the Intent and books the spend in one
-transaction. ``resume_finalization`` re-enters finalization from the stored
-Intent and Payment Reference; it never calls the payment adapter.
+Payment Reference as soon as value moves, records the Receipt Anchor once, and
+then settles the Intent and books the spend in one transaction.
+``resume_finalization`` re-enters finalization from the stored Intent and
+Payment Reference; it never calls the payment adapter. The Fee is outside the
+submission boundary (ADR-0034) and the service never collects a fee.
 
 The old NOT_SETTLED safe-retry and approximate reconciliation paths are gone
 (ticket 10d). An UNKNOWN intent stays frozen with WAIT or REQUEST_REVIEW only.
@@ -38,9 +39,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 
-from mandate.fees import FeeCollector, FeeTransferError, compute_fee_amount
 from mandate.payments import (
     PaymentExecutionError,
     PaymentExecutor,
@@ -92,11 +91,9 @@ class SpendReceipt:
     """The receipt data returned with a settled spend.
 
     The receipt carries the Payment Reference (``tx_hash``) and the separate
-    Receipt Anchor written on Arc (ticket 10e). Ticket 07 adds the fee split:
-    the receipt carries both the service payment transaction hash and the fee
-    transfer transaction hash, plus the collected fee amount. When no fee is
-    configured or the fee transfer failed, the fee fields are None (the payment
-    still settles).
+    Receipt Anchor written on Arc (ticket 10e). The fee fields exist for schema
+    compatibility; the Fee is outside the submission boundary (ADR-0034) and is
+    always None.
     """
 
     task_id: str
@@ -144,9 +141,6 @@ class MandateSpendService:
         intent_store: IntentStore,
         payment_executor: PaymentExecutor,
         receipt_recorder: ReceiptRecorder,
-        fee_collector: FeeCollector | None = None,
-        fee_wallet_address: str | None = None,
-        fee_percentage: float = 0.01,
         breaker: CircuitBreaker | None = None,
         now: Now | None = None,
         receipt_reader: ReceiptReader | None = None,
@@ -155,9 +149,6 @@ class MandateSpendService:
         self._intent_store = intent_store
         self._payment_executor = payment_executor
         self._receipt_recorder = receipt_recorder
-        self._fee_collector = fee_collector
-        self._fee_wallet_address = fee_wallet_address
-        self._fee_percentage = fee_percentage
         self._breaker = breaker or CircuitBreaker(store=ScriptedBreakerStateStore())
         self._receipt_reader = receipt_reader
         self._now = now or (lambda: datetime.now(UTC))
@@ -431,17 +422,16 @@ class MandateSpendService:
         task_id: str,
         purpose_hash: str,
     ) -> SpendResponse:
-        """Finish one paid Intent: proof, fee, accounting, and settle.
+        """Finish one paid Intent: proof, accounting, and settle.
 
         Finalization holds the durable one-owner advisory lock for the Intent
-        (ticket 10e). Only the lock holder performs the external Receipt and
-        Fee work, so concurrent recovery can never call either adapter twice.
-        The Receipt is recorded at most once; recovery reads back an existing
-        Receipt Anchor from Arc instead of writing a second Receipt. The fee is
-        collected at most once. ``finalize_settlement`` moves the reservation
-        to spent authority and settles the Intent in one transaction. The
-        caller must have stored the Payment Reference before calling this
-        method.
+        (ticket 10e). Only the lock holder performs the external Receipt work,
+        so concurrent recovery can never call the Receipt adapter twice. The
+        Receipt is recorded at most once; recovery reads back an existing
+        Receipt Anchor from Arc instead of writing a second Receipt.
+        ``finalize_settlement`` moves the reservation to spent authority and
+        settles the Intent in one transaction. The caller must have stored the
+        Payment Reference before calling this method.
         """
         with self._intent_store.finalization_guard(intent_id=intent.id):
             current = self._intent_store.get_intent(
@@ -469,28 +459,10 @@ class MandateSpendService:
                 current = self._intent_store.store_receipt_anchor(
                     intent_id=current.id, anchor=anchor
                 )
-            if current.fee_amount is None:
-                fee_amount = self._planned_fee_amount(current.amount)
-                if fee_amount is not None:
-                    current = self._intent_store.store_fee_fields(
-                        intent_id=current.id, fee_amount=fee_amount, fee_tx_hash=None
-                    )
-                    fee_tx_hash = self._transfer_fee(
-                        mandate=mandate,
-                        amount=current.amount,
-                        fee_amount=fee_amount,
-                    )
-                    current = self._intent_store.store_fee_fields(
-                        intent_id=current.id,
-                        fee_amount=fee_amount,
-                        fee_tx_hash=fee_tx_hash,
-                    )
             settled_at = self._now()
             settled = self._intent_store.finalize_settlement(
                 intent_id=current.id,
                 settled_at=settled_at,
-                fee_amount=current.fee_amount,
-                fee_tx_hash=current.fee_tx_hash,
             )
             updated = self._mandate_store.get_mandate(
                 user_id=mandate.user_id, mandate_id=mandate.id
@@ -599,55 +571,6 @@ class MandateSpendService:
             reason=result.reason or "The spend was blocked by the mandate policy.",
             action=ACTION_SWITCH_SERVICE if result.rule == "service_not_allowed" else ACTION_NONE,
         )
-
-    def _planned_fee_amount(self, amount: str) -> str | None:
-        """Return the fee amount to collect for one payment, or None.
-
-        The fee is planned only when a fee wallet, a collector, and a positive
-        percentage are configured and the computed fee is non-zero. The planned
-        amount is stored as a durable claim BEFORE the transfer (ticket 10e), so
-        a crashed finalization never moves the fee a second time.
-        """
-        if self._fee_wallet_address is None or self._fee_collector is None:
-            return None
-        if self._fee_percentage <= 0:
-            return None
-        fee_amount = compute_fee_amount(amount, self._fee_percentage)
-        if Decimal(fee_amount) <= 0:
-            return None
-        return fee_amount
-
-    def _transfer_fee(
-        self,
-        *,
-        mandate: Mandate,
-        amount: str,
-        fee_amount: str,
-    ) -> str | None:
-        """Transfer the planned fee and return its hash, or None on failure.
-
-        A failed fee transfer is logged, never a payment failure: the service
-        payment already settled. The returned hash (or None) is stored next to
-        the already-claimed fee amount, so the fee is never collected twice and
-        a missing hash means the fee never moved (ticket 10e).
-        """
-        collector = self._fee_collector
-        fee_wallet = self._fee_wallet_address
-        if collector is None or fee_wallet is None:
-            return None
-        try:
-            return collector.collect_fee(
-                wallet_address=mandate.wallet_address or "",
-                fee_wallet_address=fee_wallet,
-                amount=fee_amount,
-            )
-        except FeeTransferError as error:
-            logger.warning(
-                "Fee transfer failed for mandate %s; the service payment already settled. %s",
-                mandate.id,
-                error,
-            )
-            return None
 
     def _settled_receipt_response(
         self,
