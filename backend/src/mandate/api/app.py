@@ -21,7 +21,7 @@ resolve ``Annotated[...]`` dependency aliases.
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
@@ -58,6 +58,7 @@ from mandate.persistence.mandate_store import (
 from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder
 from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
+from mandate.spend.policy import finite_positive_decimal
 from mandate.status import MandateStatusService
 from mandate.wallets import WalletBinder
 
@@ -68,15 +69,7 @@ def _positive_finite_decimal(value: str) -> Decimal:
     ``NaN``, ``Infinity``, overflowing exponents, zero, and negative values are
     rejected so no authority change ever depends on a malformed amount.
     """
-    try:
-        amount = Decimal(value)
-    except (InvalidOperation, ValueError) as error:
-        raise ValueError("must be a decimal number") from error
-    if not amount.is_finite():
-        raise ValueError("must be a finite number")
-    if amount <= 0:
-        raise ValueError("must be greater than zero")
-    return amount
+    return finite_positive_decimal(value)
 
 
 class CreateMandateRequest(BaseModel):

@@ -11,6 +11,7 @@ string).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -160,13 +161,13 @@ def amount_valid(context: SpendContext) -> SpendResult:
     """Allow only when the amount is a finite, positive decimal.
 
     Non-finite, zero, and negative amounts are rejected before authority
-    changes (spec implementation decisions).
+    changes (spec implementation decisions). A finite amount with an exponent
+    so large that Postgres cannot store it is also rejected.
     """
-    value = _as_decimal(context.amount)
-    if not value.is_finite():
-        return _block("invalid_amount", "The amount must be finite.")
-    if value <= 0:
-        return _block("invalid_amount", "The amount must be positive.")
+    try:
+        finite_positive_decimal(context.amount)
+    except ValueError as error:
+        return _block("invalid_amount", str(error))
     return _allow()
 
 
@@ -244,6 +245,63 @@ def _allow() -> SpendResult:
 
 def _block(rule: str, reason: str) -> SpendResult:
     return SpendResult(decision=BLOCKED, rule=rule, reason=reason)
+
+
+# Postgres numeric holds at most 131072 digits before the decimal point and
+# 16383 after it. Money amounts never need anywhere near that range, but a
+# finite value such as 1e1000000 or 1.000...0001 with a full fractional scale
+# would be rejected by the database. The validator rejects such values up
+# front so no authority change or payment adapter call can depend on them.
+# Python's Decimal also accepts non-ASCII decimal digits that Postgres cannot
+# store, so the grammar is restricted to ASCII digits first.
+_MAX_INTEGER_DIGITS = 131072
+_MAX_FRACTIONAL_DIGITS = 16383
+
+_ASCII_DECIMAL = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+
+def finite_positive_decimal(value: str) -> Decimal:
+    """Parse a finite, positive decimal amount or raise ``ValueError``.
+
+    ``NaN``, ``Infinity``, overflowing exponents, zero, and negative values are
+    rejected so no authority change ever depends on a malformed amount. The
+    input must be an ASCII decimal: Python's ``Decimal`` also accepts Unicode
+    decimal digits that Postgres cannot store.
+    """
+    if _ASCII_DECIMAL.match(value) is None:
+        raise ValueError(f"Not an ASCII decimal number: {value!r}")
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError(f"Not a decimal number: {value!r}") from error
+    if not amount.is_finite():
+        raise ValueError(f"Not a finite number: {value!r}")
+    if amount <= 0:
+        raise ValueError(f"Not a positive number: {value!r}")
+    integer_digits, fractional_digits = _postgres_digit_counts(amount)
+    if integer_digits > _MAX_INTEGER_DIGITS:
+        raise ValueError(f"Amount has too many integer digits: {value!r}")
+    if fractional_digits > _MAX_FRACTIONAL_DIGITS:
+        raise ValueError(f"Amount has too many fractional digits: {value!r}")
+    return amount
+
+
+def _postgres_digit_counts(amount: Decimal) -> tuple[int, int]:
+    """Return the (integer, fractional) digit counts of a Decimal value.
+
+    ``Decimal.as_tuple`` keeps the digits and the exponent of the last digit.
+    A positive exponent adds trailing integer zeros; a negative exponent moves
+    digits into the fractional part. The caller checks ``is_finite`` first, so
+    the special non-finite exponents never reach this arithmetic.
+    """
+    _, digits, exponent = amount.as_tuple()
+    exponent_int = int(exponent)
+    if exponent_int >= 0:
+        return len(digits) + exponent_int, 0
+    integer_digits = len(digits) + exponent_int
+    if integer_digits < 0:
+        integer_digits = 0
+    return integer_digits, -exponent_int
 
 
 def _as_decimal(value: str) -> Decimal:

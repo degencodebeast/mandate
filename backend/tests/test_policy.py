@@ -284,6 +284,41 @@ def test_amount_valid_rejects_negative() -> None:
     assert result.rule == "invalid_amount"
 
 
+def test_amount_valid_rejects_oversized_exponent() -> None:
+    result = amount_valid(_context(_mandate(), amount="1e1000000"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_undersized_exponent() -> None:
+    result = amount_valid(_context(_mandate(), amount="1e-20000"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_rejects_full_fractional_scale() -> None:
+    result = amount_valid(_context(_mandate(), amount="1." + ("0" * 16383) + "1"))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
+def test_amount_valid_allows_max_fractional_scale() -> None:
+    result = amount_valid(_context(_mandate(), amount="1." + ("0" * 16382) + "1"))
+
+    assert result.decision == ALLOW
+
+
+def test_amount_valid_rejects_unicode_decimal() -> None:
+    unicode_decimal = "\u0661\u066b\u0660"  # Arabic-Indic one point zero
+    result = amount_valid(_context(_mandate(), amount=unicode_decimal))
+
+    assert result.decision == BLOCKED
+    assert result.rule == "invalid_amount"
+
+
 def test_amount_valid_allows_finite_positive() -> None:
     result = amount_valid(_context(_mandate(), amount="0.01"))
 
