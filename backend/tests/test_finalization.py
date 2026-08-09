@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
@@ -21,6 +22,8 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
+from mandate.fees import ScriptedFeeCollector
+from mandate.persistence.breaker_store import BreakerState, ScriptedBreakerStateStore
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -28,9 +31,9 @@ from mandate.persistence.mandate_store import (
     PostgresMandateStore,
 )
 from mandate.persistence.migrations import apply_migrations
-from mandate.receipt_reader import ReceiptReadError
+from mandate.receipt_reader import ArcReceipt, ReceiptReadError, ScriptedReceiptReader
 from mandate.receipts import ScriptedReceiptRecorder
-from mandate.spend import MandateSpendService
+from mandate.spend import CircuitBreaker, MandateSpendService
 from mandate.spend.service import purpose_hash
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
@@ -59,6 +62,16 @@ class ForbiddenPaymentExecutor:
         raise AssertionError("Recovery must never call the payment adapter.")
 
 
+class FailingBreakerStateStore(ScriptedBreakerStateStore):
+    """Fail the breaker success write to prove the reference is stored first."""
+
+    def record_success(self, *, service_url: str) -> BreakerState:
+        raise RuntimeError("The breaker store failed.")
+
+    def record_failure(self, *, service_url: str, now: Any, failure_threshold: int) -> BreakerState:
+        raise RuntimeError("The breaker store failed.")
+
+
 class FailingReceiptRecorder:
     """Simulate a crash while writing the Receipt (interruption)."""
 
@@ -79,6 +92,7 @@ def _build_client(
     receipts: Any,
     store: PostgresMandateStore,
     reader: Any = None,
+    fee_collector: Any = None,
 ) -> TestClient:
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     spend_service = MandateSpendService(
@@ -86,6 +100,10 @@ def _build_client(
         intent_store=PostgresIntentStore(_DATABASE_URL),
         payment_executor=payments,
         receipt_recorder=receipts,
+        receipt_reader=reader,
+        fee_collector=fee_collector,
+        fee_wallet_address="0xfeewallet" if fee_collector is not None else None,
+        fee_percentage=0.01,
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -284,7 +302,26 @@ def test_recovery_after_receipt_write_but_anchor_store_lost(
         tx_hash="0xsettled",
         fee_tx_hash="",
     )
-    client = _build_client(payments=ForbiddenPaymentExecutor(), receipts=receipts, store=store)
+    reader = ScriptedReceiptReader(
+        [
+            ArcReceipt(
+                user_id="did:erc8004:finalize-agent",
+                task_id="task-1",
+                purpose_hash=intent_hash,
+                service_url=_SERVICE_URL,
+                amount="1.00",
+                tx_hash="0xsettled",
+                timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+                anchor="0xreceipt-anchor",
+            )
+        ]
+    )
+    client = _build_client(
+        payments=ForbiddenPaymentExecutor(),
+        receipts=receipts,
+        store=store,
+        reader=reader,
+    )
 
     response = _finalize(client, mandate.id)
 
@@ -430,6 +467,36 @@ def test_receipt_read_failure_is_explicit_error_not_empty_list(client: TestClien
     assert response.json()["detail"]
 
 
+def test_payment_reference_is_stored_before_breaker_success(client: TestClient) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    breaker = CircuitBreaker(store=FailingBreakerStateStore())
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=RecordingPaymentExecutor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+    )
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+
+    response = _spend(client, mandate.id)
+
+    assert response.status_code == 500
+    intent = _stored_intent(mandate.id, "task-1", "buy a research report")
+    assert intent is not None
+    assert intent.payment_reference == "0xsettled"
+    assert intent.status == "settling"
+
+
 def test_receipts_endpoint_requires_configured_reader(client: TestClient) -> None:
     store = PostgresMandateStore(_DATABASE_URL)
     mandate = _create_mandate(store)
@@ -446,3 +513,60 @@ def test_receipts_endpoint_requires_configured_reader(client: TestClient) -> Non
 
     assert response.status_code == 503
     assert response.json()["detail"]
+
+
+def test_concurrent_recovery_calls_receipt_and_fee_adapters_once(client: TestClient) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent_hash = purpose_hash("task-1", "buy a research report")
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(intent_id=intent.id, reference="0xsettled")
+    store.reserve(mandate_id=mandate.id, amount="1.00")
+
+    receipts = ScriptedReceiptRecorder()
+    fees = ScriptedFeeCollector()
+    reader = ScriptedReceiptReader()
+    client = _build_client(
+        payments=ForbiddenPaymentExecutor(),
+        receipts=receipts,
+        store=store,
+        reader=reader,
+        fee_collector=fees,
+    )
+
+    def recover() -> dict[str, Any]:
+        response = _finalize(client, mandate.id)
+        return response.json()
+
+    barrier = threading.Barrier(5)
+
+    def coordinated() -> dict[str, Any]:
+        barrier.wait(timeout=10)
+        return recover()
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(coordinated) for _ in range(5)]
+        documents = [future.result(timeout=20) for future in futures]
+
+    settled = [document for document in documents if document["outcome"] == "permitted"]
+    duplicate = [
+        document for document in documents if document["outcome"] == "blocked: duplicate_intent"
+    ]
+    assert len(settled) == 1
+    assert len(duplicate) == 4
+    assert all(document["intent"]["status"] == "settled" for document in documents)
+    assert len(receipts.recorded) == 1
+    assert len(fees.calls) == 1
+    status = _status(client, mandate.id)
+    assert status["mandate"]["spent_total"] == "1.00"
+    assert status["mandate"]["reserved_total"] == "0.00"

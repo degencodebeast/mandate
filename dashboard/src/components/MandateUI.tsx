@@ -136,10 +136,11 @@ export function ReceiptList({
         <span className="kicker">Task</span>
         <span className="kicker" style={{ textAlign: "right" }}>Amount</span>
         <span className="kicker">When</span>
-        <span className="kicker">Tx (Arc)</span>
+        <span className="kicker">Payment Ref</span>
+        <span className="kicker">Receipt Anchor (Arc)</span>
       </div>
       {receipts.map((receipt) => (
-        <div key={receipt.tx_hash} className="receipt-row">
+        <div key={receipt.anchor ?? receipt.tx_hash} className="receipt-row">
           {showMandate ? (
             <span className="stack-2">
               {mandatesById?.get(receipt.user_id) ? (
@@ -153,14 +154,19 @@ export function ReceiptList({
           <span className="mono">{receipt.task_id}</span>
           <span className="mono" style={{ textAlign: "right" }}>{formatMoney(receipt.amount)}</span>
           <span className="mono">{formatTimestamp(receipt.timestamp)}</span>
-          <a
-            className="tx"
-            href={`https://testnet.arcscan.app/tx/${receipt.tx_hash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {formatTxHash(receipt.tx_hash)} ↗
-          </a>
+          <span className="mono">{formatTxHash(receipt.tx_hash)}</span>
+          {receipt.anchor ? (
+            <a
+              className="tx"
+              href={`https://testnet.arcscan.app/tx/${receipt.anchor}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {formatTxHash(receipt.anchor)} ↗
+            </a>
+          ) : (
+            <span className="card-meta">anchor pending</span>
+          )}
         </div>
       ))}
     </div>

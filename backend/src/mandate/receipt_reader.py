@@ -39,6 +39,7 @@ class ArcReceipt:
     amount: str
     tx_hash: str
     timestamp: datetime
+    anchor: str | None = None
 
 
 class ReceiptReader(Protocol):
@@ -46,6 +47,14 @@ class ReceiptReader(Protocol):
 
     def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
         """Return the receipts recorded for the agent identity, newest first."""
+        ...
+
+    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+        """Return the receipt for one finalized Intent, or None.
+
+        Recovery (ticket 10e) uses this to read back the Receipt Anchor for a
+        finalized Intent instead of writing a second Receipt after a crash.
+        """
         ...
 
 
@@ -85,6 +94,13 @@ class ViemReceiptReader:
             raise ReceiptReadError("The receipt reader script failed.") from error
         return _parse_receipts(output)
 
+    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+        """Return the receipt for one finalized Intent, or None."""
+        for receipt in self.list_receipts(user_id=user_id):
+            if receipt.purpose_hash == purpose_hash:
+                return receipt
+        return None
+
 
 class ScriptedReceiptReader:
     """Return fixed receipts for tests. No Node, no viem, no network."""
@@ -93,7 +109,14 @@ class ScriptedReceiptReader:
         self._receipts = receipts or []
 
     def list_receipts(self, *, user_id: str) -> list[ArcReceipt]:
-        return list(self._receipts)
+        return [receipt for receipt in self._receipts if receipt.user_id == user_id]
+
+    def find_receipt(self, *, user_id: str, purpose_hash: str) -> ArcReceipt | None:
+        """Return the receipt for one finalized Intent, or None."""
+        for receipt in self.list_receipts(user_id=user_id):
+            if receipt.purpose_hash == purpose_hash:
+                return receipt
+        return None
 
 
 class ReceiptReadError(RuntimeError):
@@ -127,6 +150,7 @@ def _parse_receipts(output: str) -> list[ArcReceipt]:
                 amount=amount,
                 tx_hash=tx_hash,
                 timestamp=timestamp or datetime(1970, 1, 1, tzinfo=UTC),
+                anchor=_string_field(entry, "transactionHash"),
             )
         )
     return receipts

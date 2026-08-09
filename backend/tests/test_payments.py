@@ -18,7 +18,7 @@ from mandate.payments import (
     ScriptedPaymentExecutor,
     _extract_tx_hash,
 )
-from mandate.receipts import ArcReceiptRecorder, ScriptedReceiptRecorder
+from mandate.receipts import ArcReceiptRecorder, ReceiptWriteError, ScriptedReceiptRecorder
 
 
 class CommandRecorder:
@@ -132,3 +132,61 @@ def test_scripted_receipt_recorder_remembers_records() -> None:
     assert len(recorder.recorded) == 1
     assert recorder.recorded[0]["task_id"] == "task-9"
     assert recorder.recorded[0]["fee_tx_hash"] == "0xfeepaid"
+
+
+def test_scripted_receipt_recorder_rejects_duplicate_for_one_intent() -> None:
+    recorder = ScriptedReceiptRecorder()
+
+    recorder.record_receipt(
+        user_id="did:erc8004:agent",
+        task_id="task-9",
+        purpose_hash="hash-9",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+        tx_hash="0xsettled",
+        fee_tx_hash="",
+    )
+
+    with pytest.raises(ReceiptWriteError):
+        recorder.record_receipt(
+            user_id="did:erc8004:agent",
+            task_id="task-9",
+            purpose_hash="hash-9",
+            service_url="https://service-a.example.com",
+            amount="0.50",
+            tx_hash="0xsettled",
+            fee_tx_hash="",
+        )
+    assert len(recorder.recorded) == 1
+
+
+def test_receipt_anchor_rejects_operation_id_only_document() -> None:
+    runner = CommandRecorder()
+    recorder = ArcReceiptRecorder(
+        registry_address="0xregistry",
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=runner,
+    )
+
+    def id_only(command: Sequence[str]) -> str:
+        runner.command = list(command)
+        return '{"data": {"id": "operation-123", "status": "confirmed"}}'
+
+    recorder = ArcReceiptRecorder(
+        registry_address="0xregistry",
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=id_only,
+    )
+
+    with pytest.raises(ReceiptWriteError):
+        recorder.record_receipt(
+            user_id="did:erc8004:agent",
+            task_id="task-1",
+            purpose_hash="hash-1",
+            service_url="https://service-a.example.com",
+            amount="0.50",
+            tx_hash="0xsettled",
+            fee_tx_hash="",
+        )

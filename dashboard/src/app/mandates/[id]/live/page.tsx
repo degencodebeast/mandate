@@ -24,18 +24,15 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   const load = useCallback(async () => {
     try {
-      const [next, nextReceipts] = await Promise.all([
-        client.getMandateStatus(mandateId),
-        client.listReceipts(mandateId).catch(() => ({ receipts: [] })),
-      ]);
+      const next = await client.getMandateStatus(mandateId);
       if (!mountedRef.current) return;
       setStatus(next);
-      setReceipts(nextReceipts.receipts);
       setPollError(null);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -54,9 +51,24 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
     }
   }, [client, mandateId]);
 
+  const loadReceipts = useCallback(async () => {
+    try {
+      const nextReceipts = await client.listReceipts(mandateId);
+      if (!mountedRef.current) return;
+      setReceipts(nextReceipts.receipts);
+      setReceiptError(null);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setReceiptError(
+        err instanceof ApiError ? err.message : "Could not read on-Arc receipts.",
+      );
+    }
+  }, [client, mandateId]);
+
   useEffect(() => {
     mountedRef.current = true;
     void load();
+    void loadReceipts();
     pollRef.current = window.setInterval(() => {
       void load();
     }, POLL_INTERVAL_MS);
@@ -67,7 +79,7 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
         pollRef.current = null;
       }
     };
-  }, [load]);
+  }, [load, loadReceipts]);
 
   if (error) {
     return (
@@ -185,7 +197,13 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
       <div className="hr" />
 
       <h3>On-Arc receipts</h3>
-      <ReceiptList receipts={receipts} />
+      {receiptError ? (
+        <div className="notice error" role="alert">
+          Receipt read failed: {receiptError}. The Arc proof cannot be shown right now.
+        </div>
+      ) : (
+        <ReceiptList receipts={receipts} />
+      )}
     </div>
   );
 }

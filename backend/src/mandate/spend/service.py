@@ -59,7 +59,8 @@ from mandate.persistence.mandate_store import (
     MandateStore,
     ReservationDeniedError,
 )
-from mandate.receipts import ReceiptRecorder
+from mandate.receipt_reader import ReceiptReader
+from mandate.receipts import ReceiptRecorder, ReceiptWriteError
 from mandate.spend.breaker import BREAKER_OPEN_REASON, CircuitBreaker
 from mandate.spend.policy import SpendContext, SpendResult, evaluate
 
@@ -148,6 +149,7 @@ class MandateSpendService:
         fee_percentage: float = 0.01,
         breaker: CircuitBreaker | None = None,
         now: Now | None = None,
+        receipt_reader: ReceiptReader | None = None,
     ) -> None:
         self._mandate_store = mandate_store
         self._intent_store = intent_store
@@ -157,6 +159,7 @@ class MandateSpendService:
         self._fee_wallet_address = fee_wallet_address
         self._fee_percentage = fee_percentage
         self._breaker = breaker or CircuitBreaker(store=ScriptedBreakerStateStore())
+        self._receipt_reader = receipt_reader
         self._now = now or (lambda: datetime.now(UTC))
 
     def spend(
@@ -287,10 +290,10 @@ class MandateSpendService:
                 reason=str(error),
                 action=ACTION_SWITCH_SERVICE,
             )
-        self._breaker.record_success(service_url=service_url)
         referenced = self._intent_store.store_payment_reference(
             intent_id=settling.id, reference=tx_hash
         )
+        self._breaker.record_success(service_url=service_url)
         return self._finalize(
             intent=referenced,
             mandate=mandate,
@@ -320,6 +323,12 @@ class MandateSpendService:
         if intent is None:
             raise FinalizationNotPossibleError("There is no intent to finalize.")
         if intent.status == "settled":
+            if intent.receipt_anchor is None:
+                recovered = self._recover_settled_anchor(
+                    intent=intent, mandate=mandate, purpose_hash=intent_hash
+                )
+                if recovered is not None:
+                    intent = recovered
             return self._settled_receipt_response(intent, mandate, task_id=task_id)
         if intent.status != "settling":
             raise FinalizationNotPossibleError(
@@ -424,61 +433,150 @@ class MandateSpendService:
     ) -> SpendResponse:
         """Finish one paid Intent: proof, fee, accounting, and settle.
 
-        Every step is idempotent (ticket 10e, ADR-0032). The Receipt is
-        recorded at most once, the fee is collected at most once, and
-        ``finalize_settlement`` moves the reservation to spent authority and
-        settles the Intent in one transaction. The caller must have stored the
-        Payment Reference before calling this method.
+        Finalization holds the durable one-owner advisory lock for the Intent
+        (ticket 10e). Only the lock holder performs the external Receipt and
+        Fee work, so concurrent recovery can never call either adapter twice.
+        The Receipt is recorded at most once; recovery reads back an existing
+        Receipt Anchor from Arc instead of writing a second Receipt. The fee is
+        collected at most once. ``finalize_settlement`` moves the reservation
+        to spent authority and settles the Intent in one transaction. The
+        caller must have stored the Payment Reference before calling this
+        method.
         """
-        if intent.receipt_anchor is None:
-            anchor = self._receipt_recorder.record_receipt(
+        with self._intent_store.finalization_guard(intent_id=intent.id):
+            current = self._intent_store.get_intent(
+                mandate_id=mandate.id, purpose_hash=purpose_hash
+            )
+            if current is None:
+                raise FinalizationNotPossibleError("There is no intent to finalize.")
+            if current.status == "settled":
+                return self._settled_receipt_response(current, mandate, task_id=task_id)
+            if current.status != "settling":
+                raise FinalizationNotPossibleError(
+                    f"Intent {current.id} is {current.status}; only a SETTLING intent can finalize."
+                )
+            if not current.payment_reference:
+                raise UnresolvedPaymentReferenceError(
+                    "The intent has no stored Payment Reference; a Receipt cannot be finalized."
+                )
+            if current.receipt_anchor is None:
+                anchor = self._recover_or_record_receipt(
+                    current=current,
+                    mandate=mandate,
+                    task_id=task_id,
+                    purpose_hash=purpose_hash,
+                )
+                current = self._intent_store.store_receipt_anchor(
+                    intent_id=current.id, anchor=anchor
+                )
+            if current.fee_amount is None:
+                fee_amount = self._planned_fee_amount(current.amount)
+                if fee_amount is not None:
+                    current = self._intent_store.store_fee_fields(
+                        intent_id=current.id, fee_amount=fee_amount, fee_tx_hash=None
+                    )
+                    fee_tx_hash = self._transfer_fee(
+                        mandate=mandate,
+                        amount=current.amount,
+                        fee_amount=fee_amount,
+                    )
+                    current = self._intent_store.store_fee_fields(
+                        intent_id=current.id,
+                        fee_amount=fee_amount,
+                        fee_tx_hash=fee_tx_hash,
+                    )
+            settled_at = self._now()
+            settled = self._intent_store.finalize_settlement(
+                intent_id=current.id,
+                settled_at=settled_at,
+                fee_amount=current.fee_amount,
+                fee_tx_hash=current.fee_tx_hash,
+            )
+            updated = self._mandate_store.get_mandate(
+                user_id=mandate.user_id, mandate_id=mandate.id
+            )
+            receipt = SpendReceipt(
+                task_id=task_id,
+                purpose_hash=purpose_hash,
+                service_url=settled.service_url,
+                amount=settled.amount,
+                tx_hash=settled.tx_hash or "",
+                recorded_at=settled.settled_at or settled_at,
+                intent_state="settled",
+                fee_amount=settled.fee_amount,
+                fee_tx_hash=settled.fee_tx_hash,
+                receipt_anchor=settled.receipt_anchor,
+            )
+            return SpendResponse(
+                outcome="permitted",
+                reason=None,
+                intent=settled,
+                receipt=receipt,
+                spent_total=updated.spent_total,
+                action=ACTION_NONE,
+            )
+
+    def _recover_or_record_receipt(
+        self,
+        *,
+        current: Intent,
+        mandate: Mandate,
+        task_id: str,
+        purpose_hash: str,
+    ) -> str:
+        """Return the Receipt Anchor without a second write when possible.
+
+        Recovery (ticket 10e) may find a Receipt that a crashed finalizer
+        already wrote to Arc but whose anchor was never stored locally. In that
+        case the anchor is read back from Arc and no second Receipt is
+        written. Only when no Receipt exists is ``record_receipt`` called.
+        """
+        existing = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+        if existing is not None:
+            return existing
+        try:
+            return self._receipt_recorder.record_receipt(
                 user_id=mandate.agent_identity,
                 task_id=task_id,
                 purpose_hash=purpose_hash,
-                service_url=intent.service_url,
-                amount=intent.amount,
-                tx_hash=intent.payment_reference or "",
+                service_url=current.service_url,
+                amount=current.amount,
+                tx_hash=current.payment_reference or "",
                 fee_tx_hash="",
             )
-            intent = self._intent_store.store_receipt_anchor(intent_id=intent.id, anchor=anchor)
-        if intent.fee_amount is None:
-            fee_amount, fee_tx_hash = self._collect_fee(
-                mandate=mandate,
-                amount=intent.amount,
-            )
-            intent = self._intent_store.store_fee_fields(
-                intent_id=intent.id,
-                fee_amount=fee_amount,
-                fee_tx_hash=fee_tx_hash,
-            )
-        settled_at = self._now()
-        settled = self._intent_store.finalize_settlement(
-            intent_id=intent.id,
-            settled_at=settled_at,
-            fee_amount=intent.fee_amount,
-            fee_tx_hash=intent.fee_tx_hash,
+        except ReceiptWriteError:
+            existing = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+            if existing is not None:
+                return existing
+            raise
+
+    def _existing_receipt_anchor(self, *, mandate: Mandate, purpose_hash: str) -> str | None:
+        """Read back the Receipt Anchor for one finalized Intent, or None."""
+        if self._receipt_reader is None:
+            return None
+        receipt = self._receipt_reader.find_receipt(
+            user_id=mandate.agent_identity, purpose_hash=purpose_hash
         )
-        updated = self._mandate_store.get_mandate(user_id=mandate.user_id, mandate_id=mandate.id)
-        receipt = SpendReceipt(
-            task_id=task_id,
-            purpose_hash=purpose_hash,
-            service_url=settled.service_url,
-            amount=settled.amount,
-            tx_hash=settled.tx_hash or "",
-            recorded_at=settled.settled_at or settled_at,
-            intent_state="settled",
-            fee_amount=settled.fee_amount,
-            fee_tx_hash=settled.fee_tx_hash,
-            receipt_anchor=settled.receipt_anchor,
-        )
-        return SpendResponse(
-            outcome="permitted",
-            reason=None,
-            intent=settled,
-            receipt=receipt,
-            spent_total=updated.spent_total,
-            action=ACTION_NONE,
-        )
+        if receipt is None or not receipt.anchor:
+            return None
+        return receipt.anchor
+
+    def _recover_settled_anchor(
+        self, *, intent: Intent, mandate: Mandate, purpose_hash: str
+    ) -> Intent | None:
+        """Recover the Receipt Anchor for a legacy settled Intent (ticket 10e).
+
+        A settled Intent migrated before 10e has no stored Receipt Anchor. When
+        the reader can find the Receipt on Arc, its transaction hash is stored
+        so the existing proof carries the anchor. Otherwise the anchor stays
+        NULL and the response exposes the missing proof explicitly.
+        """
+        if intent.receipt_anchor is not None:
+            return intent
+        anchor = self._existing_receipt_anchor(mandate=mandate, purpose_hash=purpose_hash)
+        if anchor is None:
+            return None
+        return self._intent_store.store_receipt_anchor(intent_id=intent.id, anchor=anchor)
 
     def _breaker_blocked_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
         """Block a payment attempt because the service's breaker is OPEN."""
@@ -502,32 +600,45 @@ class MandateSpendService:
             action=ACTION_SWITCH_SERVICE if result.rule == "service_not_allowed" else ACTION_NONE,
         )
 
-    def _collect_fee(
+    def _planned_fee_amount(self, amount: str) -> str | None:
+        """Return the fee amount to collect for one payment, or None.
+
+        The fee is planned only when a fee wallet, a collector, and a positive
+        percentage are configured and the computed fee is non-zero. The planned
+        amount is stored as a durable claim BEFORE the transfer (ticket 10e), so
+        a crashed finalization never moves the fee a second time.
+        """
+        if self._fee_wallet_address is None or self._fee_collector is None:
+            return None
+        if self._fee_percentage <= 0:
+            return None
+        fee_amount = compute_fee_amount(amount, self._fee_percentage)
+        if Decimal(fee_amount) <= 0:
+            return None
+        return fee_amount
+
+    def _transfer_fee(
         self,
         *,
         mandate: Mandate,
         amount: str,
-    ) -> tuple[str | None, str | None]:
-        """Split the fee after a successful service payment (ticket 07).
+        fee_amount: str,
+    ) -> str | None:
+        """Transfer the planned fee and return its hash, or None on failure.
 
-        Returns the (fee_amount, fee_tx_hash) pair. The fee is collected only
-        when a fee wallet, a collector, and a positive percentage are
-        configured and the computed fee is non-zero. A failed fee transfer is
-        logged, never a payment failure: the service payment already settled.
-        Because the fee never moved, it is not counted in the mandate's
-        fees_total.
+        A failed fee transfer is logged, never a payment failure: the service
+        payment already settled. The returned hash (or None) is stored next to
+        the already-claimed fee amount, so the fee is never collected twice and
+        a missing hash means the fee never moved (ticket 10e).
         """
-        if self._fee_wallet_address is None or self._fee_collector is None:
-            return None, None
-        if self._fee_percentage <= 0:
-            return None, None
-        fee_amount = compute_fee_amount(amount, self._fee_percentage)
-        if Decimal(fee_amount) <= 0:
-            return None, None
+        collector = self._fee_collector
+        fee_wallet = self._fee_wallet_address
+        if collector is None or fee_wallet is None:
+            return None
         try:
-            fee_tx_hash = self._fee_collector.collect_fee(
+            return collector.collect_fee(
                 wallet_address=mandate.wallet_address or "",
-                fee_wallet_address=self._fee_wallet_address,
+                fee_wallet_address=fee_wallet,
                 amount=fee_amount,
             )
         except FeeTransferError as error:
@@ -536,8 +647,7 @@ class MandateSpendService:
                 mandate.id,
                 error,
             )
-            return fee_amount, None
-        return fee_amount, fee_tx_hash
+            return None
 
     def _settled_receipt_response(
         self,
@@ -565,7 +675,11 @@ class MandateSpendService:
         )
         return SpendResponse(
             outcome="blocked: duplicate_intent",
-            reason=REASON_ALREADY_SETTLED,
+            reason=(
+                REASON_ALREADY_SETTLED
+                if intent.receipt_anchor is not None
+                else "duplicate intent: already settled; Receipt Anchor unavailable on Arc"
+            ),
             intent=intent,
             receipt=receipt,
             spent_total=mandate.spent_total,

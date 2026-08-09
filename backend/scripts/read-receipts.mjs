@@ -54,6 +54,7 @@ async function main() {
       txHash: log.args.txHash,
       feeTxHash: log.args.feeTxHash ?? "",
       timestamp: Number(log.args.timestamp ?? 0n),
+      transactionHash: log.transactionHash,
     }));
 
   process.stdout.write(JSON.stringify(receipts));

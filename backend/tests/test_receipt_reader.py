@@ -57,6 +57,7 @@ def test_parse_receipts_reads_all_fields() -> None:
                 "amount": "1.00",
                 "txHash": "0xsettled",
                 "timestamp": 1783600000,
+                "transactionHash": "0xanchor",
             }
         ]
     )
@@ -71,6 +72,7 @@ def test_parse_receipts_reads_all_fields() -> None:
     assert receipt.service_url == "https://service-a.example.com"
     assert receipt.amount == "1.00"
     assert receipt.tx_hash == "0xsettled"
+    assert receipt.anchor == "0xanchor"
 
 
 def test_parse_receipts_handles_missing_optional_fields() -> None:
@@ -136,3 +138,21 @@ def test_viem_reader_uses_scripted_runner() -> None:
     assert "--user-id" in command
     assert "did:erc8004:agent" in command
     assert receipts[0].tx_hash == "0xsettled"
+
+
+def test_scripted_reader_finds_receipt_for_one_intent() -> None:
+    receipt = ArcReceipt(
+        user_id="did:erc8004:agent",
+        task_id="task-1",
+        purpose_hash="hash-1",
+        service_url="https://service-a.example.com",
+        amount="1.00",
+        tx_hash="0xsettled",
+        timestamp=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+        anchor="0xanchor",
+    )
+    reader = ScriptedReceiptReader([receipt])
+
+    assert reader.find_receipt(user_id="did:erc8004:agent", purpose_hash="hash-1") == receipt
+    assert reader.find_receipt(user_id="did:erc8004:agent", purpose_hash="absent") is None
+    assert reader.find_receipt(user_id="did:erc8004:other", purpose_hash="hash-1") is None

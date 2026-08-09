@@ -23,6 +23,8 @@ happens exactly once.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -116,6 +118,8 @@ class IntentStore(Protocol):
         fee_amount: str | None,
         fee_tx_hash: str | None,
     ) -> Intent: ...
+
+    def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
 
 
 @dataclass(frozen=True)
@@ -269,15 +273,14 @@ class PostgresIntentStore:
 
         The write keeps the Intent in SETTLING. It applies only to a SETTLING
         Intent, so a duplicate reference write never touches a settled or
-        blocked Intent. Storing the reference before dependent accounting or
-        Receipt work is the durable recovery point for restartable
-        finalization (ADR-0032).
+        blocked Intent. The stored value is write-once: a repeated write keeps
+        the original reference and never overwrites it (ADR-0032).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
-                SET payment_reference = COALESCE(%s, payment_reference)
+                SET payment_reference = COALESCE(payment_reference, %s)
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
@@ -294,15 +297,15 @@ class PostgresIntentStore:
         """Record the Receipt Anchor after the Receipt is written (ticket 10e).
 
         The Receipt Anchor is the Arc transaction that wrote the Receipt
-        (CONTEXT.md). It stays separate from the Payment Reference. The update
-        applies only to a SETTLING Intent, so one finalized Intent can create at
-        most one Receipt Anchor.
+        (CONTEXT.md). It stays separate from the Payment Reference. The stored
+        value is write-once: one finalized Intent can create at most one Receipt
+        Anchor, so a repeated write keeps the original anchor.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
-                SET receipt_anchor = COALESCE(%s, receipt_anchor)
+                SET receipt_anchor = COALESCE(receipt_anchor, %s)
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
@@ -327,14 +330,14 @@ class PostgresIntentStore:
         The fee fields are stored as soon as the fee is collected so a resumed
         finalization never collects the fee twice. A fee that failed to move is
         stored with a NULL fee transaction hash and is never counted in the
-        mandate's fees_total.
+        mandate's fees_total. Stored fee evidence is write-once.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
-                SET fee_amount = COALESCE(%s, fee_amount),
-                    fee_tx_hash = COALESCE(%s, fee_tx_hash)
+                SET fee_amount = COALESCE(fee_amount, %s),
+                    fee_tx_hash = COALESCE(fee_tx_hash, %s)
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
@@ -424,6 +427,24 @@ class PostgresIntentStore:
         if settled is None:
             return self._reload(intent_id)
         return self._from_row(settled)
+
+    @contextmanager
+    def finalization_guard(self, *, intent_id: uuid.UUID) -> Iterator[None]:
+        """Hold an advisory lock for one Intent across finalization.
+
+        The lock is the durable one-owner state for the Receipt and Fee work
+        (ticket 10e, gate Critical). Only one finalizer holds it at a time, so
+        concurrent recovery can never call the Receipt or Fee adapter twice for
+        the same Intent. The lock is session-scoped and releases when the
+        process dies, so recovery is never blocked forever.
+        """
+        lock_key = intent_id.int & 0x7FFFFFFFFFFFFFFF
+        with psycopg.connect(self._database_url) as connection:
+            connection.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+            try:
+                yield
+            finally:
+                connection.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
 
     def _reload(self, intent_id: uuid.UUID) -> Intent:
         """Return the current row for an intent, or raise when it is absent."""

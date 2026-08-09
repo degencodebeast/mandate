@@ -45,6 +45,8 @@ export interface IntentRecord {
   retry_count: number;
   fee_amount: string | null;
   fee_tx_hash: string | null;
+  payment_reference: string | null;
+  receipt_anchor: string | null;
 }
 
 export interface BreakerStateRecord {
@@ -62,6 +64,7 @@ export interface ReceiptRecord {
   service_url: string;
   amount: string;
   tx_hash: string;
+  anchor: string | null;
   timestamp: string;
 }
 

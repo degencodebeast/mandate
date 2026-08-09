@@ -73,24 +73,43 @@ export default function ReceiptsPage() {
           <span className="spinner" aria-hidden />
           <div className="empty-title">Loading receipts…</div>
         </div>
-      ) : flat.length === 0 ? (
-        <div className="empty">
-          <div className="empty-title">No receipts yet</div>
-          <div className="empty-body">
-            Once an agent settles a payment, the receipt will appear here.
-          </div>
-        </div>
       ) : (
+        <>
+          {rows.some((entry) => entry.error) ? (
+            <div className="notice error" role="alert">
+              One or more receipt reads failed. Missing proofs are shown as
+              errors below, not as empty history.
+            </div>
+          ) : null}
+          {rows.map((entry) =>
+            entry.error ? (
+              <div className="card" key={entry.mandate.id} style={{ padding: "var(--space-4)" }}>
+                <span className="kicker">Mandate · service</span>
+                <div className="stack-2" style={{ marginTop: "var(--space-2)" }}>
+                  <Link href={`/mandates/${entry.mandate.id}/live`} className="mono">
+                    {entry.mandate.id.slice(0, 8)}…
+                  </Link>
+                  <div className="notice error" role="alert">
+                    Receipt read failed: {entry.error}
+                  </div>
+                </div>
+              </div>
+            ) : null,
+          )}
+        </>
+      )}
+      {rows !== null && flat.length > 0 ? (
         <div className="card" style={{ padding: 0 }}>
           <div className="receipt-row" style={{ background: "var(--surface-2)" }}>
             <span className="kicker">Mandate · service</span>
             <span className="kicker">Task</span>
             <span className="kicker" style={{ textAlign: "right" }}>Amount</span>
             <span className="kicker">When</span>
-            <span className="kicker">Tx (Arc)</span>
+            <span className="kicker">Payment Ref</span>
+            <span className="kicker">Receipt Anchor (Arc)</span>
           </div>
           {flat.map(({ receipt, mandate }) => (
-            <div key={receipt.tx_hash} className="receipt-row">
+            <div key={receipt.anchor ?? receipt.tx_hash} className="receipt-row">
               <span className="stack-2">
                 <Link href={`/mandates/${mandate.id}/live`} className="mono">
                   {mandate.id.slice(0, 8)}…
@@ -100,18 +119,23 @@ export default function ReceiptsPage() {
               <span className="mono">{receipt.task_id}</span>
               <span className="mono" style={{ textAlign: "right" }}>{formatMoney(receipt.amount)}</span>
               <span className="mono">{formatDateTime(receipt.timestamp)}</span>
-              <a
-                className="tx"
-                href={`https://testnet.arcscan.app/tx/${receipt.tx_hash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {formatTxHash(receipt.tx_hash)} ↗
-              </a>
+              <span className="mono">{formatTxHash(receipt.tx_hash)}</span>
+              {receipt.anchor ? (
+                <a
+                  className="tx"
+                  href={`https://testnet.arcscan.app/tx/${receipt.anchor}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {formatTxHash(receipt.anchor)} ↗
+                </a>
+              ) : (
+                <span className="card-meta">anchor pending</span>
+              )}
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

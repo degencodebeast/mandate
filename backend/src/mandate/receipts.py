@@ -118,11 +118,10 @@ class ArcReceiptRecorder:
 class ScriptedReceiptRecorder:
     """Return a fixed Receipt Anchor for tests. No network.
 
-    The recorder is idempotent for one finalized Intent: a second
-    record_receipt for the same (user_id, purpose_hash) pair returns the
-    existing Receipt Anchor without writing again. This mirrors the Receipt
-    Registry contract, which reverts a duplicate write (ticket 10e), so a
-    resumed finalization can never create a second Receipt.
+    The recorder mirrors the Receipt Registry contract: a second write for the
+    same (user_id, purpose_hash) pair reverts with ReceiptWriteError (ticket
+    10e). Recovery does not rely on this recorder being lenient — it reads the
+    existing anchor back from the reader instead of writing again.
     """
 
     def __init__(self, anchor: str = "0xreceipt-anchor") -> None:
@@ -142,9 +141,8 @@ class ScriptedReceiptRecorder:
         fee_tx_hash: str,
     ) -> str:
         key = (user_id, purpose_hash)
-        existing = self._anchors.get(key)
-        if existing is not None:
-            return existing
+        if key in self._anchors:
+            raise ReceiptWriteError("ReceiptRegistry: receipt already recorded")
         self.recorded.append(
             {
                 "user_id": user_id,
@@ -160,6 +158,10 @@ class ScriptedReceiptRecorder:
         self._anchors[key] = anchor
         return anchor
 
+    def existing_anchor(self, *, user_id: str, purpose_hash: str) -> str | None:
+        """Return the anchor already recorded for one Intent, or None."""
+        return self._anchors.get((user_id, purpose_hash))
+
 
 def _extract_receipt_anchor(output: str) -> str:
     """Read the Receipt Anchor from the CLI JSON output.
@@ -174,12 +176,12 @@ def _extract_receipt_anchor(output: str) -> str:
         document = json.loads(output)
     except json.JSONDecodeError as error:
         raise ReceiptWriteError("The Circle CLI did not return JSON output.") from error
-    for key in ("transactionHash", "txHash", "hash", "id"):
+    for key in ("transactionHash", "txHash", "hash"):
         if isinstance(document.get(key), str) and document[key]:
             return document[key]
     nested = document.get("data")
     if isinstance(nested, Mapping):
-        for candidate in ("transactionHash", "txHash", "hash", "id"):
+        for candidate in ("transactionHash", "txHash", "hash"):
             if isinstance(nested.get(candidate), str) and nested[candidate]:
                 return nested[candidate]
     raise ReceiptWriteError("The Circle CLI output has no usable Receipt Anchor.")

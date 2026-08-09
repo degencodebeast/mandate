@@ -412,6 +412,7 @@ def _spend_service_from_settings(
         if breaker_store is not None
         else None
     )
+    receipt_reader = _receipt_reader_from_settings(settings)
     fee_collector = (
         CircleCliFeeCollector(
             chain=settings.circle_chain,
@@ -429,6 +430,7 @@ def _spend_service_from_settings(
         fee_wallet_address=settings.fee_wallet_address,
         fee_percentage=settings.fee_percentage,
         breaker=breaker,
+        receipt_reader=receipt_reader,
     )
 
 
@@ -547,7 +549,12 @@ def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
 
 
 def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
-    """Render one on-Arc receipt as a safe JSON document."""
+    """Render one on-Arc receipt as a safe JSON document.
+
+    The Payment Reference (``tx_hash``) and the Receipt Anchor
+    (``anchor``) stay separate values (CONTEXT.md, ticket 10e). The dashboard
+    links only the Receipt Anchor to Arcscan.
+    """
     return {
         "user_id": receipt.user_id,
         "task_id": receipt.task_id,
@@ -555,6 +562,7 @@ def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
         "service_url": receipt.service_url,
         "amount": receipt.amount,
         "tx_hash": receipt.tx_hash,
+        "anchor": receipt.anchor,
         "timestamp": receipt.timestamp.isoformat(),
     }
 
