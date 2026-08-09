@@ -12,13 +12,19 @@ Intent transition and one valid Budget Reservation (ticket 10d, ADR-0032):
 5. Reserve Mandate authority atomically (conditional update). A failed
    reservation transitions SETTLING -> BLOCKED and returns budget_exceeded.
 6. Call the Circle CLI to pay.
-7. On success: record the Receipt, finalize the reservation (reserved becomes
-   spent), transition SETTLING -> SETTLED, and return the receipt data.
+7. On success: store the Payment Reference before any dependent accounting or
+   Receipt work (ticket 10e), then finalize.
 8. On a definitive rejection: release the caller's own reservation, transition
    SETTLING -> BLOCKED, and return payment_failed.
 9. On an unknown outcome: transition SETTLING -> UNKNOWN, keep the reservation
    (money may have moved), and return WAIT or REQUEST_REVIEW. No second
    Payment Authorization is ever issued for an UNKNOWN intent.
+
+Finalization (ticket 10e, ADR-0032) is restartable. The service writes the
+Payment Reference as soon as value moves, records the Receipt Anchor once,
+collects the fee once, and then settles the Intent and books the spend in one
+transaction. ``resume_finalization`` re-enters finalization from the stored
+Intent and Payment Reference; it never calls the payment adapter.
 
 The old NOT_SETTLED safe-retry and approximate reconciliation paths are gone
 (ticket 10d). An UNKNOWN intent stays frozen with WAIT or REQUEST_REVIEW only.
@@ -46,6 +52,7 @@ from mandate.persistence.intent_store import (
     Intent,
     IntentStore,
     UnexpectedIntentStateError,
+    UnresolvedPaymentReferenceError,
 )
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -70,14 +77,25 @@ REASON_UNKNOWN_FROZEN = "unknown outcome; wait or request review; no new authori
 REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 
 
+class FinalizationNotPossibleError(ValueError):
+    """The intent cannot be finalized from its current state.
+
+    Recovery may run only for a SETTLING intent with a stored Payment
+    Reference. A PENDING, BLOCKED, or UNKNOWN intent, or an intent that does
+    not exist, cannot produce a finalized Receipt.
+    """
+
+
 @dataclass(frozen=True)
 class SpendReceipt:
     """The receipt data returned with a settled spend.
 
-    Ticket 07 adds the fee split: the receipt carries both the service payment
-    transaction hash and the fee transfer transaction hash, plus the collected
-    fee amount. When no fee is configured or the fee transfer failed, the fee
-    fields are None (the payment still settles).
+    The receipt carries the Payment Reference (``tx_hash``) and the separate
+    Receipt Anchor written on Arc (ticket 10e). Ticket 07 adds the fee split:
+    the receipt carries both the service payment transaction hash and the fee
+    transfer transaction hash, plus the collected fee amount. When no fee is
+    configured or the fee transfer failed, the fee fields are None (the payment
+    still settles).
     """
 
     task_id: str
@@ -89,6 +107,7 @@ class SpendReceipt:
     intent_state: str
     fee_amount: str | None = None
     fee_tx_hash: str | None = None
+    receipt_anchor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,12 +288,52 @@ class MandateSpendService:
                 action=ACTION_SWITCH_SERVICE,
             )
         self._breaker.record_success(service_url=service_url)
-        return self._settle(
-            intent=settling,
+        referenced = self._intent_store.store_payment_reference(
+            intent_id=settling.id, reference=tx_hash
+        )
+        return self._finalize(
+            intent=referenced,
             mandate=mandate,
             task_id=task_id,
             purpose_hash=intent_hash,
-            tx_hash=tx_hash,
+        )
+
+    def resume_finalization(
+        self,
+        *,
+        user_id: str,
+        mandate_id: uuid.UUID,
+        task_id: str,
+        purpose: str,
+    ) -> SpendResponse:
+        """Re-enter finalization for a stored Intent (ticket 10e).
+
+        Recovery uses the stored Intent and Payment Reference. It never calls
+        the payment adapter and never issues another Payment Authorization. A
+        SETTLING intent with a stored reference resumes finalization; a
+        settled intent returns its existing proof; anything else is an explicit
+        FinalizationNotPossibleError.
+        """
+        mandate = self._mandate_store.get_mandate(user_id=user_id, mandate_id=mandate_id)
+        intent_hash = purpose_hash(task_id, purpose)
+        intent = self._intent_store.get_intent(mandate_id=mandate_id, purpose_hash=intent_hash)
+        if intent is None:
+            raise FinalizationNotPossibleError("There is no intent to finalize.")
+        if intent.status == "settled":
+            return self._settled_receipt_response(intent, mandate, task_id=task_id)
+        if intent.status != "settling":
+            raise FinalizationNotPossibleError(
+                f"Intent {intent.id} is {intent.status}; only a SETTLING intent can finalize."
+            )
+        if not intent.payment_reference:
+            raise UnresolvedPaymentReferenceError(
+                "The intent has no stored Payment Reference; a Receipt cannot be finalized."
+            )
+        return self._finalize(
+            intent=intent,
+            mandate=mandate,
+            task_id=task_id,
+            purpose_hash=intent_hash,
         )
 
     def list_intents(self, *, mandate_id: uuid.UUID) -> list[Intent]:
@@ -355,22 +414,62 @@ class MandateSpendService:
             return self._unknown_outcome_response(intent, mandate, action=ACTION_WAIT)
         return self._duplicate_response(intent, mandate)
 
-    def _settle(
+    def _finalize(
         self,
         *,
         intent: Intent,
         mandate: Mandate,
         task_id: str,
         purpose_hash: str,
-        tx_hash: str,
     ) -> SpendResponse:
-        """Record the receipt and settle the intent (ticket 04)."""
-        settled, receipt, updated = self._record_settlement(
-            intent=intent,
-            mandate=mandate,
+        """Finish one paid Intent: proof, fee, accounting, and settle.
+
+        Every step is idempotent (ticket 10e, ADR-0032). The Receipt is
+        recorded at most once, the fee is collected at most once, and
+        ``finalize_settlement`` moves the reservation to spent authority and
+        settles the Intent in one transaction. The caller must have stored the
+        Payment Reference before calling this method.
+        """
+        if intent.receipt_anchor is None:
+            anchor = self._receipt_recorder.record_receipt(
+                user_id=mandate.agent_identity,
+                task_id=task_id,
+                purpose_hash=purpose_hash,
+                service_url=intent.service_url,
+                amount=intent.amount,
+                tx_hash=intent.payment_reference or "",
+                fee_tx_hash="",
+            )
+            intent = self._intent_store.store_receipt_anchor(intent_id=intent.id, anchor=anchor)
+        if intent.fee_amount is None:
+            fee_amount, fee_tx_hash = self._collect_fee(
+                mandate=mandate,
+                amount=intent.amount,
+            )
+            intent = self._intent_store.store_fee_fields(
+                intent_id=intent.id,
+                fee_amount=fee_amount,
+                fee_tx_hash=fee_tx_hash,
+            )
+        settled_at = self._now()
+        settled = self._intent_store.finalize_settlement(
+            intent_id=intent.id,
+            settled_at=settled_at,
+            fee_amount=intent.fee_amount,
+            fee_tx_hash=intent.fee_tx_hash,
+        )
+        updated = self._mandate_store.get_mandate(user_id=mandate.user_id, mandate_id=mandate.id)
+        receipt = SpendReceipt(
             task_id=task_id,
             purpose_hash=purpose_hash,
-            tx_hash=tx_hash,
+            service_url=settled.service_url,
+            amount=settled.amount,
+            tx_hash=settled.tx_hash or "",
+            recorded_at=settled.settled_at or settled_at,
+            intent_state="settled",
+            fee_amount=settled.fee_amount,
+            fee_tx_hash=settled.fee_tx_hash,
+            receipt_anchor=settled.receipt_anchor,
         )
         return SpendResponse(
             outcome="permitted",
@@ -402,61 +501,6 @@ class MandateSpendService:
             reason=result.reason or "The spend was blocked by the mandate policy.",
             action=ACTION_SWITCH_SERVICE if result.rule == "service_not_allowed" else ACTION_NONE,
         )
-
-    def _record_settlement(
-        self,
-        *,
-        intent: Intent,
-        mandate: Mandate,
-        task_id: str,
-        purpose_hash: str,
-        tx_hash: str,
-    ) -> tuple[Intent, SpendReceipt, Mandate]:
-        """Record the receipt, finalize the reservation, and settle the intent.
-
-        The receipt is recorded before the fee is collected, so no fee money
-        moves unless the settlement is durably recorded. The reservation is
-        finalized after the payment confirms: the amount moves from
-        reserved_total to spent_total.
-        """
-        self._receipt_recorder.record_receipt(
-            user_id=mandate.agent_identity,
-            task_id=task_id,
-            purpose_hash=purpose_hash,
-            service_url=intent.service_url,
-            amount=intent.amount,
-            tx_hash=tx_hash,
-            fee_tx_hash="",
-        )
-        fee_amount, fee_tx_hash = self._collect_fee(
-            mandate=mandate,
-            amount=intent.amount,
-        )
-        settled_at = self._now()
-        updated = self._mandate_store.record_spend(mandate_id=mandate.id, amount=intent.amount)
-        if fee_amount is not None and fee_tx_hash is not None:
-            updated = self._mandate_store.record_fee(mandate_id=mandate.id, amount=fee_amount)
-        settled = self._intent_store.transition(
-            intent_id=intent.id,
-            status="settled",
-            expected_status="settling",
-            tx_hash=tx_hash,
-            settled_at=settled_at,
-            fee_amount=fee_amount,
-            fee_tx_hash=fee_tx_hash,
-        )
-        receipt = SpendReceipt(
-            task_id=task_id,
-            purpose_hash=purpose_hash,
-            service_url=intent.service_url,
-            amount=intent.amount,
-            tx_hash=tx_hash,
-            recorded_at=settled_at,
-            intent_state="settled",
-            fee_amount=fee_amount,
-            fee_tx_hash=fee_tx_hash,
-        )
-        return settled, receipt, updated
 
     def _collect_fee(
         self,
@@ -517,6 +561,7 @@ class MandateSpendService:
             intent_state="settled",
             fee_amount=intent.fee_amount,
             fee_tx_hash=intent.fee_tx_hash,
+            receipt_anchor=intent.receipt_anchor,
         )
         return SpendResponse(
             outcome="blocked: duplicate_intent",

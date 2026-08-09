@@ -92,7 +92,32 @@ contract ReceiptRegistryTest is Test {
         );
     }
 
-    function test_record_is_idempotent_for_events() public {
+    function test_record_is_idempotent_for_one_finalized_intent() public {
+        vm.startPrank(owner);
+        registry.recordReceipt(
+            "did:erc8004:agent-3",
+            "task-3",
+            "0xintent-hash-3",
+            "https://service-a.example.com",
+            "1.00",
+            "0xsettled-tx-3",
+            "0xfee-tx-3"
+        );
+        vm.stopPrank();
+        vm.prank(owner);
+        vm.expectRevert("ReceiptRegistry: receipt already recorded");
+        registry.recordReceipt(
+            "did:erc8004:agent-3",
+            "task-3",
+            "0xintent-hash-3",
+            "https://service-a.example.com",
+            "1.00",
+            "0xsettled-tx-3",
+            "0xfee-tx-3"
+        );
+    }
+
+    function test_distinct_intents_each_record_once() public {
         vm.startPrank(owner);
         registry.recordReceipt(
             "did:erc8004:agent-3",
@@ -105,12 +130,12 @@ contract ReceiptRegistryTest is Test {
         );
         registry.recordReceipt(
             "did:erc8004:agent-3",
-            "task-3",
-            "0xintent-hash-3",
+            "task-4",
+            "0xintent-hash-4",
             "https://service-a.example.com",
             "1.00",
-            "0xsettled-tx-3",
-            "0xfee-tx-3"
+            "0xsettled-tx-4",
+            "0xfee-tx-4"
         );
         vm.stopPrank();
     }

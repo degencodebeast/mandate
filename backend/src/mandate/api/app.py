@@ -47,7 +47,11 @@ from mandate.persistence.breaker_store import (
     BreakerStateStore,
     PostgresBreakerStateStore,
 )
-from mandate.persistence.intent_store import Intent, PostgresIntentStore
+from mandate.persistence.intent_store import (
+    Intent,
+    PostgresIntentStore,
+    UnresolvedPaymentReferenceError,
+)
 from mandate.persistence.mandate_store import (
     Mandate,
     MandateParameters,
@@ -55,10 +59,11 @@ from mandate.persistence.mandate_store import (
     NotFoundError,
     PostgresMandateStore,
 )
-from mandate.receipt_reader import ArcReceipt, ReceiptReader, ViemReceiptReader
-from mandate.receipts import ArcReceiptRecorder
+from mandate.receipt_reader import ArcReceipt, ReceiptReader, ReceiptReadError, ViemReceiptReader
+from mandate.receipts import ArcReceiptRecorder, ReceiptWriteError
 from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
 from mandate.spend.policy import finite_positive_decimal
+from mandate.spend.service import FinalizationNotPossibleError
 from mandate.status import MandateStatusService
 from mandate.wallets import WalletBinder
 
@@ -121,6 +126,17 @@ class SpendRequest(BaseModel):
         """Reject non-finite, zero, and negative amounts."""
         _positive_finite_decimal(value)
         return value
+
+
+class FinalizeRequest(BaseModel):
+    """The accepted mandate.finalize fields.
+
+    Finalization identifies the stored Intent by the (Task, Purpose) pair, the
+    same key the spend call used. It never accepts a new Payment Authorization.
+    """
+
+    task_id: str = Field(min_length=1)
+    purpose: str = Field(min_length=1, max_length=512)
 
 
 def create_app(
@@ -301,6 +317,29 @@ def create_app(
             raise StarletteHTTPException(status_code=404) from None
         return JSONResponse(content=_spend_to_json(result))
 
+    @app.post("/api/v1/mandates/{mandate_id}/finalize")
+    def finalize(
+        mandate_id: uuid.UUID,
+        command: FinalizeRequest,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_spend is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            result = active_spend.resume_finalization(
+                user_id=identity.subject,
+                mandate_id=mandate_id,
+                task_id=command.task_id,
+                purpose=command.purpose,
+            )
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        except (FinalizationNotPossibleError, UnresolvedPaymentReferenceError) as error:
+            raise StarletteHTTPException(status_code=409, detail=str(error)) from None
+        except ReceiptWriteError as error:
+            raise StarletteHTTPException(status_code=502, detail=str(error)) from None
+        return JSONResponse(content=_spend_to_json(result))
+
     @app.get("/api/v1/mandates/{mandate_id}")
     def get_mandate(
         mandate_id: uuid.UUID,
@@ -326,11 +365,14 @@ def create_app(
             mandate = active_store.get_mandate(user_id=identity.subject, mandate_id=mandate_id)
         except NotFoundError:
             raise StarletteHTTPException(status_code=404) from None
-        receipts = (
-            active_receipts.list_receipts(user_id=mandate.agent_identity)
-            if active_receipts is not None
-            else []
-        )
+        if active_receipts is None:
+            raise StarletteHTTPException(
+                status_code=503, detail="The Receipt reader is not configured."
+            )
+        try:
+            receipts = active_receipts.list_receipts(user_id=mandate.agent_identity)
+        except ReceiptReadError as error:
+            raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(
             content={"receipts": [_receipt_to_json(receipt) for receipt in receipts]}
         )
@@ -447,6 +489,7 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
             "intent_state": receipt.intent_state,
             "fee_amount": receipt.fee_amount,
             "fee_tx_hash": receipt.fee_tx_hash,
+            "receipt_anchor": receipt.receipt_anchor,
         }
     return document
 
@@ -466,6 +509,8 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "retry_count": intent.retry_count,
         "fee_amount": intent.fee_amount,
         "fee_tx_hash": intent.fee_tx_hash,
+        "payment_reference": intent.payment_reference,
+        "receipt_anchor": intent.receipt_anchor,
     }
 
 

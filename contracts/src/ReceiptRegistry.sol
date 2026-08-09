@@ -9,9 +9,19 @@ pragma solidity ^0.8.26;
 /// the task, the intent (purpose hash), the service, the amount, and the
 /// on-chain transaction hashes of the service payment and the Mandate fee
 /// transfer (ticket 07).
+///
+/// One finalized Intent can create at most one Receipt Anchor (ticket 10e,
+/// ADR-0032). The registry records which (userId, purposeHash) pair already has
+/// a Receipt and reverts a duplicate write, so restartable finalization cannot
+/// create a second Receipt for the same Intent.
 contract ReceiptRegistry {
     /// @notice The single address permitted to record receipts.
     address public immutable owner;
+
+    /// @notice Tracks the finalized (userId, purposeHash) pairs that already
+    /// have a Receipt. One finalized Intent can create at most one Receipt
+    /// Anchor (ticket 10e).
+    mapping(string userId => mapping(string purposeHash => bool)) private recorded;
 
     /// @notice Emitted once per recorded receipt with every receipt field.
     /// @param userId The ERC-8004 agent identity that made the payment (ADR-0016).
@@ -40,7 +50,8 @@ contract ReceiptRegistry {
         owner = owner_;
     }
 
-    /// @notice Record one receipt. Owner-only.
+    /// @notice Record one receipt. Owner-only. One finalized Intent can create
+    /// at most one Receipt Anchor; a duplicate write reverts.
     /// @return The block timestamp when the receipt was recorded.
     function recordReceipt(
         string calldata userId,
@@ -52,6 +63,8 @@ contract ReceiptRegistry {
         string calldata feeTxHash
     ) external returns (uint256) {
         require(msg.sender == owner, "ReceiptRegistry: only owner");
+        require(!recorded[userId][purposeHash], "ReceiptRegistry: receipt already recorded");
+        recorded[userId][purposeHash] = true;
         emit ReceiptRecorded(
             userId,
             taskId,

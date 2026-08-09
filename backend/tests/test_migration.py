@@ -35,6 +35,7 @@ _TEST_APP_ID = "test-app-id"
 _TEST_USER = "did:privy:migration-user"
 _SERVICE_URL = "https://service-a.example.com"
 _0004_VERSION = "0004_atomic_budget_reservation"
+_0005_VERSION = "0005_restartable_finalization"
 
 
 class RecordingPaymentExecutor:
@@ -286,3 +287,76 @@ def test_migration_0004_does_not_reserve_settled_or_blocked(
         ).fetchone()
     assert row is not None
     assert row["reserved_total"] == 0.00
+
+
+def _downgrade_to_pre_0005() -> None:
+    """Return the intents schema to the pre-0005 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("ALTER TABLE intents DROP COLUMN receipt_anchor")
+        connection.execute("ALTER TABLE intents DROP COLUMN payment_reference")
+        connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0005_VERSION,))
+
+
+def test_migration_0005_adds_recovery_columns_and_backfills_settled(
+    reset_database: None,
+) -> None:
+    _downgrade_to_pre_0005()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '1.00',
+                      '0', '0', %s, %s, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:erc8004:migration-agent",
+                "2.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+                "0xwallet",
+                "cw_0005_001",
+            ),
+        )
+        for index, (status, tx_hash) in enumerate(
+            (("settled", "0xsettled"), ("settling", "0xinflight"), ("blocked", None))
+        ):
+            connection.execute(
+                """
+                INSERT INTO intents (
+                    id, mandate_id, purpose_hash, service_url, amount, status,
+                    tx_hash, created_at, settled_at, retry_count, fee_amount,
+                    fee_tx_hash
+                ) VALUES (%s, %s, %s, %s, '0.25', %s, %s, now(), NULL, 0,
+                          NULL, NULL)
+                """,
+                (
+                    uuid.uuid4(),
+                    mandate_id,
+                    f"legacy-0005-{index}",
+                    _SERVICE_URL,
+                    status,
+                    tx_hash,
+                ),
+            )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            "SELECT status, payment_reference, receipt_anchor FROM intents "
+            "WHERE mandate_id = %s ORDER BY status",
+            (mandate_id,),
+        ).fetchall()
+    by_status = {row["status"]: row for row in rows}
+    assert by_status["settled"]["payment_reference"] == "0xsettled"
+    assert by_status["settled"]["receipt_anchor"] is None
+    assert by_status["settling"]["payment_reference"] == "0xinflight"
+    assert by_status["settling"]["receipt_anchor"] is None
+    assert by_status["blocked"]["payment_reference"] is None
+    assert by_status["blocked"]["receipt_anchor"] is None

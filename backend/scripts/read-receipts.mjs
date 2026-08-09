@@ -37,7 +37,7 @@ async function main() {
   const logs = await client.getLogs({
     address: registry,
     event: parseAbiItem(
-      "event ReceiptRecorded(string userId, string taskId, string purposeHash, string serviceUrl, string amount, string txHash, uint256 timestamp)",
+      "event ReceiptRecorded(string userId, string taskId, string purposeHash, string serviceUrl, string amount, string txHash, string feeTxHash, uint256 timestamp)",
     ),
     fromBlock: 0n,
   });
@@ -52,6 +52,7 @@ async function main() {
       serviceUrl: log.args.serviceUrl,
       amount: log.args.amount,
       txHash: log.args.txHash,
+      feeTxHash: log.args.feeTxHash ?? "",
       timestamp: Number(log.args.timestamp ?? 0n),
     }));
 
