@@ -61,7 +61,9 @@ class MandateStatusService:
             mandate=mandate,
             recent_intents=intents,
             breaker_states=breaker_states,
-            remaining_budget=_remaining_budget(mandate.budget, mandate.spent_total),
+            remaining_budget=_remaining_budget(
+                mandate.budget, mandate.spent_total, mandate.reserved_total
+            ),
         )
 
     def list_mandates(self, *, user_id: str) -> list[Mandate]:
@@ -78,10 +80,16 @@ def _relevant_service_urls(mandate: Mandate, intents: list[Intent]) -> list[str]
     return seen
 
 
-def _remaining_budget(budget: str, spent_total: str) -> str:
-    """Return budget minus spent_total as a plain decimal string."""
+def _remaining_budget(budget: str, spent_total: str, reserved_total: str) -> str:
+    """Return the authority not yet spent or reserved, as a decimal string.
+
+    Reserved authority is claimed by an in-flight Intent, so it is not
+    available for a new Payment Authorization.
+    """
     try:
-        remaining = Decimal(budget) - Decimal(spent_total)
+        remaining = Decimal(budget) - Decimal(spent_total) - Decimal(reserved_total)
     except (InvalidOperation, ValueError) as error:
-        raise ValueError(f"Not a decimal number: {budget!r} or {spent_total!r}") from error
+        raise ValueError(
+            f"Not a decimal number: {budget!r}, {spent_total!r}, or {reserved_total!r}"
+        ) from error
     return str(remaining)

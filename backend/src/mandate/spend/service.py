@@ -1,46 +1,27 @@
 """The mandate.spend service: policy gate plus the intent state machine.
 
-Ticket 04 flow (ADR-0031, spec "Mandate spend flow"):
+Every path that can reach the payment adapter first acquires one durable
+Intent transition and one valid Budget Reservation (ticket 10d, ADR-0032):
 
 1. Create the intent in the PENDING state.
 2. Evaluate the composable policy checks (ADR-0021).
-3. On any policy failure: transition the intent to BLOCKED and return the
-   blocked Spend Result with a reason (ADR-0030).
-4. On allowance: transition to SETTLING and call the Circle CLI to pay.
-5. On success: record the Receipt on the Receipt Registry contract, add the
-   amount to the mandate spent_total, transition to SETTLED with the tx hash
-   and settled_at, and return the receipt data.
+3. On any policy failure: transition PENDING -> BLOCKED and return the blocked
+   Spend Result with a reason (ADR-0030).
+4. On allowance: acquire the payment-permitting transition PENDING -> SETTLING
+   with compare-and-set semantics, so only one caller owns it.
+5. Reserve Mandate authority atomically (conditional update). A failed
+   reservation transitions SETTLING -> BLOCKED and returns budget_exceeded.
+6. Call the Circle CLI to pay.
+7. On success: record the Receipt, finalize the reservation (reserved becomes
+   spent), transition SETTLING -> SETTLED, and return the receipt data.
+8. On a definitive rejection: release the caller's own reservation, transition
+   SETTLING -> BLOCKED, and return payment_failed.
+9. On an unknown outcome: transition SETTLING -> UNKNOWN, keep the reservation
+   (money may have moved), and return WAIT or REQUEST_REVIEW. No second
+   Payment Authorization is ever issued for an UNKNOWN intent.
 
-Ticket 05 adds two protections before payment (spec "Intent dedupe" and "Intent
-lock"): a settled intent for the same (mandate_id, purpose_hash) returns the
-existing receipt, and an in-flight intent (PENDING or SETTLING) returns
-ALREADY_IN_PROGRESS. The UNIQUE (mandate_id, purpose_hash) constraint maps one
-economic intent to one row, so at most one payment can ever happen for it.
-
-Ticket 05b (the core differentiator) adds unknown-outcome handling and
-reconciliation (spec "Unknown outcome handling" and "Reconciliation"):
-
-- A payment call that times out or returns no usable response raises
-  PaymentUnknownError. The intent transitions SETTLING → UNKNOWN.
-- Reconciliation queries Arc for the actual settlement state (ADR-0031):
-  * Arc confirms settlement → SETTLED, the receipt is recorded and returned.
-    No second payment.
-  * Arc confirms no settlement → NOT_SETTLED. One safe retry is allowed:
-    the next spend call transitions NOT_SETTLED → PENDING → SETTLING.
-  * Arc is unreachable (ReconciliationTimeoutError) → the intent stays
-    UNKNOWN and every spend call returns "unknown: reconciling, retries
-    frozen" until reconciliation succeeds. The status read surfaces it.
-- A spend call that finds an existing intent in UNKNOWN or RECONCILING state
-  returns "unknown: reconciling, retries frozen" — no new payment attempt.
-
-The safe retry is bounded by retry_count: at most one retry per intent. After
-the retry, further spend calls return "unknown: not_settled" with retries
-exhausted.
-
-Ticket 07 adds the fee split (ADR-0014): after a successful service payment the
-service collects ``fee_percentage`` of the payment from the user's wallet to
-the fee wallet. The receipt carries both hashes. A failed fee transfer is
-logged and the payment still settles.
+The old NOT_SETTLED safe-retry and approximate reconciliation paths are gone
+(ticket 10d). An UNKNOWN intent stays frozen with WAIT or REQUEST_REVIEW only.
 """
 
 from __future__ import annotations
@@ -64,26 +45,28 @@ from mandate.persistence.intent_store import (
     DuplicateIntentError,
     Intent,
     IntentStore,
+    UnexpectedIntentStateError,
 )
-from mandate.persistence.mandate_store import Mandate, MandateStore
+from mandate.persistence.mandate_store import (
+    Mandate,
+    MandateStore,
+    ReservationDeniedError,
+)
 from mandate.receipts import ReceiptRecorder
-from mandate.reconciliation import (
-    ReconciliationTimeoutError,
-    SettlementInspector,
-)
 from mandate.spend.breaker import BREAKER_OPEN_REASON, CircuitBreaker
-from mandate.spend.policy import SpendContext, evaluate
+from mandate.spend.policy import SpendContext, SpendResult, evaluate
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 Now = Callable[[], datetime]
 
-OUTCOME_RECONCILING = "unknown: reconciling"
-OUTCOME_NOT_SETTLED = "unknown: not_settled"
-REASON_RETRIES_FROZEN = "reconciling, retries frozen"
-REASON_SAFE_RETRY_ALLOWED = "reconciled: not settled, one safe retry allowed"
-REASON_RETRIES_EXHAUSTED = "reconciled: not settled, retries exhausted"
-REASON_RECONCILED_SETTLED = "duplicate intent: reconciled, already settled"
+OUTCOME_UNKNOWN = "unknown"
+ACTION_WAIT = "wait"
+ACTION_REQUEST_REVIEW = "request_review"
+ACTION_SWITCH_SERVICE = "switch_service"
+ACTION_NONE = "none"
+
+REASON_UNKNOWN_FROZEN = "unknown outcome; wait or request review; no new authorization"
 REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 
 
@@ -110,13 +93,19 @@ class SpendReceipt:
 
 @dataclass(frozen=True)
 class SpendResponse:
-    """The complete result of one mandate.spend call."""
+    """The complete result of one mandate.spend call.
+
+    ``action`` is the next permitted Economic Safety Action (CONTEXT.md). For
+    an UNKNOWN intent it is ``wait`` or ``request_review`` and never a new
+    Payment Authorization.
+    """
 
     outcome: str
     reason: str | None
     intent: Intent
     receipt: SpendReceipt | None
     spent_total: str
+    action: str
 
 
 def purpose_hash(task_id: str, purpose: str) -> str:
@@ -135,8 +124,6 @@ class MandateSpendService:
         intent_store: IntentStore,
         payment_executor: PaymentExecutor,
         receipt_recorder: ReceiptRecorder,
-        settlement_inspector: SettlementInspector,
-        reconciliation_timeout_seconds: float = 30.0,
         fee_collector: FeeCollector | None = None,
         fee_wallet_address: str | None = None,
         fee_percentage: float = 0.01,
@@ -147,8 +134,6 @@ class MandateSpendService:
         self._intent_store = intent_store
         self._payment_executor = payment_executor
         self._receipt_recorder = receipt_recorder
-        self._settlement_inspector = settlement_inspector
-        self._reconciliation_timeout_seconds = reconciliation_timeout_seconds
         self._fee_collector = fee_collector
         self._fee_wallet_address = fee_wallet_address
         self._fee_percentage = fee_percentage
@@ -195,26 +180,56 @@ class MandateSpendService:
             )
         )
         if result.decision == "BLOCKED":
-            blocked = self._intent_store.transition(intent_id=intent.id, status="blocked")
-            return SpendResponse(
-                outcome=result.outcome,
-                reason=result.reason,
-                intent=blocked,
-                receipt=None,
-                spent_total=mandate.spent_total,
+            blocked, routed = self._transition_or_route(
+                intent,
+                mandate,
+                status="blocked",
+                expected="pending",
+                task_id=task_id,
+                intent_hash=intent_hash,
             )
+            if routed is not None:
+                return routed
+            return self._blocked_policy_response(blocked, mandate, result)
         if breaker_state.state == "half_open":
             trial = self._breaker.allow_trial(service_url=service_url, state=breaker_state)
             if trial is None:
-                blocked = self._intent_store.transition(intent_id=intent.id, status="blocked")
-                return SpendResponse(
-                    outcome="blocked: breaker_open",
-                    reason=BREAKER_OPEN_REASON,
-                    intent=blocked,
-                    receipt=None,
-                    spent_total=mandate.spent_total,
+                blocked, routed = self._transition_or_route(
+                    intent,
+                    mandate,
+                    status="blocked",
+                    expected="pending",
+                    task_id=task_id,
+                    intent_hash=intent_hash,
                 )
-        settling = self._intent_store.transition(intent_id=intent.id, status="settling")
+                if routed is not None:
+                    return routed
+                return self._breaker_blocked_response(blocked, mandate)
+        settling, routed = self._transition_settling(
+            intent, mandate, task_id=task_id, intent_hash=intent_hash
+        )
+        if routed is not None:
+            return routed
+        try:
+            self._mandate_store.reserve(mandate_id=mandate.id, amount=amount)
+        except ReservationDeniedError:
+            blocked, routed = self._transition_or_route(
+                settling,
+                mandate,
+                status="blocked",
+                expected="settling",
+                task_id=task_id,
+                intent_hash=intent_hash,
+            )
+            if routed is not None:
+                return routed
+            return self._blocked_response(
+                blocked,
+                mandate,
+                outcome="blocked: budget_exceeded",
+                reason="The mandate budget does not cover the amount.",
+                action=ACTION_NONE,
+            )
         try:
             tx_hash = self._payment_executor.execute_payment(
                 service_url=service_url,
@@ -222,17 +237,37 @@ class MandateSpendService:
             )
         except PaymentUnknownError:
             self._breaker.record_failure(service_url=service_url)
-            return self._route_unknown_outcome(
-                settling=settling,
-                mandate=mandate,
+            unknown, routed = self._transition_or_route(
+                settling,
+                mandate,
+                status="unknown",
+                expected="settling",
                 task_id=task_id,
-                purpose_hash=intent_hash,
-                service_url=service_url,
-                amount=amount,
+                intent_hash=intent_hash,
             )
+            if routed is not None:
+                return routed
+            return self._unknown_outcome_response(unknown, mandate, action=ACTION_REQUEST_REVIEW)
         except PaymentExecutionError as error:
             self._breaker.record_failure(service_url=service_url)
-            return self._blocked_payment_failed(settling, mandate, error)
+            self._mandate_store.release_reservation(mandate_id=mandate.id, amount=amount)
+            blocked, routed = self._transition_or_route(
+                settling,
+                mandate,
+                status="blocked",
+                expected="settling",
+                task_id=task_id,
+                intent_hash=intent_hash,
+            )
+            if routed is not None:
+                return routed
+            return self._blocked_response(
+                blocked,
+                mandate,
+                outcome="blocked: payment_failed",
+                reason=str(error),
+                action=ACTION_SWITCH_SERVICE,
+            )
         self._breaker.record_success(service_url=service_url)
         return self._settle(
             intent=settling,
@@ -246,6 +281,58 @@ class MandateSpendService:
         """Return the recent intents for the status read (ticket 05b)."""
         return self._intent_store.list_intents(mandate_id=mandate_id)
 
+    def _transition_settling(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        task_id: str,
+        intent_hash: str,
+    ) -> tuple[Intent, SpendResponse | None]:
+        """Acquire the payment-permitting PENDING -> SETTLING transition.
+
+        Returns the SETTLING intent, or a routed SpendResponse when the CAS
+        fails because another caller already owns the intent. The caller never
+        reaches the payment adapter without a successfully acquired SETTLING
+        state (ADR-0032).
+        """
+        return self._transition_or_route(
+            intent,
+            mandate,
+            status="settling",
+            expected="pending",
+            task_id=task_id,
+            intent_hash=intent_hash,
+        )
+
+    def _transition_or_route(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        status: str,
+        expected: str,
+        task_id: str,
+        intent_hash: str,
+    ) -> tuple[Intent, SpendResponse | None]:
+        """Run one compare-and-set intent transition.
+
+        When the CAS succeeds, return the updated intent with no response. When
+        another caller already owns the expected state, re-read the intent and
+        route it by its real state so no Payment Authorization is issued from a
+        state this caller does not own.
+        """
+        try:
+            updated = self._intent_store.transition(
+                intent_id=intent.id, status=status, expected_status=expected
+            )
+        except UnexpectedIntentStateError:
+            current = self._intent_store.get_intent(mandate_id=mandate.id, purpose_hash=intent_hash)
+            if current is None:
+                raise
+            return current, self._existing_intent_response(current, mandate, task_id=task_id)
+        return updated, None
+
     def _existing_intent_response(
         self,
         intent: Intent,
@@ -253,121 +340,20 @@ class MandateSpendService:
         *,
         task_id: str,
     ) -> SpendResponse:
-        """Route an already-existing intent by its state (tickets 05, 05b).
+        """Route an already-existing intent by its state.
 
-        A SETTLED intent is the dedupe case: return the existing receipt so a
-        retry never pays twice. A PENDING or SETTLING intent is the lock case:
-        another caller is mid-flight, so return ALREADY_IN_PROGRESS. An UNKNOWN
-        or RECONCILING intent is frozen: reconciliation is pending, so no new
-        payment attempt. A NOT_SETTLED intent allows one safe retry, or reports
-        retries exhausted once the retry is spent. Any other state keeps the
-        generic duplicate block.
+        A SETTLED intent returns the existing receipt (dedupe). A PENDING or
+        SETTLING intent is locked by another caller. An UNKNOWN intent is
+        frozen with WAIT or REQUEST_REVIEW. Any other state blocks as a
+        duplicate.
         """
         if intent.status == "settled":
             return self._settled_receipt_response(intent, mandate, task_id=task_id)
         if intent.status in ("pending", "settling"):
             return self._already_in_progress_response(intent, mandate)
-        if intent.status in ("unknown", "reconciling"):
-            return self._frozen_reconciling_response(intent, mandate)
-        if intent.status == "not_settled":
-            if intent.retry_count >= 1:
-                return self._not_settled_exhausted_response(intent, mandate)
-            return self._safe_retry(intent, mandate, task_id=task_id)
+        if intent.status == "unknown":
+            return self._unknown_outcome_response(intent, mandate, action=ACTION_WAIT)
         return self._duplicate_response(intent, mandate)
-
-    def _reconcile_and_resolve(
-        self,
-        *,
-        intent: Intent,
-        mandate: Mandate,
-        task_id: str,
-        purpose_hash: str,
-        service_url: str,
-        amount: str,
-    ) -> SpendResponse:
-        """Query Arc and resolve an UNKNOWN intent (ticket 05b, ADR-0031).
-
-        The intent enters RECONCILING while Arc is queried. On timeout (Arc
-        unreachable) it returns to UNKNOWN and stays frozen. On confirmed
-        settlement it becomes SETTLED with the receipt recorded. On confirmed
-        no-settlement it becomes NOT_SETTLED; one safe retry is allowed.
-        """
-        reconciling = self._intent_store.transition(intent_id=intent.id, status="reconciling")
-        try:
-            state = self._settlement_inspector.check_settlement(
-                wallet_address=mandate.wallet_address or "",
-                service_url=service_url,
-                amount=amount,
-                purpose_hash=purpose_hash,
-                timeout_seconds=self._reconciliation_timeout_seconds,
-            )
-        except ReconciliationTimeoutError:
-            stuck = self._intent_store.transition(intent_id=reconciling.id, status="unknown")
-            return self._frozen_reconciling_response(stuck, mandate)
-        if state.settled:
-            tx_hash = state.tx_hash
-            if tx_hash is None:
-                raise ValueError("Reconciled settlement is missing its transaction hash.")
-            return self._reconciled_settled_response(
-                intent=reconciling,
-                mandate=mandate,
-                task_id=task_id,
-                purpose_hash=purpose_hash,
-                tx_hash=tx_hash,
-            )
-        not_settled = self._intent_store.transition(intent_id=reconciling.id, status="not_settled")
-        if not_settled.retry_count >= 1:
-            return self._not_settled_exhausted_response(not_settled, mandate)
-        return SpendResponse(
-            outcome=OUTCOME_NOT_SETTLED,
-            reason=REASON_SAFE_RETRY_ALLOWED,
-            intent=not_settled,
-            receipt=None,
-            spent_total=mandate.spent_total,
-        )
-
-    def _safe_retry(self, intent: Intent, mandate: Mandate, *, task_id: str) -> SpendResponse:
-        """Execute the one allowed safe retry after NOT_SETTLED (ticket 05b).
-
-        The intent transitions NOT_SETTLED → PENDING → SETTLING and pays once
-        more. retry_count is consumed so no second retry is possible.
-        """
-        breaker_state = self._breaker.state_for(service_url=intent.service_url)
-        if breaker_state.state == "open":
-            return self._breaker_blocked_response(intent, mandate)
-        trial = self._breaker.allow_trial(service_url=intent.service_url, state=breaker_state)
-        if trial is None:
-            return self._breaker_blocked_response(intent, mandate)
-        pending = self._intent_store.transition(
-            intent_id=intent.id, status="pending", retry_count=intent.retry_count + 1
-        )
-        settling = self._intent_store.transition(intent_id=pending.id, status="settling")
-        try:
-            tx_hash = self._payment_executor.execute_payment(
-                service_url=settling.service_url,
-                amount=settling.amount,
-            )
-        except PaymentUnknownError:
-            self._breaker.record_failure(service_url=settling.service_url)
-            return self._route_unknown_outcome(
-                settling=settling,
-                mandate=mandate,
-                task_id=task_id,
-                purpose_hash=settling.purpose_hash,
-                service_url=settling.service_url,
-                amount=settling.amount,
-            )
-        except PaymentExecutionError as error:
-            self._breaker.record_failure(service_url=settling.service_url)
-            return self._blocked_payment_failed(settling, mandate, error)
-        self._breaker.record_success(service_url=settling.service_url)
-        return self._settle(
-            intent=settling,
-            mandate=mandate,
-            task_id=task_id,
-            purpose_hash=settling.purpose_hash,
-            tx_hash=tx_hash,
-        )
 
     def _settle(
         self,
@@ -392,87 +378,29 @@ class MandateSpendService:
             intent=settled,
             receipt=receipt,
             spent_total=updated.spent_total,
-        )
-
-    def _route_unknown_outcome(
-        self,
-        *,
-        settling: Intent,
-        mandate: Mandate,
-        task_id: str,
-        purpose_hash: str,
-        service_url: str,
-        amount: str,
-    ) -> SpendResponse:
-        """Route a timed-out payment into reconciliation (ticket 05b).
-
-        The intent was SETTLING when the payment call lost its response. It
-        becomes UNKNOWN and reconciliation decides what actually happened.
-        """
-        unknown = self._intent_store.transition(intent_id=settling.id, status="unknown")
-        return self._reconcile_and_resolve(
-            intent=unknown,
-            mandate=mandate,
-            task_id=task_id,
-            purpose_hash=purpose_hash,
-            service_url=service_url,
-            amount=amount,
-        )
-
-    def _blocked_payment_failed(
-        self, intent: Intent, mandate: Mandate, error: PaymentExecutionError
-    ) -> SpendResponse:
-        """Block an intent whose payment was definitively rejected."""
-        failed = self._intent_store.transition(intent_id=intent.id, status="blocked")
-        return SpendResponse(
-            outcome="blocked: payment_failed",
-            reason=str(error),
-            intent=failed,
-            receipt=None,
-            spent_total=mandate.spent_total,
+            action=ACTION_NONE,
         )
 
     def _breaker_blocked_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
-        """Block a payment attempt because the service's breaker is OPEN.
-
-        The intent keeps its current state (for example NOT_SETTLED after
-        reconciliation) so a later call can retry once the breaker recovers.
-        """
+        """Block a payment attempt because the service's breaker is OPEN."""
         return self._blocked_response(
             intent,
             mandate,
             outcome="blocked: breaker_open",
             reason=BREAKER_OPEN_REASON,
+            action=ACTION_SWITCH_SERVICE,
         )
 
-    def _reconciled_settled_response(
-        self,
-        *,
-        intent: Intent,
-        mandate: Mandate,
-        task_id: str,
-        purpose_hash: str,
-        tx_hash: str,
+    def _blocked_policy_response(
+        self, intent: Intent, mandate: Mandate, result: SpendResult
     ) -> SpendResponse:
-        """Record the receipt for a settlement confirmed during reconciliation.
-
-        Arc confirms the payment actually settled, so the receipt is recorded,
-        the mandate spent_total is updated, and the intent becomes SETTLED. The
-        outcome reports the existing receipt — no second payment is made.
-        """
-        settled, receipt, updated = self._record_settlement(
-            intent=intent,
-            mandate=mandate,
-            task_id=task_id,
-            purpose_hash=purpose_hash,
-            tx_hash=tx_hash,
-        )
-        return SpendResponse(
-            outcome="blocked: duplicate_intent",
-            reason=REASON_RECONCILED_SETTLED,
-            intent=settled,
-            receipt=receipt,
-            spent_total=updated.spent_total,
+        """Build the blocked response from a policy result."""
+        return self._blocked_response(
+            intent,
+            mandate,
+            outcome=result.outcome,
+            reason=result.reason or "The spend was blocked by the mandate policy.",
+            action=ACTION_SWITCH_SERVICE if result.rule == "service_not_allowed" else ACTION_NONE,
         )
 
     def _record_settlement(
@@ -484,13 +412,12 @@ class MandateSpendService:
         purpose_hash: str,
         tx_hash: str,
     ) -> tuple[Intent, SpendReceipt, Mandate]:
-        """Record the receipt, update the totals, and settle the intent.
+        """Record the receipt, finalize the reservation, and settle the intent.
 
         The receipt is recorded before the fee is collected, so no fee money
-        moves unless the settlement is durably recorded (gate finding on ticket
-        07). The on-chain receipt carries the service payment hash and an empty
-        fee hash; the fee transfer hash is persisted on the intent and returned
-        in the receipt data.
+        moves unless the settlement is durably recorded. The reservation is
+        finalized after the payment confirms: the amount moves from
+        reserved_total to spent_total.
         """
         self._receipt_recorder.record_receipt(
             user_id=mandate.agent_identity,
@@ -512,6 +439,7 @@ class MandateSpendService:
         settled = self._intent_store.transition(
             intent_id=intent.id,
             status="settled",
+            expected_status="settling",
             tx_hash=tx_hash,
             settled_at=settled_at,
             fee_amount=fee_amount,
@@ -596,6 +524,7 @@ class MandateSpendService:
             intent=intent,
             receipt=receipt,
             spent_total=mandate.spent_total,
+            action=ACTION_NONE,
         )
 
     def _already_in_progress_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
@@ -605,45 +534,43 @@ class MandateSpendService:
             mandate,
             outcome="blocked: already_in_progress",
             reason="already in progress",
+            action=ACTION_WAIT,
         )
 
-    def _frozen_reconciling_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
-        """Return the frozen response for an UNKNOWN or RECONCILING intent.
+    def _unknown_outcome_response(
+        self,
+        intent: Intent,
+        mandate: Mandate,
+        *,
+        action: str,
+    ) -> SpendResponse:
+        """Return the frozen response for an UNKNOWN intent.
 
-        Retries are frozen until reconciliation resolves the intent. This is
-        the "unknown: reconciling, retries frozen" outcome (CONTEXT.md).
+        The only permitted actions are WAIT and REQUEST_REVIEW (CONTEXT.md). No
+        new Payment Authorization is issued for this intent.
         """
         return SpendResponse(
-            outcome=OUTCOME_RECONCILING,
-            reason=REASON_RETRIES_FROZEN,
+            outcome=OUTCOME_UNKNOWN,
+            reason=REASON_UNKNOWN_FROZEN,
             intent=intent,
             receipt=None,
             spent_total=mandate.spent_total,
-        )
-
-    def _not_settled_exhausted_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
-        """Report that the safe retry has been spent for a NOT_SETTLED intent."""
-        return SpendResponse(
-            outcome=OUTCOME_NOT_SETTLED,
-            reason=REASON_RETRIES_EXHAUSTED,
-            intent=intent,
-            receipt=None,
-            spent_total=mandate.spent_total,
+            action=action,
         )
 
     def _duplicate_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
         """Return a blocked response for an existing economic intent.
 
-        This is the fallback for intent states the dedupe and lock rules do not
-        name (for example BLOCKED). The UNIQUE (mandate_id, purpose_hash)
-        constraint maps one economic intent to one row. When the row already
-        exists, the service never pays again.
+        The UNIQUE (mandate_id, purpose_hash) constraint maps one economic
+        intent to one row. When the row already exists, the service never pays
+        again.
         """
         return self._blocked_response(
             intent,
             mandate,
             outcome="blocked: duplicate_intent",
             reason="An intent for this task and purpose already exists.",
+            action=ACTION_NONE,
         )
 
     def _blocked_response(
@@ -653,6 +580,7 @@ class MandateSpendService:
         *,
         outcome: str,
         reason: str,
+        action: str,
     ) -> SpendResponse:
         """Build a blocked SpendResponse without a receipt."""
         return SpendResponse(
@@ -661,4 +589,5 @@ class MandateSpendService:
             intent=intent,
             receipt=None,
             spent_total=mandate.spent_total,
+            action=action,
         )

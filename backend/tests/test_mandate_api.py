@@ -113,3 +113,87 @@ def test_create_mandate_rejects_negative_budget(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_create_mandate_rejects_non_finite_budget(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "NaN",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_zero_budget(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "0",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_per_call_cap_over_budget(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "1.00",
+            "per_call_cap": "2.00",
+            "allowed_services": [],
+            "expiry": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_invalid_expiry(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "10.00",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": "not-a-date",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_rejects_expired_expiry(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "10.00",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_mandate_accepts_utc_expiry_string(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/mandates",
+        json={
+            "budget": "10.00",
+            "per_call_cap": "1.00",
+            "allowed_services": [],
+            "expiry": (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+        },
+    )
+
+    assert response.status_code == 201

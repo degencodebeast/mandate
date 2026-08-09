@@ -15,7 +15,8 @@ Outcome classes (ticket 05b):
 - PaymentExecutionError: a definite rejection. The payment did not happen, so
   the intent blocks.
 - PaymentUnknownError: the call timed out or returned no usable response. Money
-  may have moved, so the intent becomes UNKNOWN and reconciliation runs.
+  may have moved, so the intent becomes UNKNOWN and stays frozen with WAIT or
+  REQUEST_REVIEW (ticket 10d).
 """
 
 from __future__ import annotations

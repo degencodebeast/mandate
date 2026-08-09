@@ -72,9 +72,7 @@ class PostgresBreakerStateStore:
     def list_states(self) -> list[BreakerState]:
         """Return every breaker state row."""
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
-            rows = connection.execute(
-                _SELECT_FROM_BREAKER + "ORDER BY service_url"
-            ).fetchall()
+            rows = connection.execute(_SELECT_FROM_BREAKER + "ORDER BY service_url").fetchall()
         return [self._from_row(row) for row in rows]
 
     def list_states_for_services(self, service_urls: list[str]) -> list[BreakerState]:
@@ -83,8 +81,7 @@ class PostgresBreakerStateStore:
             return []
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             rows = connection.execute(
-                _SELECT_FROM_BREAKER
-                + "WHERE service_url = ANY(%s) ORDER BY service_url",
+                _SELECT_FROM_BREAKER + "WHERE service_url = ANY(%s) ORDER BY service_url",
                 (service_urls,),
             ).fetchall()
         return [self._from_row(row) for row in rows]

@@ -15,7 +15,11 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 
-from mandate.persistence.mandate_store import MandateParameters, PostgresMandateStore
+from mandate.persistence.mandate_store import (
+    MandateParameters,
+    PostgresMandateStore,
+    ReservationDeniedError,
+)
 from mandate.persistence.migrations import apply_migrations
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
@@ -50,6 +54,7 @@ def test_create_mandate_persists_all_fields(store: PostgresMandateStore) -> None
     ]
     assert mandate.status == "active"
     assert mandate.spent_total == "0"
+    assert mandate.reserved_total == "0"
     assert mandate.fees_paid == "0"
     assert mandate.agent_identity == ""
     assert mandate.wallet_address is None
@@ -136,3 +141,93 @@ def test_record_fee_updates_fees_total(store: PostgresMandateStore) -> None:
 
     assert updated.fees_total == "0.010000"
     assert updated.spent_total == "0"
+
+
+def test_reserve_claims_authority_within_budget(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-5",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+
+    reserved = store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    assert reserved.reserved_total == "0.75"
+    assert reserved.spent_total == "0"
+
+
+def test_reserve_rejects_amount_over_remaining_authority(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-6",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    with pytest.raises(ReservationDeniedError):
+        store.reserve(mandate_id=mandate.id, amount="0.75")
+
+
+def test_reserve_rejects_when_reserved_plus_spent_exceeds_budget(
+    store: PostgresMandateStore,
+) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-7",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    store.reserve(mandate_id=mandate.id, amount="0.50")
+    store.reserve(mandate_id=mandate.id, amount="0.25")
+
+    with pytest.raises(ReservationDeniedError):
+        store.reserve(mandate_id=mandate.id, amount="0.26")
+
+
+def test_record_spend_finalizes_reserved_authority(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-8",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    updated = store.record_spend(mandate_id=mandate.id, amount="0.75")
+
+    assert updated.spent_total == "0.75"
+    assert updated.reserved_total == "0.00"
+
+
+def test_release_reservation_returns_authority(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-9",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    released = store.release_reservation(mandate_id=mandate.id, amount="0.75")
+
+    assert released.reserved_total == "0.00"
+    assert released.spent_total == "0"
+
+
+def test_release_reservation_keeps_other_reservations_intact(
+    store: PostgresMandateStore,
+) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-10",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    store.reserve(mandate_id=mandate.id, amount="0.75")
+    store.reserve(mandate_id=mandate.id, amount="0.25")
+
+    released = store.release_reservation(mandate_id=mandate.id, amount="0.25")
+
+    assert released.reserved_total == "0.75"

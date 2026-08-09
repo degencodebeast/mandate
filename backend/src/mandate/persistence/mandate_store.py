@@ -21,6 +21,14 @@ class NotFoundError(LookupError):
     """The requested mandate is absent or belongs to another user."""
 
 
+class ReservationDeniedError(RuntimeError):
+    """The atomic Budget Reservation cannot fit within the Mandate total.
+
+    The reservation uses a conditional update so concurrent different Intents
+    cannot exceed the Mandate authority (ADR-0032).
+    """
+
+
 class MandateStore(Protocol):
     """The persistence seam for mandate lifecycle."""
 
@@ -37,6 +45,10 @@ class MandateStore(Protocol):
     def get_mandate(self, *, user_id: str, mandate_id: uuid.UUID) -> Mandate: ...
 
     def list_mandates(self, *, user_id: str) -> list[Mandate]: ...
+
+    def reserve(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
+
+    def release_reservation(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
 
     def record_spend(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate: ...
 
@@ -66,6 +78,7 @@ class Mandate:
     expiry: datetime | None
     status: str
     spent_total: str
+    reserved_total: str
     fees_total: str
     wallet_address: str | None
     circle_wallet_id: str | None
@@ -105,9 +118,9 @@ class PostgresMandateStore:
                 """
                 INSERT INTO mandates (
                     id, user_id, agent_identity, budget, per_call_cap,
-                    allowed_services, expiry, status, spent_total, fees_total,
-                    wallet_address, circle_wallet_id, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    allowed_services, expiry, status, spent_total, reserved_total,
+                    fees_total, wallet_address, circle_wallet_id, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     mandate_id,
@@ -118,6 +131,7 @@ class PostgresMandateStore:
                     Jsonb(parameters.allowed_services),
                     parameters.expiry,
                     "active",
+                    "0",
                     "0",
                     "0",
                     wallet_address,
@@ -133,8 +147,8 @@ class PostgresMandateStore:
             row = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total, fees_total,
-                       wallet_address, circle_wallet_id, created_at
+                       allowed_services, expiry, status, spent_total, reserved_total,
+                       fees_total, wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE id = %s AND user_id = %s
                 """,
@@ -150,8 +164,8 @@ class PostgresMandateStore:
             rows = connection.execute(
                 """
                 SELECT id, user_id, agent_identity, budget, per_call_cap,
-                       allowed_services, expiry, status, spent_total, fees_total,
-                       wallet_address, circle_wallet_id, created_at
+                       allowed_services, expiry, status, spent_total, reserved_total,
+                       fees_total, wallet_address, circle_wallet_id, created_at
                 FROM mandates
                 WHERE user_id = %s
                 ORDER BY created_at DESC
@@ -160,24 +174,77 @@ class PostgresMandateStore:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def record_spend(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
-        """Add one settled payment to the mandate's spent_total.
+    def reserve(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
+        """Atomically reserve authority against the Mandate total.
 
-        The update adds the amount to the stored numeric total atomically, so a
-        concurrent payment never clobbers the running counter (ADR-0004). It is
-        scoped to no user because the caller already resolved the mandate.
+        The reservation succeeds only when the remaining authority still covers
+        the amount. The conditional update is the atomic gate that prevents
+        concurrent different Intents from exceeding the Mandate total
+        (ADR-0032, CONTEXT.md Budget Reservation).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE mandates
-                SET spent_total = spent_total + %s
+                SET reserved_total = reserved_total + %s
                 WHERE id = %s
+                  AND spent_total + reserved_total + %s <= budget
                 RETURNING id, user_id, agent_identity, budget, per_call_cap,
                           allowed_services, expiry, status, spent_total,
-                          fees_total, wallet_address, circle_wallet_id, created_at
+                          reserved_total, fees_total, wallet_address,
+                          circle_wallet_id, created_at
                 """,
-                (amount, mandate_id),
+                (amount, mandate_id, amount),
+            ).fetchone()
+        if row is None:
+            raise ReservationDeniedError("The mandate authority cannot cover the reservation.")
+        return self._from_row(row)
+
+    def release_reservation(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
+        """Return one reserved amount to the available Mandate authority.
+
+        A reservation is released only by the caller that acquired it in the
+        same admission. The conditional update keeps the released total from
+        exceeding the reserved total, so a failed admission cannot free
+        authority that another caller still owns.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE mandates
+                SET reserved_total = reserved_total - %s
+                WHERE id = %s AND reserved_total >= %s
+                RETURNING id, user_id, agent_identity, budget, per_call_cap,
+                          allowed_services, expiry, status, spent_total,
+                          reserved_total, fees_total, wallet_address,
+                          circle_wallet_id, created_at
+                """,
+                (amount, mandate_id, amount),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("Mandate not found or belongs to another user")
+        return self._from_row(row)
+
+    def record_spend(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:
+        """Finalize a reserved amount as spent after a confirmed payment.
+
+        The update moves the amount from the reserved total to the spent total
+        atomically (ADR-0004, ADR-0032). It applies only when the reservation
+        still exists, so it never books spend without the reservation.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE mandates
+                SET spent_total = spent_total + %s,
+                    reserved_total = reserved_total - %s
+                WHERE id = %s AND reserved_total >= %s
+                RETURNING id, user_id, agent_identity, budget, per_call_cap,
+                          allowed_services, expiry, status, spent_total,
+                          reserved_total, fees_total, wallet_address,
+                          circle_wallet_id, created_at
+                """,
+                (amount, amount, mandate_id, amount),
             ).fetchone()
         if row is None:
             raise NotFoundError("Mandate not found or belongs to another user")
@@ -198,7 +265,8 @@ class PostgresMandateStore:
                 WHERE id = %s
                 RETURNING id, user_id, agent_identity, budget, per_call_cap,
                           allowed_services, expiry, status, spent_total,
-                          fees_total, wallet_address, circle_wallet_id, created_at
+                          reserved_total, fees_total, wallet_address,
+                          circle_wallet_id, created_at
                 """,
                 (amount, mandate_id),
             ).fetchone()
@@ -217,6 +285,7 @@ class PostgresMandateStore:
             expiry=row["expiry"],
             status=row["status"],
             spent_total=_money(row["spent_total"]),
+            reserved_total=_money(row["reserved_total"]),
             fees_total=_money(row["fees_total"]),
             wallet_address=row["wallet_address"],
             circle_wallet_id=row["circle_wallet_id"],

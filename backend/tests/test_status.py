@@ -69,6 +69,7 @@ def _create_mandate(
         agent_identity="did:erc8004:status-agent",
     )
     if spent_total != "0":
+        store.reserve(mandate_id=mandate.id, amount=spent_total)
         mandate = store.record_spend(mandate_id=mandate.id, amount=spent_total)
     return mandate
 
