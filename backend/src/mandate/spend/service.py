@@ -437,11 +437,14 @@ class MandateSpendService:
         purpose_hash: str,
         tx_hash: str,
     ) -> tuple[Intent, SpendReceipt, Mandate]:
-        """Record the receipt, update the totals, and settle the intent."""
-        fee_amount, fee_tx_hash = self._collect_fee(
-            mandate=mandate,
-            amount=intent.amount,
-        )
+        """Record the receipt, update the totals, and settle the intent.
+
+        The receipt is recorded before the fee is collected, so no fee money
+        moves unless the settlement is durably recorded (gate finding on ticket
+        07). The on-chain receipt carries the service payment hash and an empty
+        fee hash; the fee transfer hash is persisted on the intent and returned
+        in the receipt data.
+        """
         self._receipt_recorder.record_receipt(
             user_id=mandate.agent_identity,
             task_id=task_id,
@@ -449,7 +452,11 @@ class MandateSpendService:
             service_url=intent.service_url,
             amount=intent.amount,
             tx_hash=tx_hash,
-            fee_tx_hash=fee_tx_hash or "",
+            fee_tx_hash="",
+        )
+        fee_amount, fee_tx_hash = self._collect_fee(
+            mandate=mandate,
+            amount=intent.amount,
         )
         settled_at = self._now()
         updated = self._mandate_store.record_spend(mandate_id=mandate.id, amount=intent.amount)
