@@ -38,7 +38,7 @@ from typing import Any, Protocol
 from mandate.cli import run_cli
 
 GATEWAY_X402_REFERENCE_TYPE = "gateway-x402-transfer-uuid"
-REFERENCE_TYPE_ACCEPTED_STATE = "accepted"
+PAYMENT_STATE_ACCEPTED = "accepted"
 
 
 class PaymentExecutor(Protocol):
@@ -63,7 +63,7 @@ class PaymentResult:
 
     payment_reference: str
     reference_type: str = GATEWAY_X402_REFERENCE_TYPE
-    payment_state: str = REFERENCE_TYPE_ACCEPTED_STATE
+    payment_state: str = PAYMENT_STATE_ACCEPTED
     batch_tx_hash: str | None = None
 
 
@@ -121,7 +121,7 @@ class ScriptedPaymentExecutor:
         *,
         payment_reference: str,
         reference_type: str = GATEWAY_X402_REFERENCE_TYPE,
-        payment_state: str = REFERENCE_TYPE_ACCEPTED_STATE,
+        payment_state: str = PAYMENT_STATE_ACCEPTED,
         batch_tx_hash: str | None = None,
     ) -> None:
         self._result = PaymentResult(
@@ -180,7 +180,7 @@ def _extract_payment_result(output: str) -> PaymentResult:
     return PaymentResult(
         payment_reference=reference,
         reference_type=GATEWAY_X402_REFERENCE_TYPE,
-        payment_state=REFERENCE_TYPE_ACCEPTED_STATE,
+        payment_state=PAYMENT_STATE_ACCEPTED,
     )
 
 
