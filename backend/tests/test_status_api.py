@@ -21,7 +21,7 @@ from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
 from mandate.persistence.breaker_store import BreakerState, ScriptedBreakerStateStore
-from mandate.persistence.intent_store import PostgresIntentStore
+from mandate.persistence.intent_store import DurableSpendResult, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
     MandateParameters,
@@ -167,6 +167,38 @@ def test_get_mandate_status_returns_budget_meter_data(components: Components) ->
     assert "fees_total" not in document
     assert "fee_amount" not in document["recent_intents"][0]
     assert "fee_tx_hash" not in document["recent_intents"][0]
+
+
+def test_get_mandate_status_uses_spend_outcome_as_economic_safety_state(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store)
+    store = PostgresIntentStore(_DATABASE_URL)
+    intent = store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-unknown-reference",
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    store.transition(
+        intent_id=intent.id,
+        status="settling",
+        expected_status="pending",
+        spend_result=DurableSpendResult(
+            outcome="unknown",
+            reason="The reference lookup did not prove a final result.",
+            action="request_review",
+        ),
+    )
+
+    response = components.client.get(f"/api/v1/mandates/{mandate.id}")
+
+    assert response.status_code == 200
+    document = response.json()
+    persisted = document["recent_intents"][0]
+    assert persisted["status"] == "settling"
+    assert persisted["spend_outcome"] == "unknown"
+    assert persisted["economic_safety_state"] == "UNKNOWN"
 
 
 def test_get_mandate_status_returns_404_for_other_user(components: Components) -> None:

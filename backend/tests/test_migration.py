@@ -778,7 +778,7 @@ def _downgrade_to_pre_0011() -> None:
         connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0011_VERSION,))
 
 
-def test_migration_0011_backfills_only_unambiguous_spend_results(
+def test_migration_0011_leaves_legacy_spend_results_unknown(
     reset_database: None,
 ) -> None:
     _downgrade_to_pre_0011()
@@ -811,9 +811,26 @@ def test_migration_0011_backfills_only_unambiguous_spend_results(
                 (%s, %s, 'settled-hash', %s, '1.00', 'settled',
                  'gateway-reference', now(), now(), 0),
                 (%s, %s, 'blocked-hash', %s, '2.00', 'blocked',
+                 NULL, now(), NULL, 0),
+                (%s, %s, 'unknown-hash', %s, '1.00', 'unknown',
+                 NULL, now(), NULL, 0),
+                (%s, %s, 'settling-hash', %s, '1.00', 'settling',
                  NULL, now(), NULL, 0)
             """,
-            (uuid.uuid4(), mandate_id, _SERVICE_URL, uuid.uuid4(), mandate_id, _SERVICE_URL),
+            (
+                uuid.uuid4(),
+                mandate_id,
+                _SERVICE_URL,
+                uuid.uuid4(),
+                mandate_id,
+                _SERVICE_URL,
+                uuid.uuid4(),
+                mandate_id,
+                _SERVICE_URL,
+                uuid.uuid4(),
+                mandate_id,
+                _SERVICE_URL,
+            ),
         )
 
     apply_migrations(_DATABASE_URL)
@@ -831,6 +848,13 @@ def test_migration_0011_backfills_only_unambiguous_spend_results(
     assert rows[0]["spend_outcome"] is None
     assert rows[0]["spend_reason"] is None
     assert rows[0]["economic_safety_action"] is None
-    assert rows[1]["purpose_hash"] == "settled-hash"
-    assert rows[1]["spend_outcome"] == "permitted"
-    assert rows[1]["economic_safety_action"] == "none"
+    assert [row["purpose_hash"] for row in rows] == [
+        "blocked-hash",
+        "settled-hash",
+        "settling-hash",
+        "unknown-hash",
+    ]
+    for row in rows:
+        assert row["spend_outcome"] is None
+        assert row["spend_reason"] is None
+        assert row["economic_safety_action"] is None

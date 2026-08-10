@@ -24,7 +24,7 @@ from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
 from mandate.payments import PaymentResult
 from mandate.persistence.breaker_store import BreakerState, ScriptedBreakerStateStore
-from mandate.persistence.intent_store import PostgresIntentStore
+from mandate.persistence.intent_store import DurableSpendResult, PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
     MandateParameters,
@@ -643,7 +643,15 @@ def test_legacy_settled_intent_recovers_receipt_anchor(client: TestClient) -> No
         intent_id=intent.id, reference="0xsettled", reference_type="gateway-x402-transfer-uuid"
     )
     store.reserve(mandate_id=mandate.id, amount="1.00")
-    settled = intent_store.finalize_settlement(intent_id=intent.id, settled_at=datetime.now(UTC))
+    settled = intent_store.finalize_settlement(
+        intent_id=intent.id,
+        settled_at=datetime.now(UTC),
+        spend_result=DurableSpendResult(
+            outcome="permitted",
+            reason=None,
+            action="none",
+        ),
+    )
     assert settled.receipt_anchor is None
 
     reader = ScriptedReceiptReader(

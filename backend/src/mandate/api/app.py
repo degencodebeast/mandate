@@ -524,6 +524,7 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
 
 def _intent_to_json(intent: Intent) -> dict[str, object]:
     """Render one intent as a safe JSON document."""
+    economic_safety_state = (intent.spend_outcome or intent.status).upper()
     return {
         "id": str(intent.id),
         "mandate_id": str(intent.mandate_id),
@@ -531,7 +532,7 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "service_url": intent.service_url,
         "amount": intent.amount,
         "status": intent.status,
-        "economic_safety_state": intent.status.upper(),
+        "economic_safety_state": economic_safety_state,
         "spend_outcome": intent.spend_outcome,
         "reason": intent.spend_reason,
         "economic_safety_action": intent.economic_safety_action,

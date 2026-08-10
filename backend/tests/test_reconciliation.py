@@ -153,13 +153,18 @@ def test_unknown_intent_second_spend_returns_frozen_no_new_authorization(
     second = _spend(client, mandate.id)
 
     assert first.json()["outcome"] == "unknown"
+    assert first.json()["action"] == "request_review"
     second_document = second.json()
     assert second_document["outcome"] == "unknown"
-    assert second_document["action"] in ("wait", "request_review")
+    assert second_document["action"] == "request_review"
     assert second_document["intent"]["status"] == "unknown"
     assert second_document["receipt"] is None
     assert len(payments.calls) == 1
     assert receipts.recorded == []
+    status = client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+    stored = status["intents"][0]
+    assert stored["spend_outcome"] == "unknown"
+    assert stored["economic_safety_action"] == "request_review"
 
 
 def test_unknown_intent_different_service_still_frozen(client: TestClient) -> None:

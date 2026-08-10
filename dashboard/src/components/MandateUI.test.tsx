@@ -38,6 +38,23 @@ describe("EconomicSafetyCard", () => {
     expect(screen.queryByText("WAIT or REQUEST_REVIEW")).toBeNull();
     expect(screen.queryByText(/retry payment/i)).toBeNull();
   });
+
+  it("uses the stored Spend Outcome when the lifecycle is still SETTLING", () => {
+    render(
+      <EconomicSafetyCard
+        intent={{
+          ...unknownIntent(),
+          status: "settling",
+          economic_safety_state: "SETTLING",
+          spend_outcome: "unknown",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("UNKNOWN")).toBeTruthy();
+    expect(screen.getByText(/Value may have moved/)).toBeTruthy();
+    expect(screen.queryByText(/accepted reference/)).toBeNull();
+  });
 });
 
 describe("BreakerList", () => {

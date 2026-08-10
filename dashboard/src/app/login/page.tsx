@@ -45,12 +45,6 @@ function LoginInner() {
       <div className="auth-form-wrap">
         <h6 className="kicker">Connect</h6>
         <h1>Connect wallet</h1>
-        <p>
-          Mandate authenticates each user with a Privy-issued access token. The
-          dashboard sends it to the Mandate Service in
-          <code className="mono"> Authorization: Bearer</code>; the service
-          scopes every mandate and receipt to the verified subject.
-        </p>
         <ConnectButton next={next} />
       </div>
     </section>

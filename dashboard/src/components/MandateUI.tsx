@@ -17,10 +17,12 @@ function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCop
       action: "CREATE AN INTENT",
     };
   }
-  const state = intent.economic_safety_state;
+  const state = (intent.spend_outcome ?? intent.economic_safety_state).toUpperCase();
+  const stateKind = state.split(":", 1)[0].toLowerCase();
   const action = intent.economic_safety_action?.toUpperCase() ?? "NO RECORDED ACTION";
-  switch (state.toLowerCase()) {
+  switch (stateKind) {
     case "settled":
+    case "permitted":
       return {
         state,
         meaning: "The exact Payment Reference has a final success state.",
@@ -39,6 +41,7 @@ function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCop
         action,
       };
     case "settling":
+    case "accepted":
       return {
         state,
         meaning: "A payment has an accepted reference and awaits an exact final state.",

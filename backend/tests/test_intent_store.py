@@ -15,6 +15,7 @@ import pytest
 
 from mandate.persistence.intent_store import (
     DuplicateIntentError,
+    DurableSpendResult,
     PostgresIntentStore,
     UnexpectedIntentStateError,
 )
@@ -66,6 +67,29 @@ def test_create_intent_starts_pending(
     assert intent.amount == "0.50"
     assert intent.tx_hash is None
     assert intent.settled_at is None
+
+
+def test_create_intent_stores_the_initial_result_atomically(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-initial-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+        spend_result=DurableSpendResult(
+            outcome="in_progress",
+            reason="Mandate is evaluating this Intent.",
+            action="wait",
+        ),
+    )
+
+    assert intent.status == "pending"
+    assert intent.spend_outcome == "in_progress"
+    assert intent.spend_reason == "Mandate is evaluating this Intent."
+    assert intent.economic_safety_action == "wait"
 
 
 def test_transition_to_settling(
@@ -155,6 +179,34 @@ def test_transition_to_blocked(
     )
 
     assert blocked.status == "blocked"
+
+
+def test_transition_stores_the_spend_result_with_the_state_change(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-atomic-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+
+    blocked = intent_store.transition(
+        intent_id=intent.id,
+        status="blocked",
+        expected_status="pending",
+        spend_result=DurableSpendResult(
+            outcome="blocked: service_not_allowed",
+            reason="The service is not allowed by the mandate.",
+            action="switch_service",
+        ),
+    )
+
+    assert blocked.status == "blocked"
+    assert blocked.spend_outcome == "blocked: service_not_allowed"
+    assert blocked.spend_reason == "The service is not allowed by the mandate."
+    assert blocked.economic_safety_action == "switch_service"
 
 
 def test_transition_requires_expected_prior_state(
@@ -339,6 +391,36 @@ def test_store_payment_reference_records_metadata(
     assert referenced.batch_tx_hash is None
 
 
+def test_store_payment_reference_stores_the_accepted_result_atomically(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-reference-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+
+    referenced = intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+        spend_result=DurableSpendResult(
+            outcome="accepted",
+            reason="payment accepted; awaiting official finalization",
+            action="wait",
+        ),
+    )
+
+    assert referenced.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert referenced.spend_outcome == "accepted"
+    assert referenced.spend_reason == "payment accepted; awaiting official finalization"
+    assert referenced.economic_safety_action == "wait"
+
+
 def test_store_payment_reference_metadata_is_write_once(
     stores: tuple[PostgresMandateStore, PostgresIntentStore],
 ) -> None:
@@ -400,6 +482,76 @@ def test_store_transfer_status_resolves_batch_tx_hash(
     )
 
 
+def test_store_transfer_status_stores_the_unresolved_result_atomically(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-transfer-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        payment_state="accepted",
+    )
+
+    unresolved = intent_store.store_transfer_status(
+        intent_id=intent.id,
+        payment_state="confirmed",
+        spend_result=DurableSpendResult(
+            outcome="unknown",
+            reason="The payment has no final result.",
+            action="request_review",
+        ),
+    )
+
+    assert unresolved.payment_state == "confirmed"
+    assert unresolved.spend_outcome == "unknown"
+    assert unresolved.spend_reason == "The payment has no final result."
+    assert unresolved.economic_safety_action == "request_review"
+
+
+def test_store_unresolved_result_cannot_overwrite_a_terminal_reference(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-stale-unknown",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        payment_state="accepted",
+        spend_result=DurableSpendResult(
+            outcome="accepted",
+            reason="payment accepted; awaiting official finalization",
+            action="wait",
+        ),
+    )
+    intent_store.store_transfer_status(intent_id=intent.id, payment_state="completed")
+
+    unchanged = intent_store.store_unresolved_result(
+        intent_id=intent.id,
+        spend_result=DurableSpendResult(
+            outcome="unknown",
+            reason="A stale lookup failed.",
+            action="request_review",
+        ),
+    )
+
+    assert unchanged.payment_state == "completed"
+    assert unchanged.spend_outcome == "accepted"
+    assert unchanged.economic_safety_action == "wait"
+
+
 def test_block_and_release_releases_reservation_once(
     stores: tuple[PostgresMandateStore, PostgresIntentStore],
 ) -> None:
@@ -425,12 +577,94 @@ def test_block_and_release_releases_reservation_once(
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
     mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
 
-    blocked = intent_store.block_and_release_reservation(intent_id=intent.id)
+    blocked = intent_store.block_and_release_reservation(
+        intent_id=intent.id,
+        spend_result=DurableSpendResult(
+            outcome="blocked: payment_failed",
+            reason="Payment failed.",
+            action="switch_service",
+        ),
+    )
 
     assert blocked.status == "blocked"
     updated = mandate_store.get_mandate(user_id="u", mandate_id=mandate.id)
     assert updated.reserved_total == "0.00"
     assert updated.spent_total == "0"
+
+
+def test_block_and_release_stores_the_failed_result_atomically(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate = mandate_store.create_mandate(
+        user_id="u",
+        parameters=MandateParameters(
+            budget="10.00",
+            per_call_cap="1.00",
+            allowed_services=[],
+            expiry=None,
+        ),
+    )
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-block-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
+
+    blocked = intent_store.block_and_release_reservation(
+        intent_id=intent.id,
+        spend_result=DurableSpendResult(
+            outcome="blocked: payment_failed",
+            reason="The official Gateway status reports the payment failed.",
+            action="switch_service",
+        ),
+    )
+
+    assert blocked.status == "blocked"
+    assert blocked.spend_outcome == "blocked: payment_failed"
+    assert blocked.economic_safety_action == "switch_service"
+
+
+def test_finalize_settlement_stores_the_permitted_result_atomically(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    mandate = mandate_store.create_mandate(
+        user_id="u",
+        parameters=MandateParameters(
+            budget="10.00",
+            per_call_cap="1.00",
+            allowed_services=[],
+            expiry=None,
+        ),
+    )
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-final-result",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
+    intent_store.store_payment_reference(intent_id=intent.id, reference="gateway-reference")
+
+    settled = intent_store.finalize_settlement(
+        intent_id=intent.id,
+        settled_at=datetime(2026, 8, 10, 12, 0, tzinfo=UTC),
+        spend_result=DurableSpendResult(
+            outcome="permitted",
+            reason=None,
+            action="none",
+        ),
+    )
+
+    assert settled.status == "settled"
+    assert settled.spend_outcome == "permitted"
+    assert settled.spend_reason is None
+    assert settled.economic_safety_action == "none"
 
 
 def test_block_and_release_is_idempotent_and_single_owner(
@@ -458,8 +692,13 @@ def test_block_and_release_is_idempotent_and_single_owner(
     intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
     mandate_store.reserve(mandate_id=mandate.id, amount="0.50")
 
-    intent_store.block_and_release_reservation(intent_id=intent.id)
-    again = intent_store.block_and_release_reservation(intent_id=intent.id)
+    result = DurableSpendResult(
+        outcome="blocked: payment_failed",
+        reason="Payment failed.",
+        action="switch_service",
+    )
+    intent_store.block_and_release_reservation(intent_id=intent.id, spend_result=result)
+    again = intent_store.block_and_release_reservation(intent_id=intent.id, spend_result=result)
 
     assert again.status == "blocked"
     updated = mandate_store.get_mandate(user_id="u", mandate_id=mandate.id)

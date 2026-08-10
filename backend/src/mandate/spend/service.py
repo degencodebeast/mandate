@@ -50,6 +50,7 @@ from mandate.payments import (
 from mandate.persistence.breaker_store import ScriptedBreakerStateStore
 from mandate.persistence.intent_store import (
     DuplicateIntentError,
+    DurableSpendResult,
     Intent,
     IntentStore,
     UnexpectedIntentStateError,
@@ -79,6 +80,7 @@ ACTION_NONE = "none"
 REASON_UNKNOWN_FROZEN = "unknown outcome; wait or request review; no new authorization"
 REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 REASON_ACCEPTED = "payment accepted; awaiting official finalization"
+REASON_IN_PROGRESS = "Mandate is evaluating this Intent."
 
 
 class FinalizationNotPossibleError(ValueError):
@@ -182,6 +184,11 @@ class MandateSpendService:
                 purpose_hash=intent_hash,
                 service_url=service_url,
                 amount=amount,
+                spend_result=DurableSpendResult(
+                    outcome="in_progress",
+                    reason=REASON_IN_PROGRESS,
+                    action=ACTION_WAIT,
+                ),
             )
         except DuplicateIntentError:
             raced = self._intent_store.get_intent(mandate_id=mandate_id, purpose_hash=intent_hash)
@@ -199,6 +206,13 @@ class MandateSpendService:
             )
         )
         if result.decision == "BLOCKED":
+            blocked_result = DurableSpendResult(
+                outcome=result.outcome,
+                reason=result.reason or "The spend was blocked by the mandate policy.",
+                action=(
+                    ACTION_SWITCH_SERVICE if result.rule == "service_not_allowed" else ACTION_NONE
+                ),
+            )
             blocked, routed = self._transition_or_route(
                 intent,
                 mandate,
@@ -206,6 +220,7 @@ class MandateSpendService:
                 expected="pending",
                 task_id=task_id,
                 intent_hash=intent_hash,
+                spend_result=blocked_result,
             )
             if routed is not None:
                 return routed
@@ -222,6 +237,11 @@ class MandateSpendService:
                     expected="pending",
                     task_id=task_id,
                     intent_hash=intent_hash,
+                    spend_result=DurableSpendResult(
+                        outcome="blocked: breaker_open",
+                        reason=BREAKER_OPEN_REASON,
+                        action=ACTION_SWITCH_SERVICE,
+                    ),
                 )
                 if routed is not None:
                     return routed
@@ -244,6 +264,11 @@ class MandateSpendService:
                 expected="settling",
                 task_id=task_id,
                 intent_hash=intent_hash,
+                spend_result=DurableSpendResult(
+                    outcome="blocked: budget_exceeded",
+                    reason="The mandate budget does not cover the amount.",
+                    action=ACTION_NONE,
+                ),
             )
             if routed is not None:
                 return routed
@@ -270,6 +295,11 @@ class MandateSpendService:
                 expected="settling",
                 task_id=task_id,
                 intent_hash=intent_hash,
+                spend_result=DurableSpendResult(
+                    outcome=OUTCOME_UNKNOWN,
+                    reason=REASON_UNKNOWN_FROZEN,
+                    action=ACTION_REQUEST_REVIEW,
+                ),
             )
             if routed is not None:
                 return routed
@@ -278,17 +308,15 @@ class MandateSpendService:
             self._breaker.record_failure(
                 service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
             )
-            self._mandate_store.release_reservation(mandate_id=mandate.id, amount=amount)
-            blocked, routed = self._transition_or_route(
-                settling,
-                mandate,
-                status="blocked",
-                expected="settling",
-                task_id=task_id,
-                intent_hash=intent_hash,
+            failed_result = DurableSpendResult(
+                outcome="blocked: payment_failed",
+                reason=str(error),
+                action=ACTION_SWITCH_SERVICE,
             )
-            if routed is not None:
-                return routed
+            blocked = self._intent_store.block_and_release_reservation(
+                intent_id=settling.id,
+                spend_result=failed_result,
+            )
             return self._blocked_response(
                 blocked,
                 mandate,
@@ -302,6 +330,11 @@ class MandateSpendService:
             reference_type=payment_result.reference_type,
             payment_state=payment_result.payment_state,
             breaker_trial_epoch=trial_epoch,
+            spend_result=DurableSpendResult(
+                outcome=OUTCOME_ACCEPTED,
+                reason=REASON_ACCEPTED,
+                action=ACTION_WAIT,
+            ),
         )
         return self._accepted_response(referenced, mandate)
 
@@ -390,15 +423,37 @@ class MandateSpendService:
         try:
             transfer = self._transfer_status_inspector.lookup_transfer(intent.payment_reference)
         except TransferLookupUnknownError:
-            return self._frozen_unknown_response(intent, mandate)
-        self._intent_store.store_transfer_status(
+            durable = self._intent_store.store_unresolved_result(
+                intent_id=intent.id,
+                spend_result=DurableSpendResult(
+                    outcome=OUTCOME_UNKNOWN,
+                    reason=REASON_UNKNOWN_FROZEN,
+                    action=ACTION_REQUEST_REVIEW,
+                ),
+            )
+            if durable.payment_state == "failed":
+                return self._resolve_failed(intent=durable, mandate=mandate)
+            if durable.payment_state == "completed":
+                return self._resolve_completed(
+                    intent=durable,
+                    mandate=mandate,
+                    task_id=task_id,
+                    purpose_hash=intent_hash,
+                )
+            return self._frozen_unknown_response(durable, mandate)
+        unresolved_result = None
+        if transfer.payment_state not in ("completed", "failed"):
+            unresolved_result = DurableSpendResult(
+                outcome=OUTCOME_UNKNOWN,
+                reason=REASON_UNKNOWN_FROZEN,
+                action=ACTION_REQUEST_REVIEW,
+            )
+        durable = self._intent_store.store_transfer_status(
             intent_id=intent.id,
             payment_state=transfer.payment_state,
             batch_tx_hash=transfer.batch_tx_hash,
+            spend_result=unresolved_result,
         )
-        durable = self._intent_store.get_intent(mandate_id=mandate.id, purpose_hash=intent_hash)
-        if durable is None:
-            raise FinalizationNotPossibleError("There is no intent to resolve.")
         if durable.payment_state == "failed":
             return self._resolve_failed(intent=durable, mandate=mandate)
         if durable.payment_state == "completed":
@@ -425,7 +480,15 @@ class MandateSpendService:
             trial_epoch=intent.breaker_trial_epoch,
             outcome="failed",
         )
-        blocked = self._intent_store.block_and_release_reservation(intent_id=intent.id)
+        blocked_result = DurableSpendResult(
+            outcome="blocked: payment_failed",
+            reason="The official Gateway status reports the payment failed.",
+            action=ACTION_SWITCH_SERVICE,
+        )
+        blocked = self._intent_store.block_and_release_reservation(
+            intent_id=intent.id,
+            spend_result=blocked_result,
+        )
         return self._recorded_response(
             outcome="blocked: payment_failed",
             reason="The official Gateway status reports the payment failed.",
@@ -514,6 +577,11 @@ class MandateSpendService:
             expected="pending",
             task_id=task_id,
             intent_hash=intent_hash,
+            spend_result=DurableSpendResult(
+                outcome="in_progress",
+                reason="Payment authorization is in progress.",
+                action=ACTION_WAIT,
+            ),
         )
 
     def _transition_or_route(
@@ -525,6 +593,7 @@ class MandateSpendService:
         expected: str,
         task_id: str,
         intent_hash: str,
+        spend_result: DurableSpendResult,
     ) -> tuple[Intent, SpendResponse | None]:
         """Run one compare-and-set intent transition.
 
@@ -535,7 +604,10 @@ class MandateSpendService:
         """
         try:
             updated = self._intent_store.transition(
-                intent_id=intent.id, status=status, expected_status=expected
+                intent_id=intent.id,
+                status=status,
+                expected_status=expected,
+                spend_result=spend_result,
             )
         except UnexpectedIntentStateError:
             current = self._intent_store.get_intent(mandate_id=mandate.id, purpose_hash=intent_hash)
@@ -563,12 +635,20 @@ class MandateSpendService:
         """
         if intent.status == "settled":
             return self._settled_receipt_response(intent, mandate, task_id=task_id)
+        if intent.spend_outcome == OUTCOME_UNKNOWN:
+            action = intent.economic_safety_action
+            if action not in (ACTION_WAIT, ACTION_REQUEST_REVIEW):
+                action = ACTION_REQUEST_REVIEW
+            return self._unknown_outcome_response(intent, mandate, action=action)
         if intent.status == "settling" and intent.payment_reference is not None:
             return self._accepted_response(intent, mandate)
         if intent.status in ("pending", "settling"):
             return self._already_in_progress_response(intent, mandate)
         if intent.status == "unknown":
-            return self._unknown_outcome_response(intent, mandate, action=ACTION_WAIT)
+            action = intent.economic_safety_action
+            if action not in (ACTION_WAIT, ACTION_REQUEST_REVIEW):
+                action = ACTION_WAIT
+            return self._unknown_outcome_response(intent, mandate, action=action)
         return self._duplicate_response(intent, mandate)
 
     def _finalize(
@@ -627,6 +707,11 @@ class MandateSpendService:
             settled = self._intent_store.finalize_settlement(
                 intent_id=current.id,
                 settled_at=settled_at,
+                spend_result=DurableSpendResult(
+                    outcome="permitted",
+                    reason=None,
+                    action=ACTION_NONE,
+                ),
             )
             updated = self._mandate_store.get_mandate(
                 user_id=mandate.user_id, mandate_id=mandate.id
@@ -874,17 +959,11 @@ class MandateSpendService:
         spent_total: str,
         action: str,
     ) -> SpendResponse:
-        """Persist the exact Spend Result before returning it."""
-        recorded = self._intent_store.record_spend_result(
-            intent_id=intent.id,
-            outcome=outcome,
-            reason=reason,
-            action=action,
-        )
+        """Return a Spend Result that its owning state change already stored."""
         return SpendResponse(
             outcome=outcome,
             reason=reason,
-            intent=recorded,
+            intent=intent,
             receipt=receipt,
             spent_total=spent_total,
             action=action,

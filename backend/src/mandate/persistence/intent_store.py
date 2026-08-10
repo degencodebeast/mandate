@@ -82,20 +82,12 @@ class IntentStore(Protocol):
         purpose_hash: str,
         service_url: str,
         amount: str,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent: ...
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None: ...
 
     def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]: ...
-
-    def record_spend_result(
-        self,
-        *,
-        intent_id: uuid.UUID,
-        outcome: str,
-        reason: str | None,
-        action: str,
-    ) -> Intent: ...
 
     def transition(
         self,
@@ -108,6 +100,7 @@ class IntentStore(Protocol):
         retry_count: int | None = None,
         fee_amount: str | None = None,
         fee_tx_hash: str | None = None,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent: ...
 
     def store_payment_reference(
@@ -119,6 +112,7 @@ class IntentStore(Protocol):
         payment_state: str | None = None,
         batch_tx_hash: str | None = None,
         breaker_trial_epoch: int = 0,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent: ...
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent: ...
@@ -129,6 +123,14 @@ class IntentStore(Protocol):
         intent_id: uuid.UUID,
         payment_state: str,
         batch_tx_hash: str | None = None,
+        spend_result: DurableSpendResult | None = None,
+    ) -> Intent: ...
+
+    def store_unresolved_result(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        spend_result: DurableSpendResult,
     ) -> Intent: ...
 
     def finalize_settlement(
@@ -136,13 +138,28 @@ class IntentStore(Protocol):
         *,
         intent_id: uuid.UUID,
         settled_at: datetime,
+        spend_result: DurableSpendResult,
     ) -> Intent: ...
 
-    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent: ...
+    def block_and_release_reservation(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        spend_result: DurableSpendResult,
+    ) -> Intent: ...
 
     def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool: ...
 
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
+
+
+@dataclass(frozen=True)
+class DurableSpendResult:
+    """One exact Spend Result stored with its Intent state change."""
+
+    outcome: str
+    reason: str | None
+    action: str
 
 
 @dataclass(frozen=True)
@@ -187,6 +204,7 @@ class PostgresIntentStore:
         purpose_hash: str,
         service_url: str,
         amount: str,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent:
         """Insert one intent in the PENDING state and return it."""
         intent_id = uuid.uuid4()
@@ -197,8 +215,9 @@ class PostgresIntentStore:
                     """
                     INSERT INTO intents (
                         id, mandate_id, purpose_hash, service_url, amount,
-                        status, created_at, retry_count
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        status, created_at, retry_count, spend_outcome,
+                        spend_reason, economic_safety_action
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         intent_id,
@@ -209,6 +228,9 @@ class PostgresIntentStore:
                         "pending",
                         created_at,
                         0,
+                        spend_result.outcome if spend_result is not None else None,
+                        spend_result.reason if spend_result is not None else None,
+                        spend_result.action if spend_result is not None else None,
                     ),
                 )
         except psycopg_errors.UniqueViolation as error:
@@ -228,6 +250,9 @@ class PostgresIntentStore:
             retry_count=0,
             fee_amount=None,
             fee_tx_hash=None,
+            spend_outcome=spend_result.outcome if spend_result is not None else None,
+            spend_reason=spend_result.reason if spend_result is not None else None,
+            economic_safety_action=spend_result.action if spend_result is not None else None,
         )
 
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None:
@@ -250,30 +275,6 @@ class PostgresIntentStore:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def record_spend_result(
-        self,
-        *,
-        intent_id: uuid.UUID,
-        outcome: str,
-        reason: str | None,
-        action: str,
-    ) -> Intent:
-        """Store the exact Spend Result returned for this Intent."""
-        with psycopg.connect(self._database_url) as connection:
-            result = connection.execute(
-                """
-                UPDATE intents
-                SET spend_outcome = %s,
-                    spend_reason = %s,
-                    economic_safety_action = %s
-                WHERE id = %s
-                """,
-                (outcome, reason, action, intent_id),
-            )
-            if result.rowcount != 1:
-                raise IntentNotFoundError("The intent does not exist.")
-        return self._reload(intent_id)
-
     def transition(
         self,
         *,
@@ -285,6 +286,7 @@ class PostgresIntentStore:
         retry_count: int | None = None,
         fee_amount: str | None = None,
         fee_tx_hash: str | None = None,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent:
         """Update the intent state with compare-and-set semantics (ADR-0032).
 
@@ -293,6 +295,10 @@ class PostgresIntentStore:
         of overwriting a state owned by another caller. This is the durable
         guarantee that a payment-permitting transition has one owner.
         """
+        has_result = spend_result is not None
+        outcome = spend_result.outcome if spend_result is not None else None
+        reason = spend_result.reason if spend_result is not None else None
+        action = spend_result.action if spend_result is not None else None
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
@@ -301,13 +307,18 @@ class PostgresIntentStore:
                     settled_at = COALESCE(%s, settled_at),
                     retry_count = COALESCE(%s, retry_count),
                     fee_amount = COALESCE(%s, fee_amount),
-                    fee_tx_hash = COALESCE(%s, fee_tx_hash)
+                    fee_tx_hash = COALESCE(%s, fee_tx_hash),
+                    spend_outcome = CASE WHEN %s THEN %s ELSE spend_outcome END,
+                    spend_reason = CASE WHEN %s THEN %s ELSE spend_reason END,
+                    economic_safety_action = CASE
+                        WHEN %s THEN %s ELSE economic_safety_action END
                 WHERE id = %s AND status = %s
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_outcome_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
                 (
                     status,
@@ -316,6 +327,12 @@ class PostgresIntentStore:
                     retry_count,
                     fee_amount,
                     fee_tx_hash,
+                    has_result,
+                    outcome,
+                    has_result,
+                    reason,
+                    has_result,
+                    action,
                     intent_id,
                     expected_status,
                 ),
@@ -333,6 +350,7 @@ class PostgresIntentStore:
         payment_state: str | None = None,
         batch_tx_hash: str | None = None,
         breaker_trial_epoch: int = 0,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent:
         """Write the Payment Reference as soon as value moves (ticket 10e).
 
@@ -346,6 +364,10 @@ class PostgresIntentStore:
         can present the same owner and epoch to the Circuit Breaker (ticket 11
         gate).
         """
+        has_result = spend_result is not None
+        outcome = spend_result.outcome if spend_result is not None else None
+        reason = spend_result.reason if spend_result is not None else None
+        action = spend_result.action if spend_result is not None else None
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
@@ -356,15 +378,32 @@ class PostgresIntentStore:
                     breaker_trial_epoch = COALESCE(
                         CASE WHEN breaker_trial_epoch = 0 THEN NULL ELSE breaker_trial_epoch END,
                         %s
-                    )
+                    ),
+                    spend_outcome = CASE WHEN %s THEN %s ELSE spend_outcome END,
+                    spend_reason = CASE WHEN %s THEN %s ELSE spend_reason END,
+                    economic_safety_action = CASE
+                        WHEN %s THEN %s ELSE economic_safety_action END
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
-                (reference, reference_type, payment_state, breaker_trial_epoch, intent_id),
+                (
+                    reference,
+                    reference_type,
+                    payment_state,
+                    breaker_trial_epoch,
+                    has_result,
+                    outcome,
+                    has_result,
+                    reason,
+                    has_result,
+                    action,
+                    intent_id,
+                ),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
@@ -376,6 +415,7 @@ class PostgresIntentStore:
         intent_id: uuid.UUID,
         payment_state: str,
         batch_tx_hash: str | None = None,
+        spend_result: DurableSpendResult | None = None,
     ) -> Intent:
         """Resolve the Payment Reference state through the official boundary.
 
@@ -389,12 +429,20 @@ class PostgresIntentStore:
         SETTLING or SETTLED Intent and never changes the Payment Reference
         itself.
         """
+        has_result = spend_result is not None
+        outcome = spend_result.outcome if spend_result is not None else None
+        reason = spend_result.reason if spend_result is not None else None
+        action = spend_result.action if spend_result is not None else None
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
                 SET payment_state = %s,
-                    batch_tx_hash = COALESCE(%s, batch_tx_hash)
+                    batch_tx_hash = COALESCE(%s, batch_tx_hash),
+                    spend_outcome = CASE WHEN %s THEN %s ELSE spend_outcome END,
+                    spend_reason = CASE WHEN %s THEN %s ELSE spend_reason END,
+                    economic_safety_action = CASE
+                        WHEN %s THEN %s ELSE economic_safety_action END
                 WHERE id = %s AND status IN ('settling', 'settled')
                   AND (
                     payment_state IS NULL
@@ -404,9 +452,57 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
-                (payment_state, batch_tx_hash, intent_id),
+                (
+                    payment_state,
+                    batch_tx_hash,
+                    has_result,
+                    outcome,
+                    has_result,
+                    reason,
+                    has_result,
+                    action,
+                    intent_id,
+                ),
+            ).fetchone()
+        if row is None:
+            return self._reload(intent_id)
+        return self._from_row(row)
+
+    def store_unresolved_result(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        spend_result: DurableSpendResult,
+    ) -> Intent:
+        """Store an unresolved result only while the reference is non-terminal."""
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE intents
+                SET spend_outcome = %s,
+                    spend_reason = %s,
+                    economic_safety_action = %s
+                WHERE id = %s AND status = 'settling'
+                  AND (
+                    payment_state IS NULL
+                    OR payment_state NOT IN ('completed', 'failed')
+                  )
+                RETURNING id, mandate_id, purpose_hash, service_url, amount,
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash, payment_reference,
+                          receipt_anchor, reference_type, payment_state,
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
+                """,
+                (
+                    spend_result.outcome,
+                    spend_result.reason,
+                    spend_result.action,
+                    intent_id,
+                ),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
@@ -456,7 +552,8 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_outcome_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -489,7 +586,8 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_outcome_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -502,6 +600,7 @@ class PostgresIntentStore:
         *,
         intent_id: uuid.UUID,
         settled_at: datetime,
+        spend_result: DurableSpendResult,
         fee_amount: str | None = None,
         fee_tx_hash: str | None = None,
     ) -> Intent:
@@ -562,21 +661,39 @@ class PostgresIntentStore:
                 SET status = 'settled', settled_at = %s,
                     tx_hash = COALESCE(%s, tx_hash),
                     fee_amount = COALESCE(%s, fee_amount),
-                    fee_tx_hash = COALESCE(%s, fee_tx_hash)
+                    fee_tx_hash = COALESCE(%s, fee_tx_hash),
+                    spend_outcome = %s,
+                    spend_reason = %s,
+                    economic_safety_action = %s
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_outcome_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
-                (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
+                (
+                    settled_at,
+                    locked["payment_reference"],
+                    fee_amount,
+                    fee_tx_hash,
+                    spend_result.outcome,
+                    spend_result.reason,
+                    spend_result.action,
+                    intent_id,
+                ),
             ).fetchone()
         if settled is None:
             return self._reload(intent_id)
         return self._from_row(settled)
 
-    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent:
+    def block_and_release_reservation(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        spend_result: DurableSpendResult,
+    ) -> Intent:
         """Block one SETTLING Intent and release its reservation atomically.
 
         The whole failed-resolution runs in one transaction (ADR-0032, ticket
@@ -624,15 +741,24 @@ class PostgresIntentStore:
             blocked = connection.execute(
                 """
                 UPDATE intents
-                SET status = 'blocked'
+                SET status = 'blocked',
+                    spend_outcome = %s,
+                    spend_reason = %s,
+                    economic_safety_action = %s
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_outcome_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded,
+                          spend_outcome, spend_reason, economic_safety_action
                 """,
-                (intent_id,),
+                (
+                    spend_result.outcome,
+                    spend_result.reason,
+                    spend_result.action,
+                    intent_id,
+                ),
             ).fetchone()
         if blocked is None:
             return self._reload(intent_id)
