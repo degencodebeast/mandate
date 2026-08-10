@@ -1,9 +1,10 @@
 # Mandate demo video script (recording support, ticket 10c)
 
-Interface: **MCP** (Streamable HTTP adapter) for agent spend and status. The
-Agno agent uses the `mandate.spend` and `mandate.status` MCP tools. It has no
-direct payment tool. REST remains the fallback; finalization uses the REST
-resolve endpoint because the MCP adapter exposes spend and status only.
+Interface: **MCP** (Streamable HTTP) with the official **mcp Python SDK**
+client (`mcp.ClientSession` + `streamable_http_client`) for agent spend and
+status. The Agno agent uses the `mandate.spend` and `mandate.status` MCP tools.
+It has no direct payment tool. REST remains the fallback; finalization uses the
+REST resolve endpoint because the MCP adapter exposes spend and status only.
 
 Target length: 3 minutes. The section timings are the recording plan.
 
