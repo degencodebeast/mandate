@@ -48,6 +48,7 @@ function status(): MandateStatus {
         payment_state: "unknown",
         batch_tx_hash: null,
         receipt_anchor: null,
+        injected_response_loss: false,
       },
     ],
     breaker_state: [],

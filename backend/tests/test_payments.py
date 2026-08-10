@@ -193,6 +193,44 @@ def test_circle_payment_executor_timeout_raises_unknown_without_injected_marker(
     assert raised.value.injected_response_loss is False
 
 
+def test_circle_payment_executor_rejection_stays_definite_even_when_injection_configured() -> None:
+    def reject(command: Sequence[str]) -> str:
+        return '{"error": "insufficient balance"}'
+
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=reject,
+        inject_response_loss_service_url="https://service-a.example.com",
+    )
+
+    with pytest.raises(PaymentExecutionError):
+        executor.execute_payment(
+            service_url="https://service-a.example.com",
+            amount="0.50",
+        )
+
+
+def test_circle_payment_executor_unusable_output_is_unknown_not_injected() -> None:
+    def unusable(command: Sequence[str]) -> str:
+        return "not json at all"
+
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=unusable,
+        inject_response_loss_service_url="https://service-a.example.com",
+    )
+
+    with pytest.raises(PaymentUnknownError) as raised:
+        executor.execute_payment(
+            service_url="https://service-a.example.com",
+            amount="0.50",
+        )
+
+    assert raised.value.injected_response_loss is False
+
+
 def test_scripted_payment_executor_returns_fixed_result() -> None:
     executor = ScriptedPaymentExecutor(payment_reference="0xscripted")
 

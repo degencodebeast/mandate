@@ -78,6 +78,9 @@ ACTION_SWITCH_SERVICE = "switch_service"
 ACTION_NONE = "none"
 
 REASON_UNKNOWN_FROZEN = "unknown outcome; wait or request review; no new authorization"
+REASON_INJECTED_LOSS = (
+    "injected response loss after the real economic action; wait or request review"
+)
 REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 REASON_ACCEPTED = "payment accepted; awaiting official finalization"
 REASON_IN_PROGRESS = "Mandate is evaluating this Intent."
@@ -294,6 +297,9 @@ class MandateSpendService:
             self._breaker.record_failure(
                 service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
             )
+            stored_reason = (
+                REASON_INJECTED_LOSS if error.injected_response_loss else REASON_UNKNOWN_FROZEN
+            )
             unknown, routed = self._transition_or_route(
                 settling,
                 mandate,
@@ -303,7 +309,7 @@ class MandateSpendService:
                 intent_hash=intent_hash,
                 spend_result=DurableSpendResult(
                     outcome=OUTCOME_UNKNOWN,
-                    reason=REASON_UNKNOWN_FROZEN,
+                    reason=stored_reason,
                     action=ACTION_REQUEST_REVIEW,
                 ),
             )

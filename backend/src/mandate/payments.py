@@ -122,6 +122,12 @@ class CircleCliPaymentExecutor:
             raise PaymentUnknownError(
                 "The payment call failed without a usable response."
             ) from error
+        # Parse the CLI result to confirm the payment was accepted before any
+        # deliberate discard. A definite rejection (explicit error or settle
+        # failure) raises PaymentExecutionError on its normal path; unusable
+        # output raises PaymentUnknownError with injected_response_loss=False.
+        # Only a genuinely accepted payment reaches the deliberate-loss step.
+        accepted = _extract_payment_result(output)
         if (
             self._inject_response_loss_service_url is not None
             and service_url == self._inject_response_loss_service_url
@@ -132,7 +138,7 @@ class CircleCliPaymentExecutor:
                 "The application deliberately lost the response after the real economic action.",
                 injected_response_loss=True,
             )
-        return _extract_payment_result(output)
+        return accepted
 
 
 class ScriptedPaymentExecutor:

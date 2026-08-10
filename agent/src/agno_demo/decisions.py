@@ -165,6 +165,36 @@ def decide_document(document: dict[str, Any]) -> AgentDecision:
     return decide(response)
 
 
+def decide_switch_document_status(
+    service_a_url: str, results: list[dict[str, Any]]
+) -> AgentDecision:
+    """Decide the pre-authorization switch choice from a status-only Agent run.
+
+    ``results`` is the tool-result list containing the breaker status document.
+    The exact Service A breaker row must be open; otherwise the choice raises
+    ``ServiceABreakerClosedError`` so the scene stops before any Service B
+    authorization. This is the SWITCH_SERVICE choice the Agent makes before the
+    spend step.
+    """
+    if not results:
+        raise ServiceABreakerClosedError(
+            "The Agent executed no status read; the scene must stop before authorization."
+        )
+    status_document = results[0]
+    from agno_demo.models import BreakerState
+
+    status = StatusDocument(
+        mandate_id="mandate-demo",
+        spent_total="0",
+        remaining_budget="0",
+        intents=[],
+        breaker_state=[
+            BreakerState.from_json(state) for state in status_document.get("breaker_state", [])
+        ],
+    )
+    return decide_switch(service_a_url, status)
+
+
 def decide_switch_document(service_a_url: str, results: list[dict[str, Any]]) -> AgentDecision:
     """Decide after the Agent read status and spent on Service B.
 

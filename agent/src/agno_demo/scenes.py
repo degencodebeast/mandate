@@ -29,12 +29,11 @@ from typing import Protocol
 from agno_demo.agent import (
     Agent,
     run_agent_spend,
-    run_agent_switch,
+    run_agent_switch_choice,
 )
 from agno_demo.decisions import (
+    ACTION_SWITCH_SERVICE,
     AgentDecision,
-    ServiceABreakerClosedError,
-    decide_switch,
 )
 from agno_demo.models import SpendResponse, StatusDocument
 
@@ -201,32 +200,28 @@ class SwitchScene:
         self._amount = amount
 
     def run(self) -> SceneResult:
-        """Read the open breaker, choose Service B, pay once, and resolve.
+        """Choose Service B, pay once, and resolve.
 
-        The safe-switch precondition (the exact Service A breaker row is open)
-        is enforced by the scene before any authorization and recorded as the
-        pre-authorization switch choice. The Agent then reads status and spends
-        on Service B as real tools; the decision mapping applies the full
-        Service B Spend Result. The scene finalizes only a genuinely accepted
-        paid action: it resolves only when the Service B outcome is ``accepted``,
-        and it never resolves a blocked, denied, or UNKNOWN Intent.
+        The Agent makes the pre-authorization switch choice in its own run that
+        reads status only (no spend tool call): it returns SWITCH_SERVICE when
+        the exact Service A breaker row is open and stops otherwise. Only after
+        that Agent choice does the Agent run the Service B spend in a separate
+        step and map the full Service B Spend Result. The scene finalizes only a
+        genuinely accepted paid action: it resolves only when the Service B
+        outcome is ``accepted``, and it never resolves a blocked, denied, or
+        UNKNOWN Intent.
         """
-        status = self._status_client.status(mandate_id=self._mandate_id)
-        service_a_breaker = next(
-            (state for state in status.breaker_state if state.service_url == self._service_a),
-            None,
-        )
-        if service_a_breaker is None or service_a_breaker.state != "open":
-            state = "no row" if service_a_breaker is None else service_a_breaker.state
-            raise ServiceABreakerClosedError(
-                f"Service A Circuit Breaker is not open (state={state}); "
-                "the switch scene must stop before authorization."
-            )
-        switch_choice = decide_switch(self._service_a, status)
-
-        decision, spend_result = run_agent_switch(
+        switch_choice = run_agent_switch_choice(
             agent=self._agent,
             service_a_url=self._service_a,
+        )
+        if switch_choice.action != ACTION_SWITCH_SERVICE or not switch_choice.may_authorize:
+            raise RuntimeError(
+                "The Agent did not select SWITCH_SERVICE before authorization; the scene must stop."
+            )
+
+        decision, spend_result = run_agent_spend(
+            agent=self._agent,
             task_id=self._task,
             purpose=self._purpose,
             service_url=self._service_b,

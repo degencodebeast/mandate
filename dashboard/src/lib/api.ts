@@ -47,6 +47,7 @@ export interface IntentRecord {
   payment_state: string | null;
   batch_tx_hash: string | null;
   receipt_anchor: string | null;
+  injected_response_loss: boolean;
 }
 
 export interface BreakerStateRecord {

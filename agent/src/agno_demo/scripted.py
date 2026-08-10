@@ -44,17 +44,25 @@ class ScriptedMandateBackend:
     marker is explicit so callers can verify the loss actually occurred. Only
     that exact service URL is affected; Service B and later calls behave
     normally.
+
+    The Circuit Breaker obeys the production policy: Service A is authorized
+    only while its breaker is CLOSED. The injected response loss records a
+    failure; when the failure count reaches ``breaker_failure_threshold`` the
+    breaker transitions to OPEN before Scene B, so the switch scene reads the
+    same open breaker the production policy would produce.
     """
 
     mandate_id: str = "mandate-demo"
     service_a: str = "https://service-a.example.com"
     service_b: str = "https://service-b.example.com"
     breaker_state_a: str = "closed"
+    breaker_failure_threshold: int = 3
     inject_response_loss_service_url: str | None = None
     spend_calls: list[tuple[str, str, str]] = field(default_factory=list)
     intents: dict[str, _IntentState] = field(default_factory=dict)
     now: str = "2026-08-10T12:00:00Z"
     _response_loss_injected: bool = field(default=False, init=False)
+    _breaker_failures_a: int = field(default=0, init=False)
 
     def request(
         self,
@@ -86,11 +94,22 @@ class ScriptedMandateBackend:
             and not self._response_loss_injected
         )
         if should_inject:
+            if self.breaker_state_a == "open":
+                # Production policy blocks any Service A authorization while
+                # its breaker is OPEN, so the injected loss cannot happen yet.
+                raise RuntimeError(
+                    "Service A breaker is OPEN; the injected response loss "
+                    "requires a CLOSED breaker to authorize first."
+                )
             self._response_loss_injected = True
             # The exact Service A failure control loses the application
             # response after the real economic action, so the payment enters
             # UNKNOWN. The injection marker is explicit so the caller can
-            # verify the loss actually occurred.
+            # verify the loss actually occurred. The failure counts toward the
+            # production breaker threshold.
+            self._breaker_failures_a += 1
+            if self._breaker_failures_a >= self.breaker_failure_threshold:
+                self.breaker_state_a = "open"
             state = _IntentState(
                 intent_id=str(uuid.uuid4()),
                 task_id=task_id,
@@ -104,15 +123,40 @@ class ScriptedMandateBackend:
             self.intents[task_id] = state
             return _spend_document(
                 outcome="unknown",
-                reason="unknown outcome; wait or request review; no new authorization",
+                reason=(
+                    "injected response loss after the real economic action; wait or request review"
+                ),
                 action="request_review",
                 state=state,
                 spent_total="0",
                 injected_response_loss=True,
             )
 
+        if service_url == self.service_a and self.breaker_state_a == "open":
+            # Production policy blocks any Service A authorization while its
+            # breaker is OPEN: no Payment Authorization is issued.
+            state = _IntentState(
+                intent_id=str(uuid.uuid4()),
+                task_id=task_id,
+                purpose=purpose,
+                service_url=service_url,
+                amount=amount,
+                status="blocked",
+                spend_outcome="blocked: breaker_open",
+                economic_safety_action="switch_service",
+            )
+            self.intents[task_id] = state
+            return _spend_document(
+                outcome="blocked: breaker_open",
+                reason="circuit breaker open: service temporarily unavailable",
+                action="switch_service",
+                state=state,
+                spent_total="0",
+            )
+
         if task_id == "intent-a":
-            # Without the injection control, Service A completes normally.
+            # Without the injection control, Service A completes normally while
+            # its breaker is CLOSED.
             state = _IntentState(
                 intent_id=str(uuid.uuid4()),
                 task_id=task_id,
@@ -134,29 +178,7 @@ class ScriptedMandateBackend:
                 injected_response_loss=False,
             )
 
-        # Scene B: Service A's Circuit Breaker is already open before
-        # authorization, so no Payment Authorization is issued to Service A.
-        if service_url == self.service_a and self.breaker_state_a == "open":
-            state = _IntentState(
-                intent_id=str(uuid.uuid4()),
-                task_id=task_id,
-                purpose=purpose,
-                service_url=service_url,
-                amount=amount,
-                status="blocked",
-                spend_outcome="blocked: breaker_open",
-                economic_safety_action="switch_service",
-            )
-            self.intents[task_id] = state
-            return _spend_document(
-                outcome="blocked: breaker_open",
-                reason="circuit breaker open: service temporarily unavailable",
-                action="switch_service",
-                state=state,
-                spent_total="0",
-            )
-
-        # The agent selected Service B: one real paid action is accepted.
+        # Scene B: Service B completes one real paid action.
         state = _IntentState(
             intent_id=str(uuid.uuid4()),
             task_id=task_id,

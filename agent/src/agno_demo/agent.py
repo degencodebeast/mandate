@@ -27,7 +27,7 @@ from agno.models.base import Model
 from agno.models.response import ModelResponse
 from agno.tools import Function
 
-from agno_demo.decisions import AgentDecision
+from agno_demo.decisions import ACTION_SWITCH_SERVICE, AgentDecision
 from agno_demo.models import SpendResponse, StatusDocument
 
 _SPEND_PARAMETERS: dict[str, Any] = {
@@ -254,51 +254,33 @@ def run_agent_status(*, agent: Agent) -> StatusDocument:
     return StatusDocument.from_json(output)
 
 
-def run_agent_switch(
-    *,
-    agent: Agent,
-    service_a_url: str,
-    task_id: str,
-    purpose: str,
-    service_url: str,
-    amount: str,
-) -> tuple[AgentDecision, SpendResponse]:
-    """Run one real Agent execution that reads status, spends, and decides.
+def run_agent_switch_choice(*, agent: Agent, service_a_url: str) -> AgentDecision:
+    """Run one real Agent execution that reads status and selects Service B.
 
-    The Agent invokes ``mandate.status`` then ``mandate.spend`` as tools. The
-    model maps the breaker state and the Spend Result through the deterministic
-    policy layer, which enforces the Service A open precondition and applies the
-    full Service B Spend Result mapping to the post-spend decision. Returns the
-    decision and the Service B Spend Result so the scene can finalize only a
-    genuinely accepted paid action.
+    The Agent invokes ``mandate.status`` as its only tool. The model maps the
+    breaker state through the deterministic policy layer, which enforces the
+    exact Service A open precondition and returns SWITCH_SERVICE. This is the
+    pre-authorization switch choice: no spend tool is called in this run, so the
+    choice provably precedes any Service B authorization.
     """
     plan = [
         {
             "type": "function",
             "function": {"name": "mandate.status", "arguments": "{}"},
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "mandate.spend",
-                "arguments": json.dumps(
-                    {
-                        "task_id": task_id,
-                        "purpose": purpose,
-                        "service_url": service_url,
-                        "amount": amount,
-                    }
-                ),
-            },
-        },
     ]
-    from agno_demo.decisions import decide_switch_document
+    from agno_demo.decisions import decide_switch_document_status
 
-    decision, results = _run_plan_with_results(
-        agent, plan, lambda rs: decide_switch_document(service_a_url, rs)
+    decision, _ = _run_plan_with_results(
+        agent, plan, lambda rs: decide_switch_document_status(service_a_url, rs)
     )
-    spend_result = SpendResponse.from_json(results[-1])
-    return decision, spend_result
+    if decision.action != ACTION_SWITCH_SERVICE:
+        from agno_demo.decisions import ServiceABreakerClosedError
+
+        raise ServiceABreakerClosedError(
+            "The Agent did not select SWITCH_SERVICE before authorization; the scene must stop."
+        )
+    return decision
 
 
 def _run_plan_with_results(

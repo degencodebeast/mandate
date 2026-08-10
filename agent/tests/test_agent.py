@@ -18,7 +18,7 @@ from agno_demo.agent import (
     function_tools,
     run_agent_spend,
     run_agent_status,
-    run_agent_switch,
+    run_agent_switch_choice,
 )
 from agno_demo.decisions import AgentDecision, ServiceABreakerClosedError
 from agno_demo.models import (
@@ -233,13 +233,43 @@ def test_agent_status_run_invokes_the_status_tool() -> None:
     assert status.breaker_state[0].state == "open"
 
 
-def test_agent_switch_run_invokes_status_then_spend_and_decides() -> None:
+def test_agent_switch_choice_selects_service_b_before_any_spend() -> None:
     client = StubClient(breaker_state="open")
     agent = build_agent(client=client, mandate_id="mandate-1")
 
-    decision, spend_result = run_agent_switch(
+    choice = run_agent_switch_choice(
         agent=agent,
         service_a_url="https://service-a.example.com",
+    )
+
+    assert isinstance(choice, AgentDecision)
+    assert choice.action == "switch_service"
+    assert choice.may_authorize is True
+    assert client.spend_calls == []
+
+
+def test_agent_switch_choice_stops_when_service_a_breaker_is_closed() -> None:
+    client = StubClient(breaker_state="closed")
+    agent = build_agent(client=client, mandate_id="mandate-1")
+
+    try:
+        run_agent_switch_choice(
+            agent=agent,
+            service_a_url="https://service-a.example.com",
+        )
+        raise AssertionError("expected ServiceABreakerClosedError")
+    except ServiceABreakerClosedError:
+        pass
+
+    assert client.spend_calls == []
+
+
+def test_agent_spend_maps_accepted_service_b_result() -> None:
+    client = StubClient(breaker_state="open")
+    agent = build_agent(client=client, mandate_id="mandate-1")
+
+    decision, spend_result = run_agent_spend(
+        agent=agent,
         task_id="intent-b",
         purpose="buy market data",
         service_url="https://service-b.example.com",
@@ -254,14 +284,13 @@ def test_agent_switch_run_invokes_status_then_spend_and_decides() -> None:
     assert ("intent-b", "buy market data", "https://service-b.example.com") in client.spend_calls
 
 
-def test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review() -> None:
+def test_agent_spend_maps_unknown_service_b_to_wait_or_request_review() -> None:
     client = StubClient(breaker_state="open")
     client.intent_b_outcome = "unknown"
     agent = build_agent(client=client, mandate_id="mandate-1")
 
-    decision, spend_result = run_agent_switch(
+    decision, spend_result = run_agent_spend(
         agent=agent,
-        service_a_url="https://service-a.example.com",
         task_id="intent-b",
         purpose="buy market data",
         service_url="https://service-b.example.com",
@@ -275,14 +304,13 @@ def test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review() -> 
     assert spend_result.outcome == "unknown"
 
 
-def test_agent_switch_run_maps_service_b_policy_denial_to_reduce_scope() -> None:
+def test_agent_spend_maps_service_b_policy_denial_to_reduce_scope() -> None:
     client = StubClient(breaker_state="open")
     client.intent_b_outcome = "blocked: budget_exceeded"
     agent = build_agent(client=client, mandate_id="mandate-1")
 
-    decision, spend_result = run_agent_switch(
+    decision, spend_result = run_agent_spend(
         agent=agent,
-        service_a_url="https://service-a.example.com",
         task_id="intent-b",
         purpose="buy market data",
         service_url="https://service-b.example.com",
@@ -293,24 +321,6 @@ def test_agent_switch_run_maps_service_b_policy_denial_to_reduce_scope() -> None
     assert decision.action == "reduce_scope"
     assert decision.may_authorize is False
     assert spend_result.outcome == "blocked: budget_exceeded"
-
-
-def test_agent_switch_run_stops_when_service_a_breaker_is_closed() -> None:
-    client = StubClient(breaker_state="closed")
-    agent = build_agent(client=client, mandate_id="mandate-1")
-
-    try:
-        run_agent_switch(
-            agent=agent,
-            service_a_url="https://service-a.example.com",
-            task_id="intent-b",
-            purpose="buy market data",
-            service_url="https://service-b.example.com",
-            amount="1.00",
-        )
-        raise AssertionError("expected ServiceABreakerClosedError")
-    except ServiceABreakerClosedError:
-        pass
 
 
 def test_spend_document_roundtrips_injected_marker() -> None:

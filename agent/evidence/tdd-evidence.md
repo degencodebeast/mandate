@@ -336,3 +336,81 @@ test_switch_scene_stops_when_service_b_is_policy_denied
 ```
 
 Agent suite: 49 passed.
+
+## Correction round 3 — TDD evidence for the four gate findings
+
+### Finding 1 — validate the payment result before marking an injected loss
+
+`CircleCliPaymentExecutor` now parses the CLI result (`_extract_payment_result`)
+before any deliberate discard. A definite rejection (explicit error or settle
+failure) raises `PaymentExecutionError` on its normal path; unusable output
+raises `PaymentUnknownError` with `injected_response_loss=False`. Only a
+genuinely accepted payment reaches the deliberate-loss step.
+
+RED (backend): a rejection was mislabeled injected.
+
+```
+AssertionError: assert True is False  (injected_response_loss)
+```
+
+Command: `uv run pytest tests/test_payments.py`
+
+GREEN: 18 passed. New tests:
+`test_circle_payment_executor_rejection_stays_definite_even_when_injection_configured`,
+`test_circle_payment_executor_unusable_output_is_unknown_not_injected`.
+
+### Finding 2 — durable injected-loss fact in the status record and UI
+
+The spend service now stores `REASON_INJECTED_LOSS` as the Intent reason when
+the deliberate loss occurs. `documents.intent_document` renders
+`injected_response_loss` from that stored reason, so the status document carries
+the durable fact. The dashboard `IntentRecord` gains `injected_response_loss`
+and `EconomicSafetyCard` shows an explicit `UNKNOWN (INJECTED)` label distinct
+from a genuine fault.
+
+RED (backend): the status document had no injected marker.
+
+Command: `uv run pytest tests/test_spend_api.py -k "durable or marks_genuine"`
+
+GREEN: 3 passed. Dashboard tests 48 passed (new
+`labels an injected response loss distinctly from a genuine fault`).
+
+### Finding 3 — the Agent selects Service B before authorization
+
+`SwitchScene` now calls `run_agent_switch_choice`, a separate Agent run whose
+only tool is `mandate.status`: it returns SWITCH_SERVICE (or raises) before any
+spend tool call, and the test proves `client.spend_calls == []`. The Service B
+spend then runs as a separate Agent step (`run_agent_spend`) that maps the full
+Service B Spend Result. The pre-authorization choice is recorded as separate
+evidence.
+
+RED (agent): the pre-auth choice was a pure function call in the scene.
+
+Command: `uv run pytest tests/test_agent.py tests/test_scenes.py`
+
+GREEN: agent suite 54 passed. New tests:
+`test_agent_switch_choice_selects_service_b_before_any_spend`,
+`test_agent_switch_choice_stops_when_service_a_breaker_is_closed`,
+`test_agent_spend_maps_accepted_service_b_result`,
+`test_agent_spend_maps_service_b_policy_denial_to_reduce_scope`.
+
+### Finding 4 — scripted evidence obeys the production breaker policy
+
+Scene A now starts with Service A's breaker CLOSED. The injected response loss
+records a failure; when the failure count reaches `breaker_failure_threshold`
+the breaker transitions to OPEN before Scene B, matching the production policy
+(`policy.breaker_closed` blocks authorization while OPEN). The switch scene then
+reads the open breaker. The evidence references the real testnet paid action and
+Receipt Anchor in `evidence/ticket-11-real-gateway-payment.md`.
+
+RED (agent): the evidence started with the breaker open.
+
+Command: `uv run pytest tests/test_scripted_backend.py`
+
+GREEN: 4 passed. New tests:
+`test_scripted_backend_injected_loss_trips_breaker_from_closed_to_open`,
+`test_scripted_backend_rejects_service_a_authorization_while_breaker_open`,
+`test_scripted_backend_injected_loss_requires_closed_breaker`,
+`test_scripted_backend_failure_threshold_holds_multiple_failures`.
+
+Agent suite: 54 passed. Backend suite: 354 passed. Dashboard: 48 passed + build.

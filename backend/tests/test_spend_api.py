@@ -449,6 +449,32 @@ def test_spend_genuine_unknown_has_no_injected_marker(components: Components) ->
     assert document["injected_response_loss"] is False
 
 
+def test_status_document_carries_durable_injected_loss_fact(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.unknown = PaymentUnknownError(
+        "The application deliberately lost the response after the real economic action.",
+        injected_response_loss=True,
+    )
+    _spend(components, mandate.id)
+
+    status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+
+    intent = status["recent_intents"][0]
+    assert intent["spend_outcome"] == "unknown"
+    assert intent["injected_response_loss"] is True
+
+
+def test_status_document_marks_genuine_unknown_as_not_injected(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.unknown = PaymentUnknownError("The payment call timed out.")
+    _spend(components, mandate.id)
+
+    status = components.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+
+    intent = status["recent_intents"][0]
+    assert intent["injected_response_loss"] is False
+
+
 def test_spend_requires_auth() -> None:
     verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
     store = PostgresMandateStore(_DATABASE_URL)

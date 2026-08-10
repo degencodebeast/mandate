@@ -26,7 +26,7 @@ EVIDENCE_DIR = Path(__file__).parent.parent.parent / "evidence"
 
 def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str, object]]:
     """Run both scenes through the MCP client with REST fallback."""
-    backend = ScriptedMandateBackend(breaker_state_a="open")
+    backend = ScriptedMandateBackend(breaker_failure_threshold=1)
     backend.inject_response_loss_service_url = backend.service_a
     rest_fallback = MandateRESTClient(
         "http://scripted.invalid",
@@ -61,6 +61,7 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
         "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
         "Injected condition: response loss after the real economic action",
         "Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).",
+        "Real testnet paid action and Receipt Anchor: evidence/ticket-11-real-gateway-payment.md.",
         "",
         *render_demo_report(reports),
     ]
@@ -69,7 +70,7 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
 
 def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str, object]]:
     """Run both scenes entirely over the REST fallback."""
-    backend = ScriptedMandateBackend(breaker_state_a="open")
+    backend = ScriptedMandateBackend(breaker_failure_threshold=1)
     backend.inject_response_loss_service_url = backend.service_a
     client = MandateRESTClient(
         "http://scripted.invalid",
@@ -98,6 +99,7 @@ def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str
         "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
         "Injected condition: response loss after the real economic action",
         "Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).",
+        "Real testnet paid action and Receipt Anchor: evidence/ticket-11-real-gateway-payment.md.",
         "",
         *render_demo_report(reports),
     ]
