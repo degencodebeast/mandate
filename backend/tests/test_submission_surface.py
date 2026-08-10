@@ -17,9 +17,14 @@ def test_readme_leads_judges_to_real_and_injected_proof_without_pending_claims()
     assert "Deliberately injected failure" in readme
     assert "REST is the stable interface" in readme
     assert "final submission still needs" not in readme.lower()
-    assert "mcp" not in readme.lower()
+    assert "mcp://" not in readme.lower()
+    assert "mandate.mcp" not in readme.lower()
     assert "erc-8004" not in readme.lower()
     assert "payment fee" not in readme.lower()
+    assert "MCP Python SDK client" in readme
+    assert "Streamable HTTP" in readme
+    assert "mandate.spend" in readme
+    assert "mandate.status" in readme
 
     local_links = re.findall(r"\[[^\]]+\]\((?!https?://)([^)#]+)(?:#[^)]+)?\)", readme)
     assert all((_ROOT / target).exists() for target in local_links)
