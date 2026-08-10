@@ -106,16 +106,6 @@ class MandateRESTClient:
         _require_ok(status, "resolve")
         return SpendResponse.from_json(document)
 
-    def finalize(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
-        """Call POST /api/v1/mandates/{id}/finalize."""
-        status, document = self._request(
-            "POST",
-            f"/api/v1/mandates/{mandate_id}/finalize",
-            payload={"task_id": task_id, "purpose": purpose},
-        )
-        _require_ok(status, "finalize")
-        return SpendResponse.from_json(document)
-
     def _request(
         self,
         method: str,
@@ -152,17 +142,3 @@ class _HttpTransport:
 
         response = httpx.request(method, url, headers=headers, json=payload, timeout=30.0)
         return response.status_code, response.json()
-
-
-def format_decision_line(
-    decision: Any,
-    *,
-    intent_id: str,
-    service_url: str,
-    amount: str,
-) -> str:
-    """Render one agent decision line for the terminal demo output."""
-    return (
-        f"[{decision.name}] intent {intent_id} service {service_url} "
-        f"amount ${amount} authorize={decision.may_authorize}"
-    )

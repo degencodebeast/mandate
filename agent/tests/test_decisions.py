@@ -139,6 +139,19 @@ def test_policy_denial_maps_to_reduce_scope() -> None:
     assert decision.may_authorize is False
 
 
+def test_mandate_level_denial_maps_to_request_user() -> None:
+    response = _response(
+        outcome="blocked: mandate_expired",
+        action="none",
+        intent=_intent(status="blocked", spend_outcome="blocked: mandate_expired"),
+    )
+
+    decision = decide(response)
+
+    assert decision.action == "request_user"
+    assert decision.may_authorize is False
+
+
 def test_accepted_awaiting_finalization_maps_to_wait() -> None:
     response = _response(
         outcome="accepted",

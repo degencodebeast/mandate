@@ -90,6 +90,13 @@ def decide(response: SpendResponse) -> AgentDecision:
             reason="payment accepted; awaiting official finalization",
         )
     if outcome.startswith("blocked:"):
+        if outcome in ("blocked: mandate_expired", "blocked: mandate_inactive"):
+            return AgentDecision(
+                action=ACTION_REQUEST_USER,
+                intent_id=intent_id,
+                may_authorize=False,
+                reason=f"policy denial; the User must act ({outcome})",
+            )
         return AgentDecision(
             action=ACTION_REDUCE_SCOPE,
             intent_id=intent_id,

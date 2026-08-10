@@ -1,12 +1,12 @@
 # Mandate Agno demo run (deterministic, scripted MCP)
 
-Timestamp: 2026-08-10T17:48:43.939384+00:00
+Timestamp: 2026-08-10T17:56:24.312376+00:00
 Interface: MCP (Streamable HTTP adapter) with REST fallback.
 Mandate created by the User before the agent starts.
 Agent tools: mandate.spend, mandate.status only (no direct payment tool).
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): 2a8efe15-c8b3-4a6e-9d68-702ed168dccb
+Intent (agent/backend/UI): 890cb58d-a9d0-4949-816b-1bea83d68343
 Decision: request_review
 Authorize: no
 Payment Reference: -
@@ -16,7 +16,7 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): 893e603f-818b-4362-9968-e1570639281c
+Intent (agent/backend/UI): a3a9bfa8-916d-4913-99b3-02fcde55a171
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -62,7 +62,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "2a8efe15-c8b3-4a6e-9d68-702ed168dccb",
+      "id": "890cb58d-a9d0-4949-816b-1bea83d68343",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -79,7 +79,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "893e603f-818b-4362-9968-e1570639281c",
+      "id": "a3a9bfa8-916d-4913-99b3-02fcde55a171",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",
