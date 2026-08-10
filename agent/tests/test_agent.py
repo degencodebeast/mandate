@@ -35,6 +35,7 @@ class StubClient:
     def __init__(self, breaker_state: str = "closed") -> None:
         self.breaker_state = breaker_state
         self.spend_calls: list[tuple[str, str, str]] = []
+        self.intent_b_outcome = "accepted"
 
     def spend(
         self,
@@ -46,6 +47,31 @@ class StubClient:
         amount: str,
     ) -> SpendResponse:
         self.spend_calls.append((task_id, purpose, service_url))
+        if task_id == "intent-b" and self.intent_b_outcome == "accepted":
+            intent = SpendIntent(
+                id="intent-intent-b",
+                mandate_id=mandate_id,
+                purpose_hash="hash-intent-b",
+                service_url=service_url,
+                amount=amount,
+                status="settling",
+                economic_safety_state="ACCEPTED",
+                spend_outcome="accepted",
+                reason="payment accepted; awaiting official finalization",
+                economic_safety_action="wait",
+                created_at="2026-08-10T12:00:00Z",
+                settled_at=None,
+                retry_count=0,
+                payment_reference="gateway-ref-b",
+            )
+            return SpendResponse(
+                outcome="accepted",
+                reason="payment accepted; awaiting official finalization",
+                action="wait",
+                intent=intent,
+                spent_total="1.00",
+                receipt=None,
+            )
         intent = SpendIntent(
             id=f"intent-{task_id}",
             mandate_id=mandate_id,
@@ -200,6 +226,26 @@ def test_agent_switch_run_invokes_status_then_spend_and_decides() -> None:
     assert decision.action == "switch_service"
     assert decision.may_authorize is True
     assert ("intent-b", "buy market data", "https://service-b.example.com") in client.spend_calls
+
+
+def test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review() -> None:
+    client = StubClient(breaker_state="open")
+    client.intent_b_outcome = "unknown"
+    agent = build_agent(client=client, mandate_id="mandate-1")
+
+    decision = run_agent_switch(
+        agent=agent,
+        service_a_url="https://service-a.example.com",
+        task_id="intent-b",
+        purpose="buy market data",
+        service_url="https://service-b.example.com",
+        amount="1.00",
+    )
+
+    assert isinstance(decision, AgentDecision)
+    assert decision.action in ("wait", "request_review")
+    assert decision.may_authorize is False
+    assert decision.intent_id == "intent-intent-b"
 
 
 def test_agent_switch_run_stops_when_service_a_breaker_is_closed() -> None:

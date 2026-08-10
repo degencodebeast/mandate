@@ -166,20 +166,26 @@ def decide_document(document: dict[str, Any]) -> AgentDecision:
 
 
 def decide_switch_document(service_a_url: str, results: list[dict[str, Any]]) -> AgentDecision:
-    """Decide to switch after the Agent read status and spent on Service B.
+    """Decide after the Agent read status and spent on Service B.
 
     ``results`` is the ordered tool-result list: the breaker status document
     first, then the Spend Result for Service B. The safe-switch precondition
     (the exact Service A breaker row is open) is enforced here and raised as
     ``ServiceABreakerClosedError`` when it is not met, so the scene never
     authorizes Service B without the required state.
+
+    The Service B Spend Result is then applied before the final decision. An
+    UNKNOWN result for Intent B always maps to WAIT or REQUEST_REVIEW with
+    ``may_authorize=False`` (ADR-0032): the open Service A precondition never
+    overrides an UNKNOWN result for Intent B, because switching to Service B is
+    a different authorization and its own Intent state rules apply.
     """
     if len(results) < 2:
         raise ServiceABreakerClosedError(
             "The Agent executed no switch plan; the scene must stop before authorization."
         )
     status_document, spend_document = results[0], results[1]
-    from agno_demo.models import BreakerState
+    from agno_demo.models import BreakerState, SpendResponse
 
     status = StatusDocument(
         mandate_id="mandate-demo",
@@ -195,9 +201,22 @@ def decide_switch_document(service_a_url: str, results: list[dict[str, Any]]) ->
         raise ServiceABreakerClosedError(
             "The switch decision did not select SWITCH_SERVICE; the scene must stop."
         )
+    spend_result = SpendResponse.from_json(spend_document)
+    if spend_result.outcome == "unknown":
+        chosen = (
+            spend_result.action
+            if spend_result.action in (ACTION_WAIT, ACTION_REQUEST_REVIEW)
+            else ACTION_REQUEST_REVIEW
+        )
+        return AgentDecision(
+            action=chosen,
+            intent_id=spend_result.intent.id,
+            may_authorize=False,
+            reason="unknown outcome for Intent B; wait or request review; no new authorization",
+        )
     return AgentDecision(
         action=decision.action,
-        intent_id=spend_document.get("intent", {}).get("id"),
+        intent_id=spend_result.intent.id,
         may_authorize=decision.may_authorize,
         reason=decision.reason,
     )

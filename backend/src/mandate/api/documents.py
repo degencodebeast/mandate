@@ -24,6 +24,7 @@ def spend_document(response: SpendResponse) -> dict[str, object]:
         "action": response.action,
         "intent": intent_document(intent),
         "spent_total": response.spent_total,
+        "injected_response_loss": response.injected_response_loss,
     }
     if response.receipt is None:
         document["receipt"] = None

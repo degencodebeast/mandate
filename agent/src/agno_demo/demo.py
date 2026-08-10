@@ -12,8 +12,9 @@ The User creates the Mandate before the agent starts. The agent has no direct
 payment tool; every economic action goes through the Mandate interface. The
 Agent calls ``mandate.spend`` and ``mandate.status`` through MCP when ticket 12a
 passes, with REST as the fallback (ADR-0033). Every decision is routed through
-``agent.run()`` and the Agent genuinely invokes its tools; the model is
-injectable and defaults to the deterministic ``DecisionModel``.
+``agent.run()`` and the Agent genuinely invokes its tools. The model is the
+deterministic ``DecisionModel``, which is the only model that can drive the
+scene tool plan.
 
 Usage:
 
@@ -30,6 +31,11 @@ Usage:
       --service-b https://service-b.example.com
 
 Without ``--mcp-endpoint`` the demo runs entirely over REST.
+
+``--inject-response-loss`` is the real Service A failure control. Start the
+Mandate backend with ``INJECT_RESPONSE_LOSS=1`` so the real Spend Result
+carries the ``injected_response_loss`` marker; the freeze scene verifies that
+marker before it labels the injected condition.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from agno.models.base import Model
 
 from agno_demo.agent import build_agent
 from agno_demo.models import SpendResponse, StatusDocument
+from agno_demo.providers import build_model
 from agno_demo.report import build_scene_report, render_demo_report
 from agno_demo.rest import MandateRESTClient
 from agno_demo.scenes import FreezeScene, SceneResult, SwitchScene
@@ -165,18 +172,11 @@ def main() -> None:
         "--inject-response-loss",
         action="store_true",
         default=os.environ.get("MANDATE_DEMO_INJECT_RESPONSE_LOSS", "0") == "1",
-        help="Configure the backend to lose the response after the real economic action.",
-    )
-    parser.add_argument(
-        "--model-provider",
-        default=os.environ.get("MANDATE_DEMO_MODEL_PROVIDER", "decision"),
-        choices=["decision", "openai"],
-        help="Model provider: decision (deterministic) or openai (requires OPENAI_API_KEY).",
-    )
-    parser.add_argument(
-        "--model-id",
-        default=os.environ.get("MANDATE_DEMO_MODEL_ID", ""),
-        help="Model identifier for a real provider (defaults to the provider default).",
+        help=(
+            "Enable the real Service A failure control. Start the Mandate "
+            "backend with INJECT_RESPONSE_LOSS=1 so the Spend Result carries "
+            "the injected_response_loss marker; the scene verifies that marker."
+        ),
     )
     parser.add_argument("--task-a", default="intent-a")
     parser.add_argument("--purpose-a", default="buy a research report")
@@ -188,12 +188,7 @@ def main() -> None:
     args = parser.parse_args()
 
     client = _build_client(args)
-    from agno_demo.providers import build_model
-
-    model = build_model(
-        provider=args.model_provider,
-        model_id=args.model_id or None,
-    )
+    model = build_model(provider="decision")
     reports = run_demo(
         client=client,
         mandate_id=args.mandate_id,

@@ -113,6 +113,62 @@ def test_circle_payment_executor_never_builds_purpose_hash_path() -> None:
     assert "payments" not in command
 
 
+def test_circle_payment_executor_raises_unknown_with_injected_marker_when_configured() -> None:
+    runner = CommandRecorder()
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=runner,
+        inject_response_loss=True,
+    )
+
+    with pytest.raises(PaymentUnknownError) as raised:
+        executor.execute_payment(
+            service_url="https://service-a.example.com",
+            amount="0.50",
+        )
+
+    assert runner.command[:4] == ["circle", "services", "pay", "https://service-a.example.com"]
+    assert raised.value.injected_response_loss is True
+
+
+def test_circle_payment_executor_returns_result_without_injected_marker_by_default() -> None:
+    runner = CommandRecorder()
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=runner,
+    )
+
+    result = executor.execute_payment(
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+
+    assert result.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+
+
+def test_circle_payment_executor_timeout_raises_unknown_without_injected_marker() -> None:
+    import subprocess
+
+    def timeout(command: Sequence[str]) -> str:
+        raise subprocess.TimeoutExpired("circle", timeout=1)
+
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=timeout,
+    )
+
+    with pytest.raises(PaymentUnknownError) as raised:
+        executor.execute_payment(
+            service_url="https://service-a.example.com",
+            amount="0.50",
+        )
+
+    assert raised.value.injected_response_loss is False
+
+
 def test_scripted_payment_executor_returns_fixed_result() -> None:
     executor = ScriptedPaymentExecutor(payment_reference="0xscripted")
 

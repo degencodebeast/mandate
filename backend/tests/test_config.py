@@ -17,6 +17,18 @@ def test_inactive_fee_and_mcp_settings_are_not_in_the_api_runtime() -> None:
     assert not hasattr(settings, "mandate_mcp_api_key")
 
 
+def test_inject_response_loss_defaults_to_false() -> None:
+    settings = ApiSettings()
+
+    assert settings.inject_response_loss is False
+
+
+def test_inject_response_loss_reads_from_environment() -> None:
+    settings = ApiSettings(_env_file=None, inject_response_loss=True)
+
+    assert settings.inject_response_loss is True
+
+
 def test_circuit_breaker_threshold_defaults_to_three() -> None:
     settings = ApiSettings()
 

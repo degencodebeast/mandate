@@ -121,6 +121,16 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
             "an abandoned worker's lease expires."
         ),
     ),
+    ConfigurationVariable(
+        name="INJECT_RESPONSE_LOSS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description=(
+            "Demo control: when true the application deliberately loses the "
+            "response after the real economic action, so the Spend Result "
+            "carries the injected_response_loss marker (ticket 10c)."
+        ),
+    ),
 )
 
 
@@ -184,6 +194,7 @@ class ApiSettings(BaseSettings):
     arc_rpc_url: str | None = None
     receipt_reader_script: str | None = None
     dashboard_origins: str | None = None
+    inject_response_loss: bool = False
 
     @field_validator(
         "payment_timeout_seconds",

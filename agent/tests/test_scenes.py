@@ -346,3 +346,45 @@ def test_switch_scene_stops_when_service_a_breaker_is_closed() -> None:
         scene.run()
 
     assert backend.spend_calls == []
+
+
+def test_switch_scene_stops_when_service_b_result_is_unknown() -> None:
+    from agno_demo.decisions import decide_switch_document
+
+    status_document = {
+        "breaker_state": [
+            {"service_url": SERVICE_A, "state": "open"},
+        ]
+    }
+    spend_document = {
+        "outcome": "unknown",
+        "reason": "unknown outcome; wait or request review; no new authorization",
+        "action": "request_review",
+        "intent": {
+            "id": "intent-b",
+            "mandate_id": "mandate-1",
+            "purpose_hash": "purpose-b",
+            "service_url": SERVICE_B,
+            "amount": "1.00",
+            "status": "unknown",
+            "economic_safety_state": "UNKNOWN",
+            "spend_outcome": "unknown",
+            "reason": "unknown outcome; wait or request review; no new authorization",
+            "economic_safety_action": "request_review",
+            "created_at": "2026-08-10T12:00:00Z",
+            "settled_at": None,
+            "retry_count": 0,
+            "payment_reference": None,
+            "reference_type": None,
+            "payment_state": None,
+            "batch_tx_hash": None,
+            "receipt_anchor": None,
+        },
+        "spent_total": "0",
+    }
+
+    decision = decide_switch_document(SERVICE_A, [status_document, spend_document])
+
+    assert decision.action in ("wait", "request_review")
+    assert decision.may_authorize is False
+    assert decision.intent_id == "intent-b"

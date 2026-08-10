@@ -25,7 +25,7 @@ from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
 from mandate.fees import ScriptedFeeCollector
-from mandate.payments import PaymentExecutionError, PaymentResult
+from mandate.payments import PaymentExecutionError, PaymentResult, PaymentUnknownError
 from mandate.persistence.intent_store import PostgresIntentStore
 from mandate.persistence.mandate_store import (
     Mandate,
@@ -52,9 +52,12 @@ class RecordingPaymentExecutor:
         self.tx_hash = tx_hash
         self.calls: list[tuple[str, str]] = []
         self.failure: PaymentExecutionError | None = None
+        self.unknown: PaymentUnknownError | None = None
         self.gate: threading.Event | None = None
 
     def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
+        if self.unknown is not None:
+            raise self.unknown
         if self.failure is not None:
             raise self.failure
         self.calls.append((service_url, amount))
@@ -415,6 +418,35 @@ def test_spend_payment_failure_blocks_and_keeps_spent_total(components: Componen
     assert document["receipt"] is None
     assert document["spent_total"] == "0"
     assert components.receipts.recorded == []
+
+
+def test_spend_injected_response_loss_marks_the_unknown_document(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.unknown = PaymentUnknownError(
+        "The application deliberately lost the response after the real economic action.",
+        injected_response_loss=True,
+    )
+
+    response = _spend(components, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "unknown"
+    assert document["action"] in ("wait", "request_review")
+    assert document["injected_response_loss"] is True
+    assert document["receipt"] is None
+
+
+def test_spend_genuine_unknown_has_no_injected_marker(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.unknown = PaymentUnknownError("The payment call timed out.")
+
+    response = _spend(components, mandate.id)
+
+    document = response.json()
+    assert document["outcome"] == "unknown"
+    assert document["injected_response_loss"] is False
 
 
 def test_spend_requires_auth() -> None:

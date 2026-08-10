@@ -10,11 +10,6 @@ dependencies = [
     "mcp>=2.0.0",
 ]
 
-[project.optional-dependencies]
-openai = [
-    "agno[openai]>=2.8.7",
-]
-
 [dependency-groups]
 dev = [
     "pytest>=9.0.0",

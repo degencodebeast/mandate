@@ -77,14 +77,21 @@ class CircleCliPaymentExecutor:
         chain: str = "ARC-TESTNET",
         runner: Callable[[Sequence[str]], str] | None = None,
         timeout_seconds: float | None = None,
+        inject_response_loss: bool = False,
     ) -> None:
         self._wallet_address = wallet_address
         self._chain = chain
         self._runner = runner
         self._timeout_seconds = timeout_seconds
+        self._inject_response_loss = inject_response_loss
 
     def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
-        """Run the CLI payment and return the exact Payment Reference."""
+        """Run the CLI payment and return the exact Payment Reference.
+
+        When ``inject_response_loss`` is set, the real economic action runs
+        first and the application then deliberately loses the response, so the
+        payment is UNKNOWN and carries the injected marker (ticket 10c).
+        """
         try:
             output = run_cli(
                 [
@@ -105,11 +112,20 @@ class CircleCliPaymentExecutor:
                 timeout=self._timeout_seconds,
             )
         except subprocess.TimeoutExpired as error:
-            raise PaymentUnknownError("The payment call timed out.") from error
+            raise PaymentUnknownError(
+                "The payment call timed out.",
+                injected_response_loss=self._inject_response_loss,
+            ) from error
         except subprocess.CalledProcessError as error:
             raise PaymentUnknownError(
-                "The payment call failed without a usable response."
+                "The payment call failed without a usable response.",
+                injected_response_loss=self._inject_response_loss,
             ) from error
+        if self._inject_response_loss:
+            raise PaymentUnknownError(
+                "The application deliberately lost the response after the real economic action.",
+                injected_response_loss=True,
+            )
         return _extract_payment_result(output)
 
 
@@ -194,4 +210,17 @@ class PaymentUnknownError(RuntimeError):
     The outcome is unknown: money may have moved on Arc even though the agent
     never received a response. The intent stays frozen with WAIT or
     REQUEST_REVIEW.
+
+    ``injected_response_loss`` is True exactly when the application deliberately
+    lost the response after the real economic action (the demo's Service A
+    failure control, ticket 10c). It is False for a genuine network fault.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        injected_response_loss: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.injected_response_loss = injected_response_loss

@@ -170,8 +170,10 @@ Rules proven: `build_agent` always provides a model (the deterministic
 `run_agent_status`, and `run_agent_switch` genuinely run the Agent and invoke
 `mandate.spend` / `mandate.status` as real tools (the tool entrypoints call the
 Mandate client, and the tests assert the client was called); the switch decision
-stops when the exact Service A breaker row is not open; the OpenAI provider
-fails closed without `OPENAI_API_KEY`.
+stops when the exact Service A breaker row is not open; the switch decision
+applies an UNKNOWN Service B Spend Result as WAIT or REQUEST_REVIEW with
+`may_authorize=False`; only the deterministic `DecisionModel` provider is
+advertised because it is the only model that can drive the scene tool plan.
 
 ## Behavior 9 — injected-response-loss gate and three-surface Intent ID
 
@@ -190,7 +192,7 @@ Command: `uv run pytest -q`
 Result:
 
 ```
-46 passed
+47 passed
 ```
 
 ## Run evidence
@@ -204,3 +206,71 @@ name the UI source, and keep Payment Reference separate from Receipt Anchor.
 Both runs route decisions through the deterministic Agent model, invoke
 `mandate.spend` / `mandate.status` as real tools, and label the injected
 response loss.
+
+## Correction round 3 — TDD evidence for the three gate findings
+
+### Finding 1 — real Mandate response-loss control and marker
+
+The real Mandate backend now owns the failure control. `INJECT_RESPONSE_LOSS`
+is an API-owned configuration variable. `CircleCliPaymentExecutor` runs the
+real payment and then deliberately loses the response, raising
+`PaymentUnknownError(injected_response_loss=True)`. The spend service threads
+the marker into the UNKNOWN `SpendResponse`, and the shared
+`documents.spend_document` (used by REST and MCP) renders
+`injected_response_loss`. A genuine network fault carries `False`.
+
+RED (backend): the spend document had no `injected_response_loss` key.
+
+```
+KeyError: 'injected_response_loss'
+```
+
+Command: `uv run pytest tests/test_spend_api.py -k "injected or genuine_unknown"`
+
+GREEN:
+
+```
+2 passed
+```
+
+Also covered: `tests/test_payments.py` (15 passed) and `tests/test_config.py`
+(`inject_response_loss` defaults to False and reads from environment). Backend
+suite: 349 passed.
+
+### Finding 2 — UNKNOWN Service B maps to WAIT or REQUEST_REVIEW
+
+`decide_switch_document` now applies the Service B Spend Result before the
+final decision. An UNKNOWN result for Intent B maps to WAIT or REQUEST_REVIEW
+with `may_authorize=False`; the open Service A precondition never overrides it.
+
+RED (agent): the switch decision returned `switch_service` for an UNKNOWN
+Service B result.
+
+```
+assert decision.action == "switch_service"
+E AssertionError: assert 'request_review' == 'switch_service'
+```
+
+Command: `uv run pytest tests/test_agent.py tests/test_scenes.py`
+
+GREEN:
+
+```
+test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review
+test_switch_scene_stops_when_service_b_result_is_unknown
+```
+
+Agent suite: 47 passed.
+
+### Finding 3 — only the deterministic model is advertised
+
+The `openai` provider option and extra are removed. `build_model` accepts only
+`decision`; an unknown provider fails closed. The `model` injection point
+remains for tests and custom deterministic models only, and the scene runner
+rejects any model that cannot drive the tool plan.
+
+RED: the old provider test expected an OpenAI path.
+
+Command: `uv run pytest tests/test_providers.py`
+
+GREEN: `build_model(provider="openai")` raises `ModelProviderError`.

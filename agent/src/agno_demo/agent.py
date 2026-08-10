@@ -11,9 +11,9 @@ The demo routes every scene through ``agent.run()`` and the Agent genuinely
 invokes its tools: ``mandate.spend`` and ``mandate.status`` are real ``Function``
 tools whose entrypoints call the Mandate client. The ``DecisionModel`` emits the
 tool call for the scene, the Agent executes the tool, and the model maps the
-tool result through the same deterministic policy layer. A real provider (for
-example ``OpenAIChat``) can be injected for the video; the default keeps the
-demo reproducible without an external API.
+tool result through the same deterministic policy layer. The ``DecisionModel``
+is the only model that can drive the scene tool plan; the ``model`` injection
+point on ``build_agent`` remains for tests and for a custom deterministic model.
 """
 
 from __future__ import annotations
@@ -311,9 +311,8 @@ def _run_plan_with_results(
     model = agent.model
     if not isinstance(model, DecisionModel):
         raise RuntimeError(
-            "The demo scenes require the deterministic DecisionModel. "
-            "A real provider is supported only for video capture with the "
-            "mandate.spend / mandate.status tools already attached."
+            "The demo scenes require the deterministic DecisionModel; it is the "
+            "only model that can drive the mandate.spend / mandate.status tool plan."
         )
     model.set_plan(tool_plan, decide_fn)
     output = agent.run("Perform the mandated economic action and decide the next action.")
@@ -335,7 +334,10 @@ def _run_plan_raw(
 ) -> dict[str, Any]:
     model = agent.model
     if not isinstance(model, DecisionModel):
-        raise RuntimeError("The demo scenes require the deterministic DecisionModel.")
+        raise RuntimeError(
+            "The demo scenes require the deterministic DecisionModel; it is the "
+            "only model that can drive the mandate.spend / mandate.status tool plan."
+        )
     model.set_plan(tool_plan, decide_fn)
     output = agent.run("Read the Mandate status and decide the next action.")
     results = _tool_results(getattr(output, "messages", []) or [])
