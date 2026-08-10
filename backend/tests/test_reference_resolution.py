@@ -418,3 +418,55 @@ def _stored_intent(mandate_id: uuid.UUID) -> Any:
     return store.get_intent(
         mandate_id=mandate_id, purpose_hash=purpose_hash("task-1", "buy a research report")
     )
+
+
+def test_concurrent_failed_resolutions_add_at_most_one_breaker_failure(
+    client: TestClient,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mandate.persistence.breaker_store import PostgresBreakerStateStore
+    from mandate.spend.breaker import CircuitBreaker
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    breaker = CircuitBreaker(store=breaker_store, failure_threshold=3, cooldown_seconds=60)
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=Executor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        transfer_status_inspector=StatusInspector("failed"),
+    )
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+    )
+    test_client = TestClient(app)
+    test_client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+    _spend(test_client, mandate.id)
+
+    barrier = threading.Barrier(5)
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [
+            pool.submit(
+                lambda: (barrier.wait(timeout=10), _resolve(test_client, mandate.id).json())[1]
+            )
+            for _ in range(5)
+        ]
+        documents = [future.result(timeout=20) for future in futures]
+
+    assert all(document["outcome"] == "blocked: payment_failed" for document in documents)
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        row = connection.execute(
+            "SELECT failure_count FROM breaker_state WHERE service_url = %s",
+            (_SERVICE_URL,),
+        ).fetchone()
+    assert row is not None
+    assert row["failure_count"] == 1

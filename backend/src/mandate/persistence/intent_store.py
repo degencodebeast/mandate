@@ -37,7 +37,8 @@ _SELECT_INTENT = """
     SELECT id, mandate_id, purpose_hash, service_url, amount,
            status, tx_hash, created_at, settled_at, retry_count,
            fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
-           reference_type, payment_state, batch_tx_hash, breaker_trial_epoch
+           reference_type, payment_state, batch_tx_hash, breaker_trial_epoch,
+           breaker_failure_recorded
     FROM intents
 """
 
@@ -129,6 +130,10 @@ class IntentStore(Protocol):
 
     def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent: ...
 
+    def claim_breaker_failure(self, *, intent_id: uuid.UUID) -> bool: ...
+
+    def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool: ...
+
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
 
 
@@ -154,6 +159,7 @@ class Intent:
     payment_state: str | None = None
     batch_tx_hash: str | None = None
     breaker_trial_epoch: int = 0
+    breaker_failure_recorded: bool = False
 
 
 class PostgresIntentStore:
@@ -266,7 +272,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch
+                          breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (
                     status,
@@ -321,7 +327,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch
+                          batch_tx_hash, breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (reference, reference_type, payment_state, breaker_trial_epoch, intent_id),
             ).fetchone()
@@ -363,7 +369,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch
+                          batch_tx_hash, breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (payment_state, batch_tx_hash, intent_id),
             ).fetchone()
@@ -371,9 +377,52 @@ class PostgresIntentStore:
             return self._reload(intent_id)
         return self._from_row(row)
 
+    def claim_breaker_failure(self, *, intent_id: uuid.UUID) -> bool:
+        """Atomically claim the one breaker-failure record for an Intent.
+
+        One failed transfer adds at most one Circuit Breaker failure (ticket 11
+        gate Major). The compare-and-set claim sets ``breaker_failure_recorded``
+        only when it is still false, so exactly one caller wins the claim and
+        records the failure; concurrent or retried resolutions lose the claim
+        and have no further effect.
+        """
+        with psycopg.connect(self._database_url) as connection:
+            row = connection.execute(
+                """
+                UPDATE intents
+                SET breaker_failure_recorded = true
+                WHERE id = %s AND breaker_failure_recorded = false
+                RETURNING id
+                """,
+                (intent_id,),
+            ).fetchone()
+        return row is not None
+
+    def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool:
+        """Return whether the Intent is an accepted transfer still pending.
+
+        An Intent is pending when it is SETTLING with a stored Payment
+        Reference and a non-terminal official state. The half-open Circuit
+        Breaker trial must stay exclusive while its owner has such a pending
+        transfer (ticket 11 gate Major): the local trial timer cannot open a
+        second Payment Authorization for the same service.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                SELECT status, payment_reference, payment_state
+                FROM intents WHERE id = %s
+                """,
+                (intent_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        if row["status"] != "settling" or row["payment_reference"] is None:
+            return False
+        return row["payment_state"] not in ("completed", "failed")
+
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent:
         """Record the Receipt Anchor after the Receipt is written (ticket 10e).
-
         The Receipt Anchor is the Arc transaction that wrote the Receipt
         (CONTEXT.md). It stays separate from the Payment Reference. The stored
         value is write-once: one finalized Intent can create at most one Receipt
@@ -391,7 +440,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch
+                          breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -424,7 +473,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch
+                          breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -503,7 +552,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch
+                          breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -565,7 +614,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch
+                          breaker_trial_epoch, breaker_failure_recorded
                 """,
                 (intent_id,),
             ).fetchone()
@@ -639,6 +688,7 @@ class PostgresIntentStore:
             payment_state=row["payment_state"],
             batch_tx_hash=row["batch_tx_hash"],
             breaker_trial_epoch=row["breaker_trial_epoch"],
+            breaker_failure_recorded=row["breaker_failure_recorded"],
         )
 
 

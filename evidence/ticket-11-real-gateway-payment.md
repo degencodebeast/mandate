@@ -127,7 +127,11 @@ in real-demo mode.
 The Circuit Breaker outcome is deferred to the terminal official result. A
 payment accepted through `spend()` does not reset the breaker: the intent keeps
 the breaker trial epoch, and `resolve_reference` records breaker success only on
-a durable `completed` state or breaker failure on a durable `failed` state. The
-status write is monotonic: a delayed non-final lookup can never regress a
-durable `completed` or `failed` state, and a Receipt is created only when the
-durable state is `completed`.
+a durable `completed` state or breaker failure on a durable `failed` state. One
+failed transfer adds at most one breaker failure: the atomic claim lets exactly
+one concurrent resolver record it. The status write is monotonic: a delayed
+non-final lookup can never regress a durable `completed` or `failed` state, and
+a Receipt is created only when the durable state is `completed`. A consumed
+half-open trial stays exclusive while its owner has a pending accepted transfer:
+the local trial timer cannot open a second Payment Authorization for the same
+service.

@@ -19,7 +19,7 @@ resolve ``Annotated[...]`` dependency aliases.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
@@ -407,6 +407,28 @@ def create_app(
     return app
 
 
+def _trial_owner_pending(
+    intent_store: PostgresIntentStore,
+) -> Callable[[str], bool]:
+    """Return a predicate that asks whether a trial owner still has a pending transfer.
+
+    The Circuit Breaker uses the predicate so a consumed half-open trial stays
+    exclusive while its owner has an accepted transfer still awaiting the
+    official terminal result (ticket 11 gate Major). The owner is the Intent
+    UUID stored by ``consume_trial``.
+    """
+    import uuid as _uuid
+
+    def pending(owner: str) -> bool:
+        try:
+            intent_id = _uuid.UUID(owner)
+        except (ValueError, AttributeError):
+            return False
+        return intent_store.is_pending_accepted(intent_id=intent_id)
+
+    return pending
+
+
 def _spend_service_from_settings(
     settings: ApiSettings,
     store: MandateStore | None,
@@ -436,6 +458,7 @@ def _spend_service_from_settings(
             failure_threshold=settings.circuit_breaker_failure_threshold,
             cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
             trial_timeout_seconds=settings.circuit_breaker_trial_timeout_seconds,
+            trial_owner_pending=_trial_owner_pending(intent_store),
         )
         if breaker_store is not None
         else None

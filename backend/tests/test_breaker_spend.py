@@ -145,17 +145,27 @@ class Components:
         self.payments = payments if payments is not None else RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
         self.inspector = ScriptedTransferStatusInspector("completed")
+        self.intent_store = PostgresIntentStore(_DATABASE_URL)
         self.clock = clock if clock is not None else FakeClock()
+
+        def pending(owner: str) -> bool:
+            try:
+                intent_id = uuid.UUID(owner)
+            except (ValueError, AttributeError):
+                return False
+            return self.intent_store.is_pending_accepted(intent_id=intent_id)
+
         breaker = CircuitBreaker(
             store=self.breaker_store,
             failure_threshold=3,
             cooldown_seconds=_COOLDOWN_SECONDS,
             trial_timeout_seconds=trial_timeout_seconds,
             now=self.clock,
+            trial_owner_pending=pending,
         )
         spend_service = MandateSpendService(
             mandate_store=self.store,
-            intent_store=PostgresIntentStore(_DATABASE_URL),
+            intent_store=self.intent_store,
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
             breaker=breaker,
@@ -557,3 +567,39 @@ def test_trial_lease_cannot_expire_within_the_payment_window() -> None:
         assert result["outcome"] == "unknown"
 
     assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+
+def test_pending_accepted_transfer_keeps_half_open_trial_exclusive(
+    components: Components,
+) -> None:
+    """A second authorization must not open while an accepted transfer is pending.
+
+    The trial lease is a crash-recovery bound. When the trial owner still has an
+    accepted transfer awaiting the official terminal result, the lease must not
+    expire: the Circuit Breaker keeps one exclusive half-open trial and blocks
+    the next Payment Authorization for the same service (ticket 11 gate Major).
+    """
+    mandate = _create_mandate(components.store)
+    components.payments.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend(components, mandate.id, task_id=task)
+    assert _breaker_state(components, _SERVICE_A)["state"] == "open"
+
+    components.clock.advance(_COOLDOWN_SECONDS)
+    components.payments.hard_failure = None
+
+    first = _spend(components, mandate.id, task_id="task-4")
+    assert first.json()["outcome"] == "accepted"
+    first_state = _breaker_state(components, _SERVICE_A)
+    assert first_state["state"] == "half_open"
+    assert first_state["trial_owner"] is not None
+
+    components.clock.advance(2 * _COOLDOWN_SECONDS)
+
+    second = _spend(components, mandate.id, task_id="task-5")
+
+    assert second.json()["outcome"] == "blocked: breaker_open"
+    assert components.payments.calls == [(_SERVICE_A, "1.00")]
+    second_state = _breaker_state(components, _SERVICE_A)
+    assert second_state["state"] == "half_open"
+    assert second_state["trial_owner"] == first_state["trial_owner"]

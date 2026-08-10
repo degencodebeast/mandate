@@ -43,12 +43,14 @@ class CircuitBreaker:
         cooldown_seconds: float = 60.0,
         trial_timeout_seconds: float = 60.0,
         now: Now | None = None,
+        trial_owner_pending: Callable[[str], bool] | None = None,
     ) -> None:
         self._store = store
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
         self._trial_timeout_seconds = trial_timeout_seconds
         self._now = now or (lambda: datetime.now(UTC))
+        self._trial_owner_pending = trial_owner_pending
 
     def state_for(self, *, service_url: str) -> BreakerState:
         """Return the current state, applying the recovery transitions.
@@ -56,8 +58,11 @@ class CircuitBreaker:
         An OPEN breaker that has been OPEN for the full cooldown recovers to
         HALF_OPEN with a fresh trial. A consumed HALF_OPEN trial whose lease
         has expired recovers to a state that permits one new trial, so an
-        abandoned worker cannot block the only trial forever (ADR-0032). Any
-        other state is returned as-is.
+        abandoned worker cannot block the only trial forever (ADR-0032). A
+        consumed trial is NOT recovered while its owner still has a pending
+        accepted transfer: the local trial timer cannot open a second Payment
+        Authorization for the same service (ticket 11 gate Major). Any other
+        state is returned as-is.
         """
         state = self._store.get_or_create_state(service_url=service_url)
         now = self._now()
@@ -73,7 +78,12 @@ class CircuitBreaker:
             and state.trial_started_at is not None
         ):
             cutoff = now - timedelta(seconds=self._trial_timeout_seconds)
-            if state.trial_started_at <= cutoff:
+            owner_still_pending = (
+                state.trial_owner is not None
+                and self._trial_owner_pending is not None
+                and self._trial_owner_pending(state.trial_owner)
+            )
+            if state.trial_started_at <= cutoff and not owner_still_pending:
                 recovered = self._store.recover_expired_trial(
                     service_url=service_url, cutoff=cutoff
                 )
