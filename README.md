@@ -2,204 +2,242 @@
 
 **Financial fault tolerance for autonomous agents.**
 
-Mandate guarantees one economic intent cannot accidentally become multiple settlements — even through timeouts, retries, concurrency, lost responses, and unknown outcomes.
+> One intent. No blind retries.
 
-> Built for the **Encode x Arc Programmable Money Hackathon** — Agentic Economy track.
-> Chain: **Arc testnet** · Money: **USDC** · Agent framework: **Agno** · Auth: **Privy**
+Mandate records one economic intent before an agent can authorize payment. If the payment outcome becomes unknown, Mandate freezes further authorization for that intent.
 
----
+Built for the **Encode x Arc Programmable Money Hackathon** Agentic Economy track.
 
-## The problem
+## The failure Mandate prevents
 
-An agent pays $0.05 for a research report. Arc settlement happens. The HTTP response is lost. The agent sees a timeout. It does not know whether the payment settled.
+An autonomous research agent buys a $0.05 report. The service accepts the payment authorization. The application response is lost.
 
-So it retries. And pays twice.
+The agent sees a timeout. It does not know if value moved. It retries with a fresh authorization.
 
-This is not a spending-limits problem. Circle already provides wallet-level limits. They do not solve the harder case: **money has moved, but the outcome is unknown.**
+One report can now produce two payments.
 
-| Pain | Evidence | Source |
+Wallet limits do not solve this failure. Payment replay protection stops reuse of one signed authorization. It does not know that two fresh authorizations represent the same business intent.
+
+Mandate adds the missing application safety boundary:
+
+```text
+one economic intent
+        ↓
+one admitted payment authorization
+        ↓
+known outcome ───────────────→ continue
+unknown outcome ─────────────→ freeze new authorization
+                                wait or request review
+```
+
+## Evidence that the problem is real
+
+These sources report specific failures and open problems. They do not prove that every x402 implementation has each problem.
+
+| Pain signal | Reported evidence | Source |
 |---|---|---|
-| Retries cause duplicate payments | "retries can result in multiple accepted payments for one action" | [x402-foundation/x402#808](https://github.com/x402-foundation/x402/issues/808) |
-| Unknown outcome: paid but not delivered | "Wallets are debited but endpoints reject requests. No retry/reconciliation mechanism" | [x402-foundation/x402#1062](https://github.com/x402-foundation/x402/issues/1062) |
-| Concurrent requests defeat naive limits | one $89.90 purchase held $179.80 against a $150 limit | [Reddit r/x402 post-mortem](https://www.reddit.com/r/x402/comments/1uxo0ia/) |
-| All 15 tested x402 facilitators had safety violations | "Free Shopping, Asset Theft, Service Denial, Gas Abuse" | [USENIX Security 2026](https://arxiv.org/abs/2607.19545) |
-| No circuit breaker for failing services | "agents will keep sending payments into a failing system" | [google-agentic-commerce/a2a-x402#60](https://github.com/google-agentic-commerce/a2a-x402/issues/60) |
-| Chained payments lack audit trails | "Agent A pays B, B pays C — tracing the full provenance chain doesn't exist" | a2a-x402#60 |
+| Retries can create duplicate payments | An open x402 issue asks for first-class idempotency because timeout retries can create multiple accepted payments for one action. | [x402 issue #808](https://github.com/x402-foundation/x402/issues/808) |
+| A payment can succeed while delivery fails | A builder reports a facilitator timeout after the wallet was debited. The client received no data and had no clear reconciliation path. | [x402 issue #1062](https://github.com/x402-foundation/x402/issues/1062) |
+| Concurrent requests can defeat a simple limit check | A builder post-mortem describes one $89.90 purchase reserving $179.80 against a $150 limit. | [Reddit x402 post-mortem](https://www.reddit.com/r/x402/comments/1uxo0ia/) |
+| Failing services need an economic circuit breaker | A community proposal warns that autonomous retry loops can keep sending payments into a failing service. | [a2a-x402 issue #60](https://github.com/google-agentic-commerce/a2a-x402/issues/60) |
+| Payment infrastructure still has broad safety gaps | A USENIX Security 2026 study reports security violations in all 15 facilitators that it evaluated. | [USENIX Security 2026 paper](https://arxiv.org/abs/2607.19545) |
 
-The missing piece is not "better spending limits." The missing piece is **financial fault tolerance for autonomous agents.**
+## What Mandate does
 
----
+Mandate is a service between an agent and the payment rail.
 
-## The solution
+Before value can move, Mandate must:
 
-```
-ONE ECONOMIC INTENT
-        ↓
-AT MOST ONE SETTLEMENT
-        ↓
-EVEN THROUGH
-timeouts · retries · concurrency · lost responses · unknown outcomes
-```
+1. Record the economic intent.
+2. Reserve mandate authority and budget atomically.
+3. Verify the exact service.
+4. Acquire one expected intent transition.
+5. Permit one payment authorization.
 
-```
-Agent calls mandate.spend(taskId, purpose, service, amount)
-    ↓
-Policy engine: mandate active · service allowed · per-call cap · budget · circuit breaker
-    ↓
-Intent lock: same intent already in flight? → ALREADY_IN_PROGRESS (no second payment)
-    ↓
-Already settled? → return existing receipt (no second payment)
-    ↓
-Execute via Circle Nanopayments on Arc
-    ↓
-Success → SETTLED → fee split → receipt on Arc
-Timeout/lost → UNKNOWN → freeze retries → reconcile against Arc
-                    ↓
-              settled? → return existing receipt (no second payment)
-              not settled? → safe retry → one settlement total
+If the result is unknown, Mandate does not infer that payment failed. A missing lookup, amount match, wallet match, balance change, or time match is not proof of non-payment.
+
+```text
+PENDING
+  ├─→ BLOCKED
+  └─→ SETTLING
+        ├─→ SETTLED
+        └─→ UNKNOWN
+              ├─→ WAIT
+              ├─→ REQUEST_REVIEW
+              └─→ exact official final state, when available
 ```
 
-**One intent. One settlement. Even when the response is lost.**
+The core rule is simple:
 
-### The product, not middleware
+> If payment may have moved value, the same intent cannot authorize payment again.
 
-Mandate is a standalone service you connect to, not a library you import.
+## What the agent receives
 
-- **MCP connection string** — paste it into any agent (Agno, LangChain, Claude, OpenAI). Your agent gets `mandate.create`, `mandate.spend`, `mandate.status` as tools.
-- **Dashboard** — create mandates, watch live spending, see intent states, view on-Arc receipts.
-- **Per-user wallets** — each user owns a Circle Agent Wallet. Mandate is the boundary above it.
-- **Per-payment fee** — 1% of each payment funds the service. It is a business, not a script.
-- **Works with any agent framework** — Mandate is framework-agnostic. Any MCP-compatible agent connects the same way.
+Mandate returns an economic safety state. It also returns the next permitted action.
 
-### What Mandate gives you
+| State | Meaning | Agent action |
+|---|---|---|
+| `SETTLED` | The exact payment reference has a final success state. | Continue the task. |
+| `UNKNOWN` | Payment may have moved, but Mandate has no exact final result. | Wait or request human review. |
+| `BLOCKED` | Policy or the service circuit breaker denies authorization. | Reduce scope or select an allowed service for a different intent. |
+| `ALREADY_IN_PROGRESS` | Another caller owns the same intent transition. | Do not issue another authorization. |
+| `DENIED` | The request is outside the human mandate. | Ask the human to change the mandate. |
 
-- **Unknown-outcome handling** — If a payment times out or the response is lost, Mandate freezes retries, reconciles against Arc settlement state, and either returns the existing receipt or allows one safe retry. Never a blind double-pay.
-- **Intent locking** — Same intent arrives 5× concurrently? One acquires the lock and pays. Four receive `ALREADY_IN_PROGRESS`. At most one settlement.
-- **Intent dedupe** — One (Task, Purpose) pair = at most one payment. Sequential retries return the original result.
-- **Task-level mandates** — A human sets a budget per task, not per wallet. The agent cannot overspend.
-- **Circuit breaker** — Trips after 3 consecutive failures or unknown outcomes to a service. Autonomous spending to that service freezes. Self-heals via half-open trial after 60 seconds.
-- **On-Arc receipts** — Every settled payment is recorded on Arc with the agent's ERC-8004 identity. Immutable proof of what was paid, why, by whom.
-- **Service allowlist** — The agent can only pay approved services.
-- **Per-payment fee** — 1% of each payment goes to the Mandate fee wallet. Split at payment time.
+Service switching is safe only before authorization, after an exact final rejection, or for a different intent.
 
-### What Mandate does NOT do
+## Why this is more than an `if` statement
 
-- It does not replace Circle. It wraps Circle. The payment still flows through Circle Nanopayments on Arc.
-- It does not give the agent a wallet. The user owns the wallet. Mandate is the boundary above it.
-- It does not decide what to buy. The agent reasons about that. Mandate guarantees the spend executes safely.
-- It is not "better spending limits." Circle already has limits. Mandate is the fault-tolerance layer above limits.
+The submission safety gate requires these invariants:
 
----
+| Invariant | Purpose |
+|---|---|
+| Stable intent identity | All retries for one business action use the same key. |
+| Atomic intent admission | Concurrent callers cannot both receive payment authority. |
+| Atomic budget reservation | Concurrent intents cannot spend the same remaining budget. |
+| Exact service authorization | A URL prefix cannot grant authority to a lookalike host. |
+| Finite amount and valid expiry checks | Invalid numeric values cannot bypass policy. |
+| Unknown-outcome freeze | Ambiguity cannot become a new payment authorization. |
+| Service circuit breaker | Repeated failure isolates one service from new economic activity. |
+| Recoverable finalization | A process interruption after payment does not erase the economic state. |
+| Idempotent receipt anchor | One finalized reference does not create duplicate Arc anchors. |
+
+## Payment proof on Arc
+
+Mandate keeps each identifier separate:
+
+- Economic intent identifier
+- Gateway payment reference
+- Payment reference type and state
+- Optional Gateway batch transaction hash
+- Arc Receipt Registry anchor transaction hash
+
+The Arc anchor proves that Mandate recorded one finalized payment reference in the Receipt Registry. It does not claim that every Gateway nanopayment has an immediate, individual Arc transaction hash.
 
 ## Judge fast path
 
-| Requirement | Where to verify |
+| What to inspect | Location or proof |
 |---|---|
-| Working prototype deployed on Arc | `backend/` runs the Mandate Service; Receipt Registry contract on Arc testnet |
-| Clear use of Circle dev tools | Agent Wallets, Nanopayments, ERC-8004 |
-| 3-minute video demo | `docs/demo-video.md` (coming) |
-| Code repository | [github.com/degencodebeast/mandate](https://github.com/degencodebeast/mandate) |
-| Real use case with path to production | Per-user wallets, per-payment fee, standalone MCP service |
-| Quality of execution over complexity | 24 ADRs, TDD, mypy + ruff, gate-reviewed tickets |
+| Intent state and policy service | [`backend/`](backend/) |
+| Dashboard and live economic safety state | [`dashboard/`](dashboard/) |
+| Deterministic failure services and naive-agent comparison | [`services/`](services/) |
+| Receipt Registry contract and Foundry tests | [`contracts/`](contracts/) |
+| Foundation safety rules | [`docs/adr/0032-foundation-safety-invariants.md`](docs/adr/0032-foundation-safety-invariants.md) |
+| REST core and optional MCP adapter boundary | [`docs/adr/0033-rest-core-with-mcp-adapter.md`](docs/adr/0033-rest-core-with-mcp-adapter.md) |
+| Truthful hackathon boundary | [`docs/adr/0034-truthful-hackathon-boundary.md`](docs/adr/0034-truthful-hackathon-boundary.md) |
+| Arc explorer transaction, live app, video, and deck | Added after the final deployment gate passes. |
 
-### Run it
+## Architecture
+
+```text
+Human
+  → Next.js dashboard
+  → creates task-scoped mandate authority
+
+Agent
+  → REST or verified MCP adapter
+  → Mandate service
+      → policy and atomic economic state
+      → Circle Gateway on Arc testnet
+      → Postgres
+      → Receipt Registry on Arc
+```
+
+The protected agent has no direct Circle payment tool. Mandate is the payment authorization boundary.
+
+REST is the stable application interface. The repository claims MCP support only after a real Streamable HTTP adapter passes discovery, authorization, invocation, and unknown-outcome tests with one named client.
+
+## What Mandate does not do
+
+- Mandate does not replace Circle wallets or payment rails.
+- Mandate does not decide what the agent should buy.
+- Mandate does not treat an unknown outcome as a failed payment.
+- Mandate does not reconcile from approximate amount, wallet, or time matches.
+- Mandate does not perform an automatic safe retry after ambiguity.
+- Mandate is not another wallet spending-limit dashboard.
+- The hackathon build does not claim per-user custody, a payment fee, or unverified ERC-8004 identity.
+
+## Run locally
+
+The backend needs Python 3.13, `uv`, PostgreSQL, and a valid `DATABASE_URL`.
 
 ```bash
 cd backend
 uv sync
-uv pip install -e .
 export DATABASE_URL="postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 uv run python -m mandate.api.startup
 ```
 
-Then:
+Run the dashboard in a second terminal:
 
-```text
-Dashboard:  Create a mandate → "Task: research competitors. Budget: $0.10. Max/call: $0.05."
-Agent:      mandate.spend("task-1", "get competitor names", "https://search-a.example.com", 0.003)
-Mandate:    → policy checks → intent lock acquired → Circle pays → SETTLED → receipt on Arc
-
-# Response lost? Agent retries:
-Agent:      mandate.spend("task-1", "get competitor names", "https://search-a.example.com", 0.003)
-Mandate:    → intent already SETTLED → return existing receipt. No second payment.
-
-# Timeout? Unknown outcome:
-Agent:      mandate.spend("task-1", "get pricing data", "https://search-a.example.com", 0.003)
-Mandate:    → payment sent → timeout → intent = UNKNOWN → freeze retries → reconcile against Arc
-            → Arc confirms settlement → return existing receipt. No second payment.
+```bash
+cd dashboard
+npm install
+export NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
+npm run dev
 ```
 
----
+The deterministic paid-service fixtures run separately:
 
-## Architecture
-
-```
-User (Privy auth)
-  → Dashboard (Next.js on Vercel)
-    → Mandate Service (Python FastAPI, standalone MCP)
-      → Postgres (mandates, intents with state machine, breaker_state)
-      → Circle CLI (subprocess) → Nanopayments on Arc testnet
-      → Arc reconciliation (query settlement state for UNKNOWN intents)
-      → Receipt Registry contract (Arc testnet, owner-only)
-      → ERC-8004 (agent identity registration)
-
-Agent (Agno, multi-provider LLM)
-  → Mandate Service (MCP connection string)
-    → mandate.create · mandate.spend · mandate.status
+```bash
+cd services
+npm install
+npm run start:a
+# Run `npm run start:b` in another terminal.
 ```
 
-The agent never calls Circle directly. Mandate is the only path to the wallet. This is the enforcement boundary.
+## Verify the repository
 
----
+```bash
+cd backend
+uv run pytest -q
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
 
-## Intent state machine
+cd ../services
+npm test -- --run
+npm run typecheck
 
+cd ../dashboard
+npm test -- --run
+npm run build
+
+cd ../contracts
+forge test
 ```
-PENDING → SETTLING → SETTLED
-                 ↘ UNKNOWN → RECONCILING → SETTLED (return existing receipt)
-                                      ↘ NOT_SETTLED → safe retry
-PENDING → BLOCKED (policy check failed)
-PENDING → ALREADY_IN_PROGRESS (concurrent same-intent caller)
-```
 
-Every intent moves through this state machine. The guarantee: one intent → at most one settlement, even through timeouts, retries, concurrency, and lost responses.
+## Technology
 
----
-
-## Policy engine
-
-Each check is a pure function: `check(SpendContext) → SpendResult`. Checks compose with AND semantics. No mandate = no payment. Fail closed by default.
-
-| Check | Rule | Reason on block |
-|---|---|---|
-| Mandate active | `mandate.active` | "mandate expired" |
-| Service allowed | `mandate.service_allowed` | "service not in allowed list" |
-| Per-call cap | `mandate.per_call_cap` | "amount exceeds per-call cap" |
-| Budget remaining | `mandate.budget_remaining` | "budget exceeded" |
-| Intent dedupe | `mandate.intent_unique` | "duplicate intent: already settled" |
-| Intent lock | `mandate.intent_lock` | "already in progress" |
-| Circuit breaker | `mandate.breaker_closed` | "circuit breaker open: service temporarily unavailable" |
-
----
-
-## Tech stack
-
-| Layer | Technology |
+| Layer | Current technology |
 |---|---|
-| Backend | Python 3.13, FastAPI, psycopg3, Postgres, ruff, mypy, pytest |
-| Frontend | Next.js, React, Privy auth, viem (Arc event reading) |
-| Contracts | Solidity (Receipt Registry on Arc testnet) |
-| Agent | Agno (Python), multi-provider LLM (OpenAI, Anthropic, Google) |
-| Design | Modernist design system (dark theme, Archivo, zero radius) |
-| Chain | Arc testnet (USDC gas, sub-second finality) |
-| Payments | Circle Agent Wallets, Circle Nanopayments, x402 |
+| Backend | Python 3.13, FastAPI, Pydantic, psycopg, PostgreSQL |
+| Dashboard | Next.js, React, Privy authentication |
+| Test services | Express, x402 packages, TypeScript |
+| Contract | Solidity Receipt Registry with Foundry tests |
+| Chain proof | Arc testnet |
+| Money and payment target | USDC through the official Circle Gateway path |
+| Agent target | Agno through the REST interface |
+| Optional onboarding adapter | Streamable HTTP MCP after its verification gate passes |
 
----
+## Current build status
+
+The repository contains the policy engine, intent state, circuit breaker, Postgres stores, FastAPI routes, dashboard, failure fixtures, and Receipt Registry contract.
+
+The final submission still needs these proof gates:
+
+- The foundation safety repair must pass its concurrency and recovery tests.
+- One real Gateway testnet payment must return an exact official reference.
+- One finalized reference must produce one Arc Receipt Registry anchor.
+- The Agno agent must react to the returned safety state.
+- MCP must pass its separate client test before the README claims that it works.
+- The live application, explorer link, video, and deck must replace the pending judge-fast-path entry.
 
 ## Project structure
 
-```
-backend/     Python FastAPI Mandate Service
-frontend/    Next.js dashboard (coming)
-contracts/   Receipt Registry Solidity contract (coming)
+```text
+backend/     FastAPI Mandate service and Postgres persistence
+dashboard/   Next.js authority and economic safety interface
+services/    Paid-service and failure-injection fixtures
+contracts/   Receipt Registry Solidity contract
+docs/        Architecture decisions and review evidence
 ```
