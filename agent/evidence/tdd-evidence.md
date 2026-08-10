@@ -166,17 +166,22 @@ GREEN:
 ```
 
 Rules proven: `build_agent` always provides a model (the deterministic
-`DecisionModel` by default); an injected model is used; `run_agent_spend_decision`
-and `run_agent_switch_decision` genuinely run the Agent; the switch decision
+`DecisionModel` by default); an injected model is used; `run_agent_spend`,
+`run_agent_status`, and `run_agent_switch` genuinely run the Agent and invoke
+`mandate.spend` / `mandate.status` as real tools (the tool entrypoints call the
+Mandate client, and the tests assert the client was called); the switch decision
 stops when the exact Service A breaker row is not open; the OpenAI provider
 fails closed without `OPENAI_API_KEY`.
 
 ## Behavior 9 — injected-response-loss gate and three-surface Intent ID
 
 The freeze scene labels the injected condition only when the demo is configured
-to inject response loss AND the Spend Result is UNKNOWN. The report records the
-Intent identifier separately from the agent, backend, and UI surfaces instead of
-aliasing one backend value into three labels.
+to inject response loss AND the service confirms it lost the response
+(`injected_response_loss` on the Spend Result) AND the outcome is UNKNOWN; a
+configured-but-unverified injection raises instead of labeling. The report
+records the Intent identifier separately from the agent, backend, and UI
+surfaces, and names the UI source (status API rendered by the dashboard)
+instead of aliasing one backend value into three labels.
 
 ## Full agent suite
 
@@ -185,7 +190,7 @@ Command: `uv run pytest -q`
 Result:
 
 ```
-41 passed
+46 passed
 ```
 
 ## Run evidence
@@ -194,6 +199,8 @@ Result:
   fallback.
 - `evidence/demo-run-rest.txt` — both scenes through the pure REST fallback.
 
-Both record the same Intent identifier in the agent, backend, and UI views and
-keep Payment Reference separate from Receipt Anchor. Both runs route decisions
-through the deterministic Agent model and label the injected response loss.
+Both record the same Intent identifier in the agent, backend, and UI views,
+name the UI source, and keep Payment Reference separate from Receipt Anchor.
+Both runs route decisions through the deterministic Agent model, invoke
+`mandate.spend` / `mandate.status` as real tools, and label the injected
+response loss.

@@ -17,6 +17,7 @@ def build_scene_report(
     agent_intent_id: str | None,
     backend_intent_id: str | None,
     ui_intent_id: str | None,
+    ui_source: str,
     decision_action: str,
     may_authorize: bool,
     payment_reference: str | None,
@@ -28,16 +29,19 @@ def build_scene_report(
     """Build one scene report document.
 
     The Intent identifier is recorded once per surface that produced it: the
-    agent view (the decision), the backend view (the spend response), and the
-    UI view (the status document the dashboard renders). Recording three
-    distinct sources prevents a single aliased value from reporting proof that
-    did not occur (ticket 10c submission proof).
+    agent view (the Agent decision), the backend view (the Spend Result), and
+    the UI view (read from the status API the dashboard renders). Recording
+    three distinct sources prevents a single aliased value from reporting proof
+    that did not occur. ``ui_source`` names where the UI value came from so a
+    judge never mistakes a status-API read for a dashboard render (ticket 10c
+    submission proof).
     """
     return {
         "scene": scene,
         "agent_intent_id": agent_intent_id,
         "backend_intent_id": backend_intent_id,
         "ui_intent_id": ui_intent_id,
+        "ui_source": ui_source,
         "decision_action": decision_action,
         "may_authorize": may_authorize,
         "payment_reference": payment_reference,
@@ -59,6 +63,7 @@ def render_demo_report(reports: list[dict[str, Any]]) -> list[str]:
             f"{report['backend_intent_id'] or '-'} / "
             f"{report['ui_intent_id'] or '-'}"
         )
+        lines.append(f"UI source: {report.get('ui_source', 'status API')}")
         lines.append(f"Decision: {report['decision_action']}")
         lines.append(f"Authorize: {'yes' if report['may_authorize'] else 'no'}")
         lines.append(f"Payment Reference: {report['payment_reference'] or '-'}")

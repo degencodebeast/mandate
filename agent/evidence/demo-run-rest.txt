@@ -1,14 +1,15 @@
 # Mandate Agno demo run (deterministic, REST fallback)
 
-Timestamp: 2026-08-10T19:06:12.191548+00:00
+Timestamp: 2026-08-10T21:03:48.404523+00:00
 Interface: REST (scripted transport; no network).
 Agent model: DecisionModel (deterministic).
 Mandate created by the User before the agent starts.
-Agent tools: mandate.spend, mandate.status only (no direct payment tool).
+Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).
 Injected condition: response loss after the real economic action.
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): ec247358-1780-4d3c-92fb-325553438e3a / ec247358-1780-4d3c-92fb-325553438e3a / ec247358-1780-4d3c-92fb-325553438e3a
+Intent (agent/backend/UI): 097c978f-9c81-46f6-9ecc-103ed1100510 / 097c978f-9c81-46f6-9ecc-103ed1100510 / 097c978f-9c81-46f6-9ecc-103ed1100510
+UI source: status API (rendered by the dashboard)
 Decision: request_review
 Authorize: no
 Payment Reference: -
@@ -18,7 +19,8 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075 / cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075 / cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075
+Intent (agent/backend/UI): 33745fd6-4baa-4a7b-ab1e-d7a33f289bf5 / 33745fd6-4baa-4a7b-ab1e-d7a33f289bf5 / 33745fd6-4baa-4a7b-ab1e-d7a33f289bf5
+UI source: status API (rendered by the dashboard)
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -64,7 +66,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "ec247358-1780-4d3c-92fb-325553438e3a",
+      "id": "097c978f-9c81-46f6-9ecc-103ed1100510",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -81,7 +83,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075",
+      "id": "33745fd6-4baa-4a7b-ab1e-d7a33f289bf5",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",

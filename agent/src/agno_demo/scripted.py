@@ -36,12 +36,20 @@ class _IntentState:
 
 @dataclass
 class ScriptedMandateBackend:
-    """An in-memory Mandate REST backend for the two demo scenes."""
+    """An in-memory Mandate REST backend for the two demo scenes.
+
+    ``inject_response_loss`` is the real Service A failure control: when true,
+    the backend deliberately loses the application response after the real
+    economic action and returns an UNKNOWN outcome for Intent A. The field is
+    read from a response header so callers can verify the injection actually
+    occurred before labeling it (ticket 10c).
+    """
 
     mandate_id: str = "mandate-demo"
     service_a: str = "https://service-a.example.com"
     service_b: str = "https://service-b.example.com"
     breaker_state_a: str = "closed"
+    inject_response_loss: bool = False
     spend_calls: list[tuple[str, str, str]] = field(default_factory=list)
     intents: dict[str, _IntentState] = field(default_factory=dict)
     now: str = "2026-08-10T12:00:00Z"
@@ -70,9 +78,11 @@ class ScriptedMandateBackend:
         amount = str(payload["amount"])
         self.spend_calls.append((task_id, purpose, service_url))
 
-        if task_id == "intent-a":
-            # Scene A: the application deliberately loses the response after the
-            # real economic action, so Intent A enters UNKNOWN.
+        if task_id == "intent-a" and self.inject_response_loss:
+            # The configured Service A failure control loses the application
+            # response after the real economic action, so Intent A enters
+            # UNKNOWN. The injection marker is explicit so the caller can
+            # verify the loss actually occurred.
             state = _IntentState(
                 intent_id=str(uuid.uuid4()),
                 task_id=task_id,
@@ -90,6 +100,30 @@ class ScriptedMandateBackend:
                 action="request_review",
                 state=state,
                 spent_total="0",
+                injected_response_loss=True,
+            )
+
+        if task_id == "intent-a":
+            # Without the injection control, Service A completes normally.
+            state = _IntentState(
+                intent_id=str(uuid.uuid4()),
+                task_id=task_id,
+                purpose=purpose,
+                service_url=service_url,
+                amount=amount,
+                status="settling",
+                spend_outcome="accepted",
+                economic_safety_action="wait",
+                payment_reference="gateway-x402-ref-a",
+            )
+            self.intents[task_id] = state
+            return _spend_document(
+                outcome="accepted",
+                reason="payment accepted; awaiting official finalization",
+                action="wait",
+                state=state,
+                spent_total="1.00",
+                injected_response_loss=False,
             )
 
         # Scene B: Service A's Circuit Breaker is already open before
@@ -211,6 +245,7 @@ def _spend_document(
     action: str,
     state: _IntentState,
     spent_total: str,
+    injected_response_loss: bool = False,
 ) -> JsonObject:
     receipt: JsonObject | None = None
     if state.status == "settled" and state.payment_reference is not None:
@@ -231,6 +266,7 @@ def _spend_document(
         "intent": _intent_document(state),
         "spent_total": spent_total,
         "receipt": receipt,
+        "injected_response_loss": injected_response_loss,
     }
 
 

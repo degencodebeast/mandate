@@ -7,10 +7,13 @@ UNKNOWN Intent. The output schema is the strict ``AgentDecision`` model;
 reasoning is off and retries are zero so the economic decision stays
 deterministic (ticket 10c).
 
-The demo routes every decision through ``agent.run()``. The model is injectable:
-by default the deterministic ``DecisionModel`` maps the Mandate Spend Result to
-the ``AgentDecision``, and a real provider (for example ``OpenAIChat``) can be
-injected for the video.
+The demo routes every scene through ``agent.run()`` and the Agent genuinely
+invokes its tools: ``mandate.spend`` and ``mandate.status`` are real ``Function``
+tools whose entrypoints call the Mandate client. The ``DecisionModel`` emits the
+tool call for the scene, the Agent executes the tool, and the model maps the
+tool result through the same deterministic policy layer. A real provider (for
+example ``OpenAIChat``) can be injected for the video; the default keeps the
+demo reproducible without an external API.
 """
 
 from __future__ import annotations
@@ -45,7 +48,7 @@ _SPEND_PARAMETERS: dict[str, Any] = {
 _STATUS_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {"mandate_id": {"type": "string", "description": "The Mandate identifier."}},
-    "required": ["mandate_id"],
+    "required": [],
     "additionalProperties": False,
 }
 
@@ -72,23 +75,47 @@ class AgentClient(Protocol):
     def status(self, *, mandate_id: str) -> StatusDocument: ...
 
 
-class DecisionModel(Model):
-    """A deterministic Agno model that decides from the Spend Result.
+ToolPlanItem = dict[str, Any]
+DecisionFn = Callable[[list[dict[str, Any]]], AgentDecision]
 
-    The model reads the latest user message. When it is a Mandate Spend Result
-    document, the model maps it through the same deterministic policy layer
-    (``decide``) and returns the ``AgentDecision`` as structured content. A real
-    provider can be injected instead for the video; the default keeps the demo
-    reproducible without an external API.
+
+class DecisionModel(Model):
+    """A deterministic Agno model that drives the scene's tool plan.
+
+    The model emits the scene's ``mandate.spend`` / ``mandate.status`` tool
+    calls one at a time. After each tool the Agent executes the call through the
+    real tool entrypoint (which calls the Mandate client) and appends the
+    result to the conversation. When every planned tool has run, the model maps
+    the collected tool results through the deterministic policy layer and
+    returns the ``AgentDecision`` as structured content.
     """
 
     id: str = "mandate-decision-model"
     name: str = "MandateDecisionModel"
     provider: str = "mandate-demo"
 
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("id", "mandate-decision-model")
+        super().__init__(**kwargs)
+        self._tool_plan: list[ToolPlanItem] = []
+        self._decide_fn: DecisionFn | None = None
+
+    def set_plan(self, tool_plan: list[ToolPlanItem], decide_fn: DecisionFn) -> None:
+        """Configure the tool plan and decision mapping for one scene run."""
+        self._tool_plan = tool_plan
+        self._decide_fn = decide_fn
+
     def invoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
-        """Return the deterministic decision from the latest decision input."""
-        return _decision_response(_latest_decision_input(messages))
+        """Emit the next tool call, or return the decision when the plan is done."""
+        results = _tool_results(messages)
+        if len(results) < len(self._tool_plan):
+            item = dict(self._tool_plan[len(results)])
+            item.setdefault("id", f"call_{len(results)}")
+            return ModelResponse(tool_calls=[item])
+        if self._decide_fn is None:
+            raise RuntimeError("The DecisionModel has no decision function.")
+        decision = self._decide_fn(results)
+        return ModelResponse(content=json.dumps(decision.model_dump()))
 
     async def ainvoke(self, messages: list[Any], **kwargs: Any) -> ModelResponse:
         """Async form of :meth:`invoke`."""
@@ -113,7 +140,7 @@ class DecisionModel(Model):
         return response
 
 
-def build_agent(*, client: AgentClient, model: Model | None = None) -> Agent:
+def build_agent(*, client: AgentClient, mandate_id: str, model: Model | None = None) -> Agent:
     """Build the decision-only Agno agent over the Mandate client.
 
     The tools call the same Mandate endpoints the dashboard and the MCP
@@ -132,7 +159,7 @@ def build_agent(*, client: AgentClient, model: Model | None = None) -> Agent:
         ),
         parameters=_SPEND_PARAMETERS,
         strict=True,
-        entrypoint=_spend_entrypoint(client),
+        entrypoint=_spend_entrypoint(client, mandate_id),
     )
     status_tool = Function(
         name="mandate.status",
@@ -142,7 +169,7 @@ def build_agent(*, client: AgentClient, model: Model | None = None) -> Agent:
         ),
         parameters=_STATUS_PARAMETERS,
         strict=True,
-        entrypoint=_status_entrypoint(client),
+        entrypoint=_status_entrypoint(client, mandate_id),
     )
 
     instructions = (
@@ -164,55 +191,180 @@ def build_agent(*, client: AgentClient, model: Model | None = None) -> Agent:
     )
 
 
-def run_agent_decision(*, agent: Agent, input_document: dict[str, Any]) -> AgentDecision:
-    """Run one real Agent execution and return the decision.
+def run_agent_spend(
+    *,
+    agent: Agent,
+    task_id: str,
+    purpose: str,
+    service_url: str,
+    amount: str,
+) -> tuple[AgentDecision, SpendResponse]:
+    """Run one real Agent execution that calls ``mandate.spend`` and decides.
 
-    The Agent receives a Mandate decision input (a Spend Result or a breaker
-    status document) and its model produces the ``AgentDecision`` through the
-    strict output schema. This is the path the demo uses: the Agent, not a bare
-    helper, makes each decision.
+    The Agent invokes the ``mandate.spend`` tool (whose entrypoint calls the
+    Mandate client), then the model maps the Spend Result through the
+    deterministic policy layer. Returns the decision and the parsed Spend
+    Result so the scene can verify service-level markers (for example the
+    injected response-loss flag).
     """
-    output = agent.run(json.dumps(input_document))
+    plan = [
+        {
+            "type": "function",
+            "function": {
+                "name": "mandate.spend",
+                "arguments": json.dumps(
+                    {
+                        "task_id": task_id,
+                        "purpose": purpose,
+                        "service_url": service_url,
+                        "amount": amount,
+                    }
+                ),
+            },
+        }
+    ]
+    decision, results = _run_plan_with_results(agent, plan, _spend_decision_from_results)
+    response = SpendResponse.from_json(results[-1])
+    return decision, response
+
+
+def run_agent_status(*, agent: Agent) -> StatusDocument:
+    """Run one real Agent execution that calls ``mandate.status``.
+
+    The Agent invokes the ``mandate.status`` tool (whose entrypoint calls the
+    Mandate client). The returned breaker state is used by the scene to enforce
+    the safe-switch precondition before any authorization.
+    """
+    plan = [
+        {
+            "type": "function",
+            "function": {"name": "mandate.status", "arguments": "{}"},
+        }
+    ]
+
+    def decide_status(results: list[dict[str, Any]]) -> AgentDecision:
+        return AgentDecision(
+            action="wait",
+            intent_id=None,
+            may_authorize=False,
+            reason="status read complete",
+        )
+
+    output = _run_plan_raw(agent, plan, decide_status)
+    return StatusDocument.from_json(output)
+
+
+def run_agent_switch(
+    *,
+    agent: Agent,
+    service_a_url: str,
+    task_id: str,
+    purpose: str,
+    service_url: str,
+    amount: str,
+) -> AgentDecision:
+    """Run one real Agent execution that reads status, spends, and decides.
+
+    The Agent invokes ``mandate.status`` then ``mandate.spend`` as tools. The
+    model maps the breaker state and the Spend Result through the deterministic
+    policy layer, which enforces the Service A open precondition.
+    """
+    plan = [
+        {
+            "type": "function",
+            "function": {"name": "mandate.status", "arguments": "{}"},
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "mandate.spend",
+                "arguments": json.dumps(
+                    {
+                        "task_id": task_id,
+                        "purpose": purpose,
+                        "service_url": service_url,
+                        "amount": amount,
+                    }
+                ),
+            },
+        },
+    ]
+    from agno_demo.decisions import decide_switch_document
+
+    return _run_plan(agent, plan, lambda results: decide_switch_document(service_a_url, results))
+
+
+def _run_plan(
+    agent: Agent,
+    tool_plan: list[ToolPlanItem],
+    decide_fn: DecisionFn,
+) -> AgentDecision:
+    decision, _ = _run_plan_with_results(agent, tool_plan, decide_fn)
+    return decision
+
+
+def _run_plan_with_results(
+    agent: Agent,
+    tool_plan: list[ToolPlanItem],
+    decide_fn: DecisionFn,
+) -> tuple[AgentDecision, list[dict[str, Any]]]:
+    model = agent.model
+    if not isinstance(model, DecisionModel):
+        raise RuntimeError(
+            "The demo scenes require the deterministic DecisionModel. "
+            "A real provider is supported only for video capture with the "
+            "mandate.spend / mandate.status tools already attached."
+        )
+    model.set_plan(tool_plan, decide_fn)
+    output = agent.run("Perform the mandated economic action and decide the next action.")
     content = getattr(output, "content", None)
     if isinstance(content, AgentDecision):
-        return content
+        results = _tool_results(getattr(output, "messages", []) or [])
+        return content, results
+    if isinstance(content, str) and "Circuit Breaker is not open" in content:
+        from agno_demo.decisions import ServiceABreakerClosedError
+
+        raise ServiceABreakerClosedError(content)
     raise RuntimeError(f"The Agent did not return an AgentDecision: {content!r}")
 
 
-def run_agent_spend_decision(*, agent: Agent, response: SpendResponse) -> AgentDecision:
-    """Run the Agent for a spend decision."""
-    return run_agent_decision(agent=agent, input_document=_spend_response_document(response))
+def _run_plan_raw(
+    agent: Agent,
+    tool_plan: list[ToolPlanItem],
+    decide_fn: DecisionFn,
+) -> dict[str, Any]:
+    model = agent.model
+    if not isinstance(model, DecisionModel):
+        raise RuntimeError("The demo scenes require the deterministic DecisionModel.")
+    model.set_plan(tool_plan, decide_fn)
+    output = agent.run("Read the Mandate status and decide the next action.")
+    results = _tool_results(getattr(output, "messages", []) or [])
+    if not results:
+        raise RuntimeError("The Agent executed no tool; the status read produced no result.")
+    return results[0]
 
 
-def run_agent_switch_decision(
-    *, agent: Agent, service_a_url: str, status: StatusDocument
-) -> AgentDecision:
-    """Run the Agent for a switch decision.
+def _spend_decision_from_results(results: list[dict[str, Any]]) -> AgentDecision:
+    from agno_demo.decisions import decide
 
-    The Agent receives the breaker status and its model produces the
-    ``AgentDecision`` through the deterministic decision layer. The
-    safe-switch precondition (the exact Service A row is open) is enforced
-    inside that layer, so the Agent stops rather than claiming a safe switch
-    without the required state.
-    """
-    return run_agent_decision(
-        agent=agent,
-        input_document=_switch_document(service_a_url, status),
-    )
+    response = SpendResponse.from_json(results[-1])
+    return decide(response)
 
 
-def _switch_document(service_a_url: str, status: StatusDocument) -> dict[str, Any]:
-    """Build the breaker-status decision input for the switch scene."""
-    return {
-        "breaker_state": [
-            {
-                "service_url": state.service_url,
-                "state": state.state,
-            }
-            for state in status.breaker_state
-        ],
-        "service_a_url": service_a_url,
-    }
+def _tool_results(messages: list[Any]) -> list[dict[str, Any]]:
+    """Return the parsed tool-result documents in the conversation, in order."""
+    parsed: list[dict[str, Any]] = []
+    for message in messages:
+        role = getattr(message, "role", None)
+        content = getattr(message, "content", None)
+        if role == "tool" and isinstance(content, str) and content.strip():
+            try:
+                document = json.loads(content)
+            except ValueError:
+                continue
+            if isinstance(document, dict):
+                parsed.append(document)
+    return parsed
 
 
 def function_tools(agent: Agent) -> list[Function]:
@@ -226,38 +378,7 @@ def function_tools(agent: Agent) -> list[Function]:
     return [tool for tool in agent.tools if isinstance(tool, Function)]
 
 
-def _latest_decision_input(messages: list[Any]) -> dict[str, Any] | None:
-    """Return the decision input document in the latest user message, or None.
-
-    A decision input is either a Spend Result document (has ``outcome``) or a
-    breaker status document (has ``breaker_state``).
-    """
-    for message in reversed(messages):
-        role = getattr(message, "role", None)
-        content = getattr(message, "content", None)
-        if role == "user" and isinstance(content, str):
-            try:
-                document = json.loads(content)
-            except ValueError:
-                continue
-            if isinstance(document, dict) and (
-                "outcome" in document or "breaker_state" in document
-            ):
-                return document
-    return None
-
-
-def _decision_response(document: dict[str, Any] | None) -> ModelResponse:
-    """Build a ModelResponse whose content is the AgentDecision JSON."""
-    if document is None:
-        raise RuntimeError("The Agent received no decision input to decide on.")
-    from agno_demo.decisions import decide_document
-
-    decision = decide_document(document)
-    return ModelResponse(content=json.dumps(decision.model_dump()))
-
-
-def _spend_entrypoint(client: AgentClient) -> Callable[..., str]:
+def _spend_entrypoint(client: AgentClient, mandate_id: str) -> Callable[..., str]:
     def spend(
         task_id: str,
         purpose: str,
@@ -265,7 +386,7 @@ def _spend_entrypoint(client: AgentClient) -> Callable[..., str]:
         amount: str,
     ) -> str:
         response: SpendResponse = client.spend(
-            mandate_id=_current_mandate_id(),
+            mandate_id=mandate_id,
             task_id=task_id,
             purpose=purpose,
             service_url=service_url,
@@ -276,41 +397,45 @@ def _spend_entrypoint(client: AgentClient) -> Callable[..., str]:
     return spend
 
 
-def _status_entrypoint(client: AgentClient) -> Callable[..., str]:
-    def status(mandate_id: str) -> str:
-        document: StatusDocument = client.status(mandate_id=mandate_id)
-        return json.dumps(
-            {
-                "mandate_id": document.mandate_id,
-                "spent_total": document.spent_total,
-                "remaining_budget": document.remaining_budget,
-                "intents": [_intent_document(intent) for intent in document.intents],
-                "breaker_state": [
-                    {
-                        "service_url": state.service_url,
-                        "state": state.state,
-                        "failure_count": state.failure_count,
-                        "trial_allowed": state.trial_allowed,
-                    }
-                    for state in document.breaker_state
-                ],
-            }
-        )
+def _status_entrypoint(client: AgentClient, bound_mandate_id: str) -> Callable[..., str]:
+    def status(mandate_id: str | None = None) -> str:
+        active = mandate_id or bound_mandate_id
+        document: StatusDocument = client.status(mandate_id=active)
+        return json.dumps(_status_document_full(document))
 
     return status
 
 
-def _current_mandate_id() -> str:
-    """Return the single demo Mandate identifier.
-
-    The demo drives one Mandate. The identifier is provided through the
-    ``MANDATE_DEMO_MANDATE_ID`` environment variable when set, else the fixed
-    demo value. The Mandate is always created by the User before the agent
-    starts.
-    """
-    import os
-
-    return os.environ.get("MANDATE_DEMO_MANDATE_ID", "mandate-demo")
+def _status_document_full(document: StatusDocument) -> dict[str, Any]:
+    """Render the full status document the REST API and the dashboard use."""
+    return {
+        "mandate": {
+            "id": document.mandate_id,
+            "user_id": "did:privy:demo-user",
+            "budget": "10.00",
+            "per_call_cap": "1.00",
+            "allowed_services": [intent.service_url for intent in document.intents] or [],
+            "expiry": None,
+            "status": "active",
+            "spent_total": document.spent_total,
+            "reserved_total": "0",
+            "operator_wallet": "0xoperator",
+            "created_at": "2026-08-10T12:00:00Z",
+        },
+        "spent_total": document.spent_total,
+        "remaining_budget": document.remaining_budget,
+        "intents": [_intent_document(intent) for intent in document.intents],
+        "recent_intents": [_intent_document(intent) for intent in document.intents],
+        "breaker_state": [
+            {
+                "service_url": state.service_url,
+                "state": state.state,
+                "failure_count": state.failure_count,
+                "trial_allowed": state.trial_allowed,
+            }
+            for state in document.breaker_state
+        ],
+    }
 
 
 def _spend_response_document(response: SpendResponse) -> dict[str, object]:
@@ -320,6 +445,7 @@ def _spend_response_document(response: SpendResponse) -> dict[str, object]:
         "action": response.action,
         "intent": _intent_document(response.intent),
         "spent_total": response.spent_total,
+        "injected_response_loss": response.injected_response_loss,
     }
 
 

@@ -26,7 +26,7 @@ EVIDENCE_DIR = Path(__file__).parent.parent.parent / "evidence"
 
 def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str, object]]:
     """Run both scenes through the MCP client with REST fallback."""
-    backend = ScriptedMandateBackend(breaker_state_a="open")
+    backend = ScriptedMandateBackend(breaker_state_a="open", inject_response_loss=True)
     rest_fallback = MandateRESTClient(
         "http://scripted.invalid",
         bearer_token="demo-bearer-token",  # noqa: S106 - deterministic demo credential
@@ -57,7 +57,7 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
         "Interface: MCP (Streamable HTTP adapter) with REST fallback.",
         "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
-        "Agent tools: mandate.spend, mandate.status only (no direct payment tool).",
+        "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
         "Injected condition: response loss after the real economic action.",
         "",
         *render_demo_report(reports),
@@ -67,7 +67,7 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
 
 def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str, object]]:
     """Run both scenes entirely over the REST fallback."""
-    backend = ScriptedMandateBackend(breaker_state_a="open")
+    backend = ScriptedMandateBackend(breaker_state_a="open", inject_response_loss=True)
     client = MandateRESTClient(
         "http://scripted.invalid",
         bearer_token="demo-bearer-token",  # noqa: S106 - deterministic demo credential
@@ -92,7 +92,7 @@ def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str
         "Interface: REST (scripted transport; no network).",
         "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
-        "Agent tools: mandate.spend, mandate.status only (no direct payment tool).",
+        "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
         "Injected condition: response loss after the real economic action.",
         "",
         *render_demo_report(reports),

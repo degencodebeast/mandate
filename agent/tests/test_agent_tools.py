@@ -81,7 +81,7 @@ class RecordingTransport:
 def test_spend_tool_calls_rest_and_returns_the_structured_result() -> None:
     transport = RecordingTransport()
     client = MandateRESTClient(_BASE, bearer_token=_TOKEN, transport=transport)
-    agent = build_agent(client=client)
+    agent = build_agent(client=client, mandate_id="mandate-demo")
 
     spend_tool = next(tool for tool in function_tools(agent) if tool.name == "mandate.spend")
     entrypoint = spend_tool.entrypoint
@@ -101,14 +101,14 @@ def test_spend_tool_calls_rest_and_returns_the_structured_result() -> None:
 def test_status_tool_calls_rest_and_returns_breaker_state() -> None:
     transport = RecordingTransport()
     client = MandateRESTClient(_BASE, bearer_token=_TOKEN, transport=transport)
-    agent = build_agent(client=client)
+    agent = build_agent(client=client, mandate_id="mandate-demo")
 
     status_tool = next(tool for tool in function_tools(agent) if tool.name == "mandate.status")
     entrypoint = status_tool.entrypoint
     assert entrypoint is not None
     document = json.loads(entrypoint("mandate-demo"))
 
-    assert document["mandate_id"] == "mandate-demo"
+    assert document["mandate"]["id"] == "mandate-demo"
     assert document["remaining_budget"] == "10.00"
     assert transport.requests[0]["method"] == "GET"
     assert transport.requests[0]["url"].endswith("/status")

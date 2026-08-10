@@ -163,3 +163,41 @@ def decide_document(document: dict[str, Any]) -> AgentDecision:
         return decide_switch(str(document["service_a_url"]), status)
     response = SpendResponse.from_json(document)
     return decide(response)
+
+
+def decide_switch_document(service_a_url: str, results: list[dict[str, Any]]) -> AgentDecision:
+    """Decide to switch after the Agent read status and spent on Service B.
+
+    ``results`` is the ordered tool-result list: the breaker status document
+    first, then the Spend Result for Service B. The safe-switch precondition
+    (the exact Service A breaker row is open) is enforced here and raised as
+    ``ServiceABreakerClosedError`` when it is not met, so the scene never
+    authorizes Service B without the required state.
+    """
+    if len(results) < 2:
+        raise ServiceABreakerClosedError(
+            "The Agent executed no switch plan; the scene must stop before authorization."
+        )
+    status_document, spend_document = results[0], results[1]
+    from agno_demo.models import BreakerState
+
+    status = StatusDocument(
+        mandate_id="mandate-demo",
+        spent_total="0",
+        remaining_budget="0",
+        intents=[],
+        breaker_state=[
+            BreakerState.from_json(state) for state in status_document.get("breaker_state", [])
+        ],
+    )
+    decision = decide_switch(service_a_url, status)
+    if decision.action != ACTION_SWITCH_SERVICE:
+        raise ServiceABreakerClosedError(
+            "The switch decision did not select SWITCH_SERVICE; the scene must stop."
+        )
+    return AgentDecision(
+        action=decision.action,
+        intent_id=spend_document.get("intent", {}).get("id"),
+        may_authorize=decision.may_authorize,
+        reason=decision.reason,
+    )

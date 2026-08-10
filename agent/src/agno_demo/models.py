@@ -90,7 +90,13 @@ class SpendReceipt:
 
 @dataclass(frozen=True)
 class SpendResponse:
-    """The complete result of one mandate.spend REST call."""
+    """The complete result of one mandate.spend REST call.
+
+    ``injected_response_loss`` is an explicit marker the service returns when
+    the configured failure control actually lost the response. It lets the
+    demo label an injected condition only when the service confirms it
+    occurred (ticket 10c, spec User Story 35).
+    """
 
     outcome: str
     reason: str | None
@@ -98,6 +104,7 @@ class SpendResponse:
     intent: SpendIntent
     spent_total: str
     receipt: SpendReceipt | None
+    injected_response_loss: bool = False
 
     @classmethod
     def from_json(cls, document: dict[str, Any]) -> SpendResponse:
@@ -110,6 +117,7 @@ class SpendResponse:
             intent=SpendIntent.from_json(document["intent"]),
             spent_total=str(document["spent_total"]),
             receipt=SpendReceipt.from_json(receipt) if receipt is not None else None,
+            injected_response_loss=bool(document.get("injected_response_loss") or False),
         )
 
 

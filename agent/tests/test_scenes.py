@@ -1,21 +1,21 @@
 """Scene orchestration behavior tests.
 
-Scene A (freeze) proves: one real Payment Authorization for Intent A, an
-injected response loss, UNKNOWN outcome, the agent chooses WAIT or
-REQUEST_REVIEW, no second authorization, and Service B receives no payment for
-Intent A.
+Scene A (freeze) proves: the Agent calls ``mandate.spend`` exactly once for
+Intent A on Service A, the injected response loss produces an UNKNOWN outcome,
+the Agent chooses WAIT or REQUEST_REVIEW, no second authorization happens, and
+Service B receives no payment for Intent A.
 
-Scene B (switch) proves: Service A's Circuit Breaker is already open before
-authorization, no Payment Authorization to Service A for Intent B, the agent
-selects Service B, one paid action completes, and one Receipt Anchor records
-the finalized Payment Reference.
+Scene B (switch) proves: the scene enforces the exact Service A breaker row
+being open before authorization, the Agent selects Service B, one paid action
+completes, and one Receipt Anchor records the finalized Payment Reference.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from agno_demo.decisions import AgentDecision, ServiceABreakerClosedError
+from agno_demo.agent import build_agent
+from agno_demo.decisions import ServiceABreakerClosedError
 from agno_demo.models import (
     BreakerState,
     SpendIntent,
@@ -30,7 +30,7 @@ SERVICE_B = "https://service-b.example.com"
 
 
 class ScriptedSceneBackend:
-    """A scripted Mandate REST backend for the two scenes.
+    """A scripted Mandate client the Agent's tools call.
 
     It records every spend call so tests can prove payment-adapter invocation
     count and which service received payment.
@@ -41,7 +41,6 @@ class ScriptedSceneBackend:
         self.resolve_calls: list[tuple[str, str]] = []
         self.breaker_state = "closed"
         self.intent_a_outcome = "unknown"
-        self.intent_b_outcome = "accepted"
         self.receipt_anchor_b: str | None = "0xreceipt-anchor-b"
 
     def spend(
@@ -118,6 +117,7 @@ class ScriptedSceneBackend:
             ),
             spent_total="0",
             receipt=None,
+            injected_response_loss=self.intent_a_outcome == "unknown",
         )
 
     def _intent_b_spend(self, purpose: str, service_url: str, amount: str) -> SpendResponse:
@@ -224,8 +224,10 @@ def _intent(
 
 def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     backend = ScriptedSceneBackend()
+    backend.breaker_state = "closed"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
     scene = FreezeScene(
-        client=backend,
+        agent=agent,
         status_client=backend,
         mandate_id="mandate-1",
         intent_a_task="intent-a",
@@ -239,10 +241,9 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     result: SceneResult = scene.run()
 
     assert result.scene == "freeze"
-    assert isinstance(result.decision, AgentDecision)
     assert result.decision.action in ("wait", "request_review")
     assert result.decision.may_authorize is False
-    assert result.intent_id == "intent-a"
+    assert result.agent_intent_id == "intent-a"
     assert result.injected_response_loss is True
     assert len(backend.spend_calls) == 1
     assert backend.spend_calls[0] == ("intent-a", "buy a research report", SERVICE_A)
@@ -251,8 +252,11 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
 
 def test_freeze_scene_does_not_label_without_a_configured_injection() -> None:
     backend = ScriptedSceneBackend()
+    backend.breaker_state = "closed"
+    backend.intent_a_outcome = "accepted"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
     scene = FreezeScene(
-        client=backend,
+        agent=agent,
         status_client=backend,
         mandate_id="mandate-1",
         intent_a_task="intent-a",
@@ -265,14 +269,39 @@ def test_freeze_scene_does_not_label_without_a_configured_injection() -> None:
 
     result: SceneResult = scene.run()
 
-    assert result.decision.action in ("wait", "request_review")
+    assert result.decision.action == "wait"
     assert result.injected_response_loss is False
+
+
+def test_freeze_scene_rejects_an_unverified_injection() -> None:
+    backend = ScriptedSceneBackend()
+    backend.breaker_state = "closed"
+    backend.intent_a_outcome = "accepted"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = FreezeScene(
+        agent=agent,
+        status_client=backend,
+        mandate_id="mandate-1",
+        intent_a_task="intent-a",
+        intent_a_purpose="buy a research report",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        inject_response_loss=True,
+    )
+
+    with pytest.raises(RuntimeError):
+        scene.run()
+
+    assert len(backend.spend_calls) == 1
 
 
 def test_switch_scene_selects_service_b_before_authorization() -> None:
     backend = ScriptedSceneBackend()
     backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
     scene = SwitchScene(
+        agent=agent,
         status_client=backend,
         spend_client=backend,
         mandate_id="mandate-1",
@@ -300,7 +329,9 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
 def test_switch_scene_stops_when_service_a_breaker_is_closed() -> None:
     backend = ScriptedSceneBackend()
     backend.breaker_state = "closed"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
     scene = SwitchScene(
+        agent=agent,
         status_client=backend,
         spend_client=backend,
         mandate_id="mandate-1",
