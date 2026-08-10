@@ -411,21 +411,20 @@ class MandateSpendService:
         """Block an Intent whose official reference state is a final failure.
 
         The official boundary reports ``failed``: the payment definitively did
-        not settle. The Circuit Breaker records a failure for the exact owner
-        and trial epoch (ticket 11 gate Major): accepted is not confirmed
-        settlement, so success was deferred until the terminal result. One
-        failed transfer adds at most one breaker failure: the atomic claim
-        lets exactly one concurrent resolver record it, and retries or
-        concurrent status checks have no further effect (ticket 11 gate Major).
-        The reserved authority is released and the Intent blocks in one atomic,
-        one-owner operation.
+        not settle. The Circuit Breaker records the durable terminal outcome for
+        this Intent exactly once, atomically with its claim flag (ticket 11
+        gate Major): accepted is not confirmed settlement, so success was
+        deferred until the terminal result, and a process stop cannot strand a
+        claimed-but-unrecorded failure. The reserved authority is released and
+        the Intent blocks in one atomic, one-owner operation.
         """
-        if self._intent_store.claim_breaker_failure(intent_id=intent.id):
-            self._breaker.record_failure(
-                service_url=intent.service_url,
-                owner=str(intent.id),
-                trial_epoch=intent.breaker_trial_epoch,
-            )
+        self._breaker.record_terminal_outcome(
+            intent_id=intent.id,
+            service_url=intent.service_url,
+            owner=str(intent.id),
+            trial_epoch=intent.breaker_trial_epoch,
+            outcome="failed",
+        )
         blocked = self._intent_store.block_and_release_reservation(intent_id=intent.id)
         return SpendResponse(
             outcome="blocked: payment_failed",
@@ -446,15 +445,19 @@ class MandateSpendService:
     ) -> SpendResponse:
         """Finalize an Intent whose reference reached the official completed state.
 
-        The Circuit Breaker records success only now: accepted is not confirmed
-        settlement, so the outcome is deferred to the terminal official result
-        (ticket 11 gate Major). The finalizer requires the durable
+        The Circuit Breaker records the durable terminal outcome for this Intent
+        exactly once, atomically with its claim flag (ticket 11 gate Major):
+        accepted is not confirmed settlement, so success was deferred until the
+        terminal result, and a delayed duplicate success cannot erase a newer
+        independent failure. The finalizer requires the durable
         ``payment_state == completed`` before creating a Receipt.
         """
-        self._breaker.record_success(
+        self._breaker.record_terminal_outcome(
+            intent_id=intent.id,
             service_url=intent.service_url,
             owner=str(intent.id),
             trial_epoch=intent.breaker_trial_epoch,
+            outcome="completed",
         )
         return self._finalize(
             intent=intent,

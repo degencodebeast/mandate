@@ -22,6 +22,7 @@ Other service URLs are unaffected because the state is keyed by service_url.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -123,6 +124,33 @@ class CircuitBreaker:
         """
         return self._store.record_success(
             service_url=service_url, owner=owner, trial_epoch=trial_epoch
+        )
+
+    def record_terminal_outcome(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        outcome: str,
+    ) -> BreakerState:
+        """Record the durable terminal breaker outcome for one Intent exactly once.
+
+        The claim flag and the breaker change commit atomically (ticket 11 gate
+        Major). One finalized transfer affects the Circuit Breaker exactly once:
+        a process stop cannot strand a claimed-but-unrecorded failure, and a
+        delayed duplicate completed or failed result cannot erase a newer
+        independent outcome. ``outcome`` is ``completed`` or ``failed``.
+        """
+        return self._store.record_terminal_outcome(
+            intent_id=intent_id,
+            service_url=service_url,
+            owner=owner,
+            trial_epoch=trial_epoch,
+            outcome=outcome,
+            now=self._now(),
+            failure_threshold=self._failure_threshold,
         )
 
     def consume_trial(self, *, service_url: str, owner: str) -> BreakerState | None:

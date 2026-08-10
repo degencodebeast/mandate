@@ -650,8 +650,12 @@ _0009_VERSION = "0009_intent_breaker_failure_recorded"
 def _downgrade_to_pre_0009() -> None:
     """Return the intents schema to the pre-0009 state for the upgrade test."""
     with psycopg.connect(_DATABASE_URL) as connection:
-        connection.execute("ALTER TABLE intents DROP COLUMN breaker_failure_recorded")
+        connection.execute("ALTER TABLE intents DROP COLUMN breaker_outcome_recorded")
         connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0009_VERSION,))
+        connection.execute(
+            "DELETE FROM schema_migrations WHERE version = %s",
+            ("0010_intent_breaker_outcome_recorded",),
+        )
 
 
 def test_migration_0009_adds_breaker_failure_flag(reset_database: None) -> None:
@@ -692,8 +696,66 @@ def test_migration_0009_adds_breaker_failure_flag(reset_database: None) -> None:
 
     with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
         rows = connection.execute(
-            "SELECT breaker_failure_recorded FROM intents WHERE mandate_id = %s",
+            "SELECT breaker_outcome_recorded FROM intents WHERE mandate_id = %s",
             (mandate_id,),
         ).fetchall()
     assert len(rows) == 1
-    assert rows[0]["breaker_failure_recorded"] is False
+    assert rows[0]["breaker_outcome_recorded"] is False
+
+
+_0010_VERSION = "0010_intent_breaker_outcome_recorded"
+
+
+def _downgrade_to_pre_0010() -> None:
+    """Return the intents schema to the pre-0010 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            "ALTER TABLE intents RENAME COLUMN breaker_outcome_recorded TO breaker_failure_recorded"
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0010_VERSION,))
+
+
+def test_migration_0010_renames_breaker_outcome_flag(reset_database: None) -> None:
+    _downgrade_to_pre_0010()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '0',
+                      '0', '0', NULL, NULL, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:erc8004:migration-agent",
+                "10.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO intents (
+                id, mandate_id, purpose_hash, service_url, amount, status,
+                tx_hash, created_at, settled_at, retry_count, fee_amount,
+                fee_tx_hash, payment_reference, breaker_failure_recorded
+            ) VALUES (%s, %s, %s, %s, '0.25', 'settling', NULL, now(), NULL,
+                      0, NULL, NULL, '3e80e924-6263-4393-b639-b4ab56da6925',
+                      true)
+            """,
+            (uuid.uuid4(), mandate_id, "legacy-0010-hash", _SERVICE_URL),
+        )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            "SELECT breaker_outcome_recorded FROM intents WHERE mandate_id = %s",
+            (mandate_id,),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["breaker_outcome_recorded"] is True

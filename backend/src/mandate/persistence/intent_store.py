@@ -38,7 +38,7 @@ _SELECT_INTENT = """
            status, tx_hash, created_at, settled_at, retry_count,
            fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
            reference_type, payment_state, batch_tx_hash, breaker_trial_epoch,
-           breaker_failure_recorded
+           breaker_outcome_recorded
     FROM intents
 """
 
@@ -130,8 +130,6 @@ class IntentStore(Protocol):
 
     def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent: ...
 
-    def claim_breaker_failure(self, *, intent_id: uuid.UUID) -> bool: ...
-
     def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool: ...
 
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
@@ -159,7 +157,7 @@ class Intent:
     payment_state: str | None = None
     batch_tx_hash: str | None = None
     breaker_trial_epoch: int = 0
-    breaker_failure_recorded: bool = False
+    breaker_outcome_recorded: bool = False
 
 
 class PostgresIntentStore:
@@ -272,7 +270,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_failure_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (
                     status,
@@ -327,7 +325,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch, breaker_failure_recorded
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (reference, reference_type, payment_state, breaker_trial_epoch, intent_id),
             ).fetchone()
@@ -369,34 +367,13 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash, breaker_trial_epoch, breaker_failure_recorded
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (payment_state, batch_tx_hash, intent_id),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
         return self._from_row(row)
-
-    def claim_breaker_failure(self, *, intent_id: uuid.UUID) -> bool:
-        """Atomically claim the one breaker-failure record for an Intent.
-
-        One failed transfer adds at most one Circuit Breaker failure (ticket 11
-        gate Major). The compare-and-set claim sets ``breaker_failure_recorded``
-        only when it is still false, so exactly one caller wins the claim and
-        records the failure; concurrent or retried resolutions lose the claim
-        and have no further effect.
-        """
-        with psycopg.connect(self._database_url) as connection:
-            row = connection.execute(
-                """
-                UPDATE intents
-                SET breaker_failure_recorded = true
-                WHERE id = %s AND breaker_failure_recorded = false
-                RETURNING id
-                """,
-                (intent_id,),
-            ).fetchone()
-        return row is not None
 
     def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool:
         """Return whether the Intent is an accepted transfer still pending.
@@ -440,7 +417,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_failure_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -473,7 +450,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_failure_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -552,7 +529,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_failure_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -614,7 +591,7 @@ class PostgresIntentStore:
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state, batch_tx_hash,
-                          breaker_trial_epoch, breaker_failure_recorded
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (intent_id,),
             ).fetchone()
@@ -688,7 +665,7 @@ class PostgresIntentStore:
             payment_state=row["payment_state"],
             batch_tx_hash=row["batch_tx_hash"],
             breaker_trial_epoch=row["breaker_trial_epoch"],
-            breaker_failure_recorded=row["breaker_failure_recorded"],
+            breaker_outcome_recorded=row["breaker_outcome_recorded"],
         )
 
 

@@ -470,3 +470,147 @@ def test_concurrent_failed_resolutions_add_at_most_one_breaker_failure(
         ).fetchone()
     assert row is not None
     assert row["failure_count"] == 1
+
+
+class CrashOnFirstBreakerOutcome:
+    """Raise on the first terminal breaker outcome, then delegate (crash retry).
+
+    Simulates a process stop: the Postgres transaction for the claim + breaker
+    change rolls back, so a retry must complete the same durable outcome
+    exactly once (ticket 11 gate Major).
+    """
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self._crashed = False
+
+    def record_terminal_outcome(self, **kwargs: object) -> Any:
+        if not self._crashed:
+            self._crashed = True
+            raise RuntimeError("process stopped mid-transaction")
+        return self._delegate.record_terminal_outcome(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def test_failed_resolve_retry_after_process_stop_still_records_failure(
+    client: TestClient,
+) -> None:
+
+    from mandate.persistence.breaker_store import PostgresBreakerStateStore
+    from mandate.spend.breaker import CircuitBreaker
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    crashing = CrashOnFirstBreakerOutcome(breaker_store)
+    breaker = CircuitBreaker(store=crashing, failure_threshold=3, cooldown_seconds=60)
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=Executor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        transfer_status_inspector=StatusInspector("failed"),
+    )
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+    )
+    test_client = TestClient(app, raise_server_exceptions=False)
+    test_client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+    _spend(test_client, mandate.id)
+
+    first = _resolve(test_client, mandate.id)
+    assert first.status_code == 500
+
+    retry = _resolve(test_client, mandate.id)
+    assert retry.status_code == 200
+    assert retry.json()["outcome"] == "blocked: payment_failed"
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        row = connection.execute(
+            "SELECT failure_count FROM breaker_state WHERE service_url = %s",
+            (_SERVICE_URL,),
+        ).fetchone()
+        intent_row = connection.execute(
+            "SELECT breaker_outcome_recorded FROM intents WHERE mandate_id = %s",
+            (mandate.id,),
+        ).fetchone()
+    assert row is not None
+    assert row["failure_count"] == 1
+    assert intent_row is not None
+    assert intent_row["breaker_outcome_recorded"] is True
+
+
+def test_delayed_duplicate_completed_does_not_erase_newer_failure(
+    client: TestClient,
+) -> None:
+    from mandate.persistence.breaker_store import PostgresBreakerStateStore
+    from mandate.spend.breaker import CircuitBreaker
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    first_mandate = _create_mandate(store)
+    second_mandate = _create_mandate(store)
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    breaker = CircuitBreaker(store=breaker_store, failure_threshold=3, cooldown_seconds=60)
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=Executor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        transfer_status_inspector=StatusInspector("completed"),
+    )
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+    )
+    test_client = TestClient(app)
+    test_client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+
+    _spend(test_client, first_mandate.id)
+    first_resolved = _resolve(test_client, first_mandate.id)
+    assert first_resolved.status_code == 200
+    assert first_resolved.json()["outcome"] == "permitted"
+    assert _breaker_failure_count(breaker_store, _SERVICE_URL) == 0
+
+    failed_inspector = StatusInspector("failed")
+    failed_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=Executor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        transfer_status_inspector=failed_inspector,
+    )
+    failed_app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=failed_service,
+    )
+    failed_client = TestClient(failed_app)
+    failed_client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+    _spend(failed_client, second_mandate.id)
+    failed_resolved = _resolve(failed_client, second_mandate.id)
+    assert failed_resolved.status_code == 200
+    assert failed_resolved.json()["outcome"] == "blocked: payment_failed"
+    assert _breaker_failure_count(breaker_store, _SERVICE_URL) == 1
+
+    delayed = _resolve(test_client, first_mandate.id)
+    assert delayed.status_code == 200
+    assert delayed.json()["outcome"] == "blocked: duplicate_intent"
+    assert _breaker_failure_count(breaker_store, _SERVICE_URL) == 1
+
+
+def _breaker_failure_count(store: Any, service_url: str) -> int:
+    state = store.get_or_create_state(service_url=service_url)
+    return state.failure_count
