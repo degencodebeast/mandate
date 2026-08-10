@@ -426,7 +426,7 @@ class MandateSpendService:
             outcome="failed",
         )
         blocked = self._intent_store.block_and_release_reservation(intent_id=intent.id)
-        return SpendResponse(
+        return self._recorded_response(
             outcome="blocked: payment_failed",
             reason="The official Gateway status reports the payment failed.",
             intent=blocked,
@@ -479,7 +479,7 @@ class MandateSpendService:
         reference through the official status boundary to finalize. No new
         Payment Authorization is issued.
         """
-        return SpendResponse(
+        return self._recorded_response(
             outcome=OUTCOME_ACCEPTED,
             reason=REASON_ACCEPTED,
             intent=intent,
@@ -643,7 +643,7 @@ class MandateSpendService:
                 fee_tx_hash=settled.fee_tx_hash,
                 receipt_anchor=settled.receipt_anchor,
             )
-            return SpendResponse(
+            return self._recorded_response(
                 outcome="permitted",
                 reason=None,
                 intent=settled,
@@ -786,7 +786,7 @@ class MandateSpendService:
             fee_tx_hash=intent.fee_tx_hash,
             receipt_anchor=intent.receipt_anchor,
         )
-        return SpendResponse(
+        return self._recorded_response(
             outcome="blocked: duplicate_intent",
             reason=(
                 REASON_ALREADY_SETTLED
@@ -821,7 +821,7 @@ class MandateSpendService:
         The only permitted actions are WAIT and REQUEST_REVIEW (CONTEXT.md). No
         new Payment Authorization is issued for this intent.
         """
-        return SpendResponse(
+        return self._recorded_response(
             outcome=OUTCOME_UNKNOWN,
             reason=REASON_UNKNOWN_FROZEN,
             intent=intent,
@@ -855,11 +855,37 @@ class MandateSpendService:
         action: str,
     ) -> SpendResponse:
         """Build a blocked SpendResponse without a receipt."""
-        return SpendResponse(
+        return self._recorded_response(
             outcome=outcome,
             reason=reason,
             intent=intent,
             receipt=None,
             spent_total=mandate.spent_total,
+            action=action,
+        )
+
+    def _recorded_response(
+        self,
+        *,
+        outcome: str,
+        reason: str | None,
+        intent: Intent,
+        receipt: SpendReceipt | None,
+        spent_total: str,
+        action: str,
+    ) -> SpendResponse:
+        """Persist the exact Spend Result before returning it."""
+        recorded = self._intent_store.record_spend_result(
+            intent_id=intent.id,
+            outcome=outcome,
+            reason=reason,
+            action=action,
+        )
+        return SpendResponse(
+            outcome=outcome,
+            reason=reason,
+            intent=recorded,
+            receipt=receipt,
+            spent_total=spent_total,
             action=action,
         )

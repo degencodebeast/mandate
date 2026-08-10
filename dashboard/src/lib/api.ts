@@ -36,7 +36,9 @@ export interface IntentRecord {
   amount: string;
   status: string;
   economic_safety_state: string;
-  permitted_actions: string[];
+  spend_outcome: string | null;
+  reason: string | null;
+  economic_safety_action: string | null;
   created_at: string;
   settled_at: string | null;
   retry_count: number;

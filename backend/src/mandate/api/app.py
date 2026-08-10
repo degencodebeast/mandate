@@ -524,17 +524,6 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
 
 def _intent_to_json(intent: Intent) -> dict[str, object]:
     """Render one intent as a safe JSON document."""
-    state = intent.status.upper()
-    if state == "UNKNOWN":
-        permitted_actions = ["WAIT", "REQUEST_REVIEW"]
-    elif state == "SETTLED":
-        permitted_actions = ["CONTINUE"]
-    elif state == "BLOCKED":
-        permitted_actions = (
-            ["SWITCH_SERVICE"] if intent.payment_state == "failed" else ["REQUEST_REVIEW"]
-        )
-    else:
-        permitted_actions = ["WAIT"]
     return {
         "id": str(intent.id),
         "mandate_id": str(intent.mandate_id),
@@ -542,8 +531,10 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "service_url": intent.service_url,
         "amount": intent.amount,
         "status": intent.status,
-        "economic_safety_state": state,
-        "permitted_actions": permitted_actions,
+        "economic_safety_state": intent.status.upper(),
+        "spend_outcome": intent.spend_outcome,
+        "reason": intent.spend_reason,
+        "economic_safety_action": intent.economic_safety_action,
         "created_at": intent.created_at.isoformat(),
         "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
         "retry_count": intent.retry_count,

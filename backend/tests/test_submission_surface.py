@@ -1,6 +1,7 @@
 """Public submission claim tests for ticket 12."""
 
 import re
+import zipfile
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -35,3 +36,28 @@ def test_public_package_and_receipt_contract_use_truthful_boundary_names() -> No
     assert "feeTxHash" not in registry
     assert "authorityId" in registry
     assert "paymentReference" in registry
+
+
+def test_pitch_and_video_script_keep_the_truthful_submission_boundary() -> None:
+    pitch = _ROOT / "evidence" / "Mandate-Hackathon-Pitch.pptx"
+    video_script = (_ROOT / "evidence" / "demo-video-script.md").read_text()
+
+    assert pitch.exists()
+    with zipfile.ZipFile(pitch) as archive:
+        slides = sorted(
+            name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+        )
+        slide_text = " ".join(archive.read(name).decode() for name in slides)
+
+    assert len(slides) == 8
+    assert "NO BLIND RETRIES" in slide_text
+    assert "ONE PAYMENT" not in slide_text
+    assert "No new wallet" not in slide_text
+    assert "No new agent framework" not in slide_text
+    assert "No replacement for Circle" not in slide_text
+    assert "ERC-8004" not in slide_text
+    assert "MCP" not in slide_text
+    assert "Payment Reference" in video_script
+    assert "Receipt Anchor" in video_script
+    assert "ERC-8004" not in video_script
+    assert "MCP" not in video_script

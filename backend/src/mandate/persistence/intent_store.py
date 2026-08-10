@@ -38,7 +38,8 @@ _SELECT_INTENT = """
            status, tx_hash, created_at, settled_at, retry_count,
            fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
            reference_type, payment_state, batch_tx_hash, breaker_trial_epoch,
-           breaker_outcome_recorded
+           breaker_outcome_recorded, spend_outcome, spend_reason,
+           economic_safety_action
     FROM intents
 """
 
@@ -86,6 +87,15 @@ class IntentStore(Protocol):
     def get_intent(self, *, mandate_id: uuid.UUID, purpose_hash: str) -> Intent | None: ...
 
     def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]: ...
+
+    def record_spend_result(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        outcome: str,
+        reason: str | None,
+        action: str,
+    ) -> Intent: ...
 
     def transition(
         self,
@@ -158,6 +168,9 @@ class Intent:
     batch_tx_hash: str | None = None
     breaker_trial_epoch: int = 0
     breaker_outcome_recorded: bool = False
+    spend_outcome: str | None = None
+    spend_reason: str | None = None
+    economic_safety_action: str | None = None
 
 
 class PostgresIntentStore:
@@ -236,6 +249,30 @@ class PostgresIntentStore:
                 (mandate_id, limit),
             ).fetchall()
         return [self._from_row(row) for row in rows]
+
+    def record_spend_result(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        outcome: str,
+        reason: str | None,
+        action: str,
+    ) -> Intent:
+        """Store the exact Spend Result returned for this Intent."""
+        with psycopg.connect(self._database_url) as connection:
+            result = connection.execute(
+                """
+                UPDATE intents
+                SET spend_outcome = %s,
+                    spend_reason = %s,
+                    economic_safety_action = %s
+                WHERE id = %s
+                """,
+                (outcome, reason, action, intent_id),
+            )
+            if result.rowcount != 1:
+                raise IntentNotFoundError("The intent does not exist.")
+        return self._reload(intent_id)
 
     def transition(
         self,
@@ -668,6 +705,9 @@ class PostgresIntentStore:
             batch_tx_hash=row["batch_tx_hash"],
             breaker_trial_epoch=row["breaker_trial_epoch"],
             breaker_outcome_recorded=row["breaker_outcome_recorded"],
+            spend_outcome=row.get("spend_outcome"),
+            spend_reason=row.get("spend_reason"),
+            economic_safety_action=row.get("economic_safety_action"),
         )
 
 

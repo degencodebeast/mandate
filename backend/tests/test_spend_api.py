@@ -240,6 +240,25 @@ def test_spend_to_disallowed_service_blocks(components: Components) -> None:
     assert components.payments.calls == []
 
 
+def test_status_returns_the_exact_recorded_spend_action(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+
+    blocked = _spend(
+        components,
+        mandate.id,
+        service_url="https://service-b.example.com",
+    )
+    status = components.client.get(f"/api/v1/mandates/{mandate.id}")
+
+    assert blocked.json()["outcome"] == "blocked: service_not_allowed"
+    assert blocked.json()["action"] == "switch_service"
+    assert status.status_code == 200
+    intent = status.json()["recent_intents"][0]
+    assert intent["spend_outcome"] == "blocked: service_not_allowed"
+    assert intent["economic_safety_action"] == "switch_service"
+    assert intent["reason"] == blocked.json()["reason"]
+
+
 def test_spend_on_expired_mandate_blocks(components: Components) -> None:
     mandate = _create_mandate(components.store, expiry=datetime.now(UTC) - timedelta(minutes=1))
 

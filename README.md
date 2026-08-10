@@ -98,16 +98,15 @@ The same unresolved Intent cannot authorize payment again.
 ## Economic Safety State
 
 The spend REST response includes the outcome, reason, and current action. The
-status REST response includes the stored Economic Safety State and permitted
-actions.
+status REST response returns that exact stored Spend Result with the Economic
+Safety State.
 
 | State | Meaning | Permitted action |
 |---|---|---|
-| `SETTLED` | The exact Payment Reference has a final success state. | `CONTINUE` |
+| `SETTLED` | The exact Payment Reference has a final success state. | `NONE` |
 | `UNKNOWN` | Value may have moved. Mandate freezes new authorization. | `WAIT` or `REQUEST_REVIEW` |
-| `BLOCKED` | Policy or the Circuit Breaker denies authorization. | Reduce scope or use a separate Intent. |
-| `ALREADY_IN_PROGRESS` | Another caller owns the Intent transition. | `WAIT` |
-| `DENIED` | The request is outside the User-created mandate. | Ask the User to change the mandate. |
+| `SETTLING` | The Payment Reference awaits an exact final state. | `WAIT` |
+| `BLOCKED` | A named policy rule or final payment state denies authorization. | The exact stored action, such as `NONE` or `SWITCH_SERVICE`. |
 
 Service switching is safe only before authorization, after an exact final
 rejection, or for a separate Intent.

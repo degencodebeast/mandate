@@ -759,3 +759,78 @@ def test_migration_0010_renames_breaker_outcome_flag(reset_database: None) -> No
         ).fetchall()
     assert len(rows) == 1
     assert rows[0]["breaker_outcome_recorded"] is True
+
+
+_0011_VERSION = "0011_intent_spend_result"
+
+
+def _downgrade_to_pre_0011() -> None:
+    """Return the intents schema to the pre-0011 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            ALTER TABLE intents
+                DROP COLUMN spend_outcome,
+                DROP COLUMN spend_reason,
+                DROP COLUMN economic_safety_action
+            """
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0011_VERSION,))
+
+
+def test_migration_0011_backfills_only_unambiguous_spend_results(
+    reset_database: None,
+) -> None:
+    _downgrade_to_pre_0011()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '1.00',
+                      '0', '0', NULL, NULL, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:privy:migration-user",
+                "10.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO intents (
+                id, mandate_id, purpose_hash, service_url, amount, status,
+                tx_hash, created_at, settled_at, retry_count
+            ) VALUES
+                (%s, %s, 'settled-hash', %s, '1.00', 'settled',
+                 'gateway-reference', now(), now(), 0),
+                (%s, %s, 'blocked-hash', %s, '2.00', 'blocked',
+                 NULL, now(), NULL, 0)
+            """,
+            (uuid.uuid4(), mandate_id, _SERVICE_URL, uuid.uuid4(), mandate_id, _SERVICE_URL),
+        )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            """
+            SELECT purpose_hash, spend_outcome, spend_reason, economic_safety_action
+            FROM intents WHERE mandate_id = %s ORDER BY purpose_hash
+            """,
+            (mandate_id,),
+        ).fetchall()
+
+    assert rows[0]["purpose_hash"] == "blocked-hash"
+    assert rows[0]["spend_outcome"] is None
+    assert rows[0]["spend_reason"] is None
+    assert rows[0]["economic_safety_action"] is None
+    assert rows[1]["purpose_hash"] == "settled-hash"
+    assert rows[1]["spend_outcome"] == "permitted"
+    assert rows[1]["economic_safety_action"] == "none"

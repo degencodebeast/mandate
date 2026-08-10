@@ -18,7 +18,7 @@ function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCop
     };
   }
   const state = intent.economic_safety_state;
-  const action = intent.permitted_actions.join(" or ");
+  const action = intent.economic_safety_action?.toUpperCase() ?? "NO RECORDED ACTION";
   switch (state.toLowerCase()) {
     case "settled":
       return {

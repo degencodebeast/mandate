@@ -158,7 +158,8 @@ def test_get_mandate_status_returns_budget_meter_data(components: Components) ->
     assert document["remaining_budget"] == "10.00"
     assert document["recent_intents"][0]["service_url"] == _SERVICE_URL
     assert document["recent_intents"][0]["economic_safety_state"] == "PENDING"
-    assert document["recent_intents"][0]["permitted_actions"] == ["WAIT"]
+    assert document["recent_intents"][0]["spend_outcome"] is None
+    assert document["recent_intents"][0]["economic_safety_action"] is None
     assert document["breaker_state"][0]["service_url"] == _SERVICE_URL
     assert document["breaker_state"][0]["state"] == "closed"
     assert "agent_identity" not in document["mandate"]
