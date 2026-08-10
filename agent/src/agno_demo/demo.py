@@ -1,6 +1,6 @@
 """Run the Mandate Agno demo (ticket 10c).
 
-The demo runs two scenes against the Mandate REST API:
+The demo runs two scenes against the Mandate Service:
 
 - Scene A (freeze): Intent A on Service A, injected response loss, UNKNOWN,
   WAIT or REQUEST_REVIEW, no second authorization, no payment to Service B.
@@ -9,11 +9,15 @@ The demo runs two scenes against the Mandate REST API:
   Anchor.
 
 The User creates the Mandate before the agent starts. The agent has no direct
-payment tool; every economic action goes through the Mandate REST endpoints.
+payment tool; every economic action goes through the Mandate interface. The
+agent calls ``mandate.spend`` and ``mandate.status`` through MCP when ticket 12a
+passes, with REST as the fallback (ADR-0033).
 
 Usage:
 
     uv run python -m agno_demo.demo \
+      --mcp-endpoint http://localhost:8000/mcp \
+      --mcp-credential <one-mandate-credential> \
       --base-url http://localhost:8000 \
       --bearer-token <token> \
       --mandate-id <id> \
@@ -21,22 +25,43 @@ Usage:
       --task-b intent-b --purpose-b "buy market data" \
       --service-a https://service-a.example.com \
       --service-b https://service-b.example.com
+
+Without ``--mcp-endpoint`` the demo runs entirely over REST.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+from typing import Protocol
 
 from agno_demo.decisions import decide
-from agno_demo.models import StatusDocument
+from agno_demo.models import SpendResponse, StatusDocument
 from agno_demo.report import build_scene_report, render_demo_report
 from agno_demo.rest import MandateRESTClient
 
 
+class DemoClient(Protocol):
+    """The client surface both scenes need."""
+
+    def spend(
+        self,
+        *,
+        mandate_id: str,
+        task_id: str,
+        purpose: str,
+        service_url: str,
+        amount: str,
+    ) -> SpendResponse: ...
+
+    def status(self, *, mandate_id: str) -> StatusDocument: ...
+
+    def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse: ...
+
+
 def run_demo(
     *,
-    client: MandateRESTClient,
+    client: DemoClient,
     mandate_id: str,
     task_a: str,
     purpose_a: str,
@@ -114,6 +139,20 @@ def run_demo(
     return reports
 
 
+def _build_client(args: argparse.Namespace) -> DemoClient:
+    """Build the MCP client with REST fallback, or the REST client alone."""
+    rest = MandateRESTClient(args.base_url, bearer_token=args.bearer_token)
+    if not args.mcp_endpoint:
+        return rest
+    from agno_demo.mcp_client import McpMandateClient
+
+    return McpMandateClient(
+        endpoint=args.mcp_endpoint,
+        credential=args.mcp_credential,
+        rest_fallback=rest,
+    )
+
+
 def main() -> None:
     """Entry point for the demo CLI."""
     parser = argparse.ArgumentParser(description="Run the Mandate Agno demo.")
@@ -121,6 +160,10 @@ def main() -> None:
         "--base-url", default=os.environ.get("MANDATE_DEMO_BASE_URL", "http://localhost:8000")
     )
     parser.add_argument("--bearer-token", default=os.environ.get("MANDATE_DEMO_TOKEN", ""))
+    parser.add_argument("--mcp-endpoint", default=os.environ.get("MANDATE_DEMO_MCP_ENDPOINT", ""))
+    parser.add_argument(
+        "--mcp-credential", default=os.environ.get("MANDATE_DEMO_MCP_CREDENTIAL", "")
+    )
     parser.add_argument(
         "--mandate-id", default=os.environ.get("MANDATE_DEMO_MANDATE_ID", "mandate-demo")
     )
@@ -133,7 +176,7 @@ def main() -> None:
     parser.add_argument("--amount", default="1.00")
     args = parser.parse_args()
 
-    client = MandateRESTClient(args.base_url, bearer_token=args.bearer_token)
+    client = _build_client(args)
     reports = run_demo(
         client=client,
         mandate_id=args.mandate_id,

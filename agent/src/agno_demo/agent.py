@@ -44,8 +44,14 @@ _STATUS_PARAMETERS: dict[str, Any] = {
 }
 
 
-class RestClient(Protocol):
-    """The REST client surface the agent tools need."""
+class AgentClient(Protocol):
+    """The Mandate client surface the agent tools need.
+
+    Both the MCP client (primary after ticket 12a) and the REST client
+    (fallback) implement spend and status with the same signatures, so the
+    agent reacts to the same structured Spend Result through either interface
+    (ADR-0033).
+    """
 
     def spend(
         self,
@@ -60,11 +66,12 @@ class RestClient(Protocol):
     def status(self, *, mandate_id: str) -> StatusDocument: ...
 
 
-def build_agent(*, client: RestClient) -> Agent:
-    """Build the decision-only Agno agent over the Mandate REST client.
+def build_agent(*, client: AgentClient) -> Agent:
+    """Build the decision-only Agno agent over the Mandate client.
 
-    The tools call the same Mandate REST endpoints the dashboard and the MCP
-    adapter use (ADR-0033). The agent never holds or calls a Circle payment
+    The tools call the same Mandate endpoints the dashboard and the MCP
+    adapter use (ADR-0033). After ticket 12a the client is the MCP adapter;
+    REST remains the fallback. The agent never holds or calls a Circle payment
     tool, so the only path to the wallet is through the Mandate gate.
     """
     spend_tool = Function(
@@ -117,7 +124,7 @@ def function_tools(agent: Agent) -> list[Function]:
     return [tool for tool in agent.tools if isinstance(tool, Function)]
 
 
-def _spend_entrypoint(client: RestClient) -> Callable[..., str]:
+def _spend_entrypoint(client: AgentClient) -> Callable[..., str]:
     def spend(
         task_id: str,
         purpose: str,
@@ -136,7 +143,7 @@ def _spend_entrypoint(client: RestClient) -> Callable[..., str]:
     return spend
 
 
-def _status_entrypoint(client: RestClient) -> Callable[..., str]:
+def _status_entrypoint(client: AgentClient) -> Callable[..., str]:
     def status(mandate_id: str) -> str:
         document: StatusDocument = client.status(mandate_id=mandate_id)
         return json.dumps(

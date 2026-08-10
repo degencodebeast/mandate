@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -236,3 +237,48 @@ def _spend_document(
 def pretty_json(document: JsonObject) -> str:
     """Render a JSON document for evidence capture."""
     return json.dumps(document, indent=2, default=str)
+
+
+class ScriptedMcpSession:
+    """A scripted MCP session over the scripted Mandate backend.
+
+    It serves the same documents the real MCP adapter returns
+    (``mandate.spend`` and ``mandate.status``), so the demo can produce
+    deterministic MCP-path evidence without a network (ADR-0024).
+    """
+
+    def __init__(self, backend: ScriptedMandateBackend) -> None:
+        self._backend = backend
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((name, arguments))
+        if name == "mandate.status":
+            body = self._backend._status()
+        elif name == "mandate.spend":
+            body = self._backend._spend(dict(arguments))
+        else:
+            raise ConnectionError(f"Unknown MCP tool: {name}")
+        return _mcp_tool_result(body)
+
+
+class ScriptedMcpSessionFactory:
+    """Yield one scripted MCP session for the demo agent."""
+
+    def __init__(self, backend: ScriptedMandateBackend) -> None:
+        self._backend = backend
+
+    async def __call__(self, endpoint: str, credential: str) -> AsyncIterator[ScriptedMcpSession]:
+        yield ScriptedMcpSession(self._backend)
+
+
+def _mcp_tool_result(body: JsonObject) -> Any:
+    class _Content:
+        text: str = json.dumps(body)
+
+    class _Result:
+        def __init__(self) -> None:
+            self.content: list[Any] = [_Content()]
+            self.is_error: bool = False
+
+    return _Result()

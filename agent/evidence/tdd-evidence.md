@@ -1,8 +1,12 @@
 # Ticket 10c — TDD Evidence
 
 Project: `mandate/.worktrees/mandate-ticket-10c/agent`
-Base SHA: `42b73d60a7032b50441d0b9b60c8f9dc5724003f`
+Base SHA (REST phase): `42b73d60a7032b50441d0b9b60c8f9dc5724003f`
+Review base SHA (MCP phase): `311eaff65016f74c5858e68ddce8e09d2903b999`
 Branch: `ticket/10c-agno-economic-safety-demo`
+
+Ticket 12a passed its gate at `311eaff` and is merged. The demo now uses MCP
+for agent spend and status, with REST as the fallback (ADR-0033).
 
 Every behavior slice followed strict TDD: one behavior test, RED, minimum
 implementation, GREEN.
@@ -89,7 +93,7 @@ Rules proven: the agent has exactly tools `mandate.spend` and `mandate.status`;
 it has no direct payment tool; `retries=0`, `reasoning=False`, strict
 `output_schema=AgentDecision`.
 
-## Behavior 5 — agent tools call REST (2 tests)
+## Behavior 5 — agent tools call the Mandate client (2 tests)
 
 Command: `uv run pytest tests/test_agent_tools.py -q`
 
@@ -122,6 +126,26 @@ Rules proven: Payment Reference and Receipt Anchor are separate values; the
 same Intent ID appears in the agent, backend, and UI views; the report closes
 with "One Intent. No blind retries."
 
+## Behavior 7 — MCP client (5 tests)
+
+Ticket 12a passed, so the agent uses MCP. RED:
+
+```
+ModuleNotFoundError: No module named 'agno_demo.mcp_client'
+```
+
+Command: `uv run pytest tests/test_mcp_client.py -q`
+
+GREEN:
+
+```
+5 passed
+```
+
+Rules proven: `mandate.spend` and `mandate.status` run through the MCP session;
+a transport error falls back to REST; `resolve` uses the REST fallback (the MCP
+adapter exposes spend and status only); an empty credential is rejected.
+
 ## Full agent suite
 
 Command: `uv run pytest -q`
@@ -129,5 +153,14 @@ Command: `uv run pytest -q`
 Result:
 
 ```
-20 passed
+27 passed
 ```
+
+## Run evidence
+
+- `evidence/demo-run-mcp.txt` — both scenes through the MCP path with REST
+  fallback.
+- `evidence/demo-run-rest.txt` — both scenes through the pure REST fallback.
+
+Both record the same Intent identifier in the agent, backend, and UI views and
+keep Payment Reference separate from Receipt Anchor.
