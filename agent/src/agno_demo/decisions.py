@@ -19,6 +19,8 @@ Mapping rules (ticket 10c):
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from agno_demo.models import SpendResponse, StatusDocument
@@ -139,3 +141,25 @@ def decide_switch(service_a_url: str, status: StatusDocument) -> AgentDecision:
         may_authorize=True,
         reason=f"circuit breaker open for {service_a_url}; switch before authorization",
     )
+
+
+def decide_document(document: dict[str, Any]) -> AgentDecision:
+    """Map one decision-input document to an AgentDecision.
+
+    A decision input is either a Spend Result document (has ``outcome``) or a
+    breaker status document (has ``breaker_state`` and ``service_a_url``). The
+    domain decision logic lives here so the agent model only wraps the result.
+    """
+    if "breaker_state" in document:
+        from agno_demo.models import BreakerState
+
+        status = StatusDocument(
+            mandate_id="mandate-demo",
+            spent_total="0",
+            remaining_budget="0",
+            intents=[],
+            breaker_state=[BreakerState.from_json(state) for state in document["breaker_state"]],
+        )
+        return decide_switch(str(document["service_a_url"]), status)
+    response = SpendResponse.from_json(document)
+    return decide(response)

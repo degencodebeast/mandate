@@ -1,6 +1,6 @@
 # Mandate Agno demo run (deterministic, scripted MCP)
 
-Timestamp: 2026-08-10T18:50:16.979835+00:00
+Timestamp: 2026-08-10T19:06:12.191548+00:00
 Interface: MCP (Streamable HTTP adapter) with REST fallback.
 Agent model: DecisionModel (deterministic).
 Mandate created by the User before the agent starts.
@@ -8,7 +8,7 @@ Agent tools: mandate.spend, mandate.status only (no direct payment tool).
 Injected condition: response loss after the real economic action.
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): 7a697bf3-6a20-4f81-8347-762f6d46c0fc / 7a697bf3-6a20-4f81-8347-762f6d46c0fc / 7a697bf3-6a20-4f81-8347-762f6d46c0fc
+Intent (agent/backend/UI): 1830a174-505f-4152-adb5-e272a40584e8 / 1830a174-505f-4152-adb5-e272a40584e8 / 1830a174-505f-4152-adb5-e272a40584e8
 Decision: request_review
 Authorize: no
 Payment Reference: -
@@ -18,7 +18,7 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): 6fc19053-9efe-41fd-a217-8aadf400abbd / 6fc19053-9efe-41fd-a217-8aadf400abbd / 6fc19053-9efe-41fd-a217-8aadf400abbd
+Intent (agent/backend/UI): 871d0431-74ee-4a62-8edc-cc444aa93e49 / 871d0431-74ee-4a62-8edc-cc444aa93e49 / 871d0431-74ee-4a62-8edc-cc444aa93e49
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -64,7 +64,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "7a697bf3-6a20-4f81-8347-762f6d46c0fc",
+      "id": "1830a174-505f-4152-adb5-e272a40584e8",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -81,7 +81,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "6fc19053-9efe-41fd-a217-8aadf400abbd",
+      "id": "871d0431-74ee-4a62-8edc-cc444aa93e49",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",

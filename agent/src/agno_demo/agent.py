@@ -24,7 +24,7 @@ from agno.models.base import Model
 from agno.models.response import ModelResponse
 from agno.tools import Function
 
-from agno_demo.decisions import AgentDecision, decide
+from agno_demo.decisions import AgentDecision
 from agno_demo.models import SpendResponse, StatusDocument
 
 _SPEND_PARAMETERS: dict[str, Any] = {
@@ -251,21 +251,9 @@ def _decision_response(document: dict[str, Any] | None) -> ModelResponse:
     """Build a ModelResponse whose content is the AgentDecision JSON."""
     if document is None:
         raise RuntimeError("The Agent received no decision input to decide on.")
-    if "breaker_state" in document:
-        from agno_demo.decisions import decide_switch
-        from agno_demo.models import BreakerState, StatusDocument
+    from agno_demo.decisions import decide_document
 
-        status = StatusDocument(
-            mandate_id="mandate-demo",
-            spent_total="0",
-            remaining_budget="0",
-            intents=[],
-            breaker_state=[BreakerState.from_json(state) for state in document["breaker_state"]],
-        )
-        decision = decide_switch(str(document["service_a_url"]), status)
-        return ModelResponse(content=json.dumps(decision.model_dump()))
-    response = SpendResponse.from_json(document)
-    decision = decide(response)
+    decision = decide_document(document)
     return ModelResponse(content=json.dumps(decision.model_dump()))
 
 

@@ -1,6 +1,6 @@
 # Mandate Agno demo run (deterministic, REST fallback)
 
-Timestamp: 2026-08-10T18:50:16.979835+00:00
+Timestamp: 2026-08-10T19:06:12.191548+00:00
 Interface: REST (scripted transport; no network).
 Agent model: DecisionModel (deterministic).
 Mandate created by the User before the agent starts.
@@ -8,7 +8,7 @@ Agent tools: mandate.spend, mandate.status only (no direct payment tool).
 Injected condition: response loss after the real economic action.
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): 6b2be300-c219-42bd-8630-141559acd200 / 6b2be300-c219-42bd-8630-141559acd200 / 6b2be300-c219-42bd-8630-141559acd200
+Intent (agent/backend/UI): ec247358-1780-4d3c-92fb-325553438e3a / ec247358-1780-4d3c-92fb-325553438e3a / ec247358-1780-4d3c-92fb-325553438e3a
 Decision: request_review
 Authorize: no
 Payment Reference: -
@@ -18,7 +18,7 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): c7d6c827-97f5-48d9-845b-c3b1744b5c49 / c7d6c827-97f5-48d9-845b-c3b1744b5c49 / c7d6c827-97f5-48d9-845b-c3b1744b5c49
+Intent (agent/backend/UI): cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075 / cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075 / cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -64,7 +64,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "6b2be300-c219-42bd-8630-141559acd200",
+      "id": "ec247358-1780-4d3c-92fb-325553438e3a",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -81,7 +81,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "c7d6c827-97f5-48d9-845b-c3b1744b5c49",
+      "id": "cf7a5e11-cd94-49e5-ba4a-8f2d0fe05075",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",

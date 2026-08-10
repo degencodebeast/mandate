@@ -194,6 +194,48 @@ def test_mcp_spend_falls_back_to_rest_on_transport_error() -> None:
     assert rest_transport_calls[0]["url"].endswith("/spend")
 
 
+def test_mcp_spend_falls_back_to_rest_on_httpx2_transport_error() -> None:
+    import httpx2
+
+    session = ScriptedMcpSession(_spend_document(), _status_document())
+    session.error = httpx2.ConnectError("the MCP endpoint is unreachable")
+    rest_transport_calls: list[dict[str, Any]] = []
+
+    class RestTransport:
+        def request(
+            self,
+            *,
+            method: str,
+            url: str,
+            headers: dict[str, str],
+            payload: dict[str, Any] | None = None,
+        ) -> tuple[int, dict[str, Any]]:
+            rest_transport_calls.append(
+                {"method": method, "url": url, "headers": headers, "payload": payload}
+            )
+            return 200, _spend_document()
+
+    rest = MandateRESTClient(_BASE, bearer_token=_TOKEN, transport=RestTransport())
+    client = McpMandateClient(
+        endpoint=_MCP_URL,
+        credential=_CREDENTIAL,
+        session_factory=ScriptedSessionFactory(session),
+        rest_fallback=rest,
+    )
+
+    response = client.spend(
+        mandate_id="mandate-1",
+        task_id="intent-b",
+        purpose="buy market data",
+        service_url="https://service-b.example.com",
+        amount="1.00",
+    )
+
+    assert response.outcome == "accepted"
+    assert rest_transport_calls[0]["method"] == "POST"
+    assert rest_transport_calls[0]["url"].endswith("/spend")
+
+
 def test_mcp_resolve_uses_rest_fallback() -> None:
     rest_transport_calls: list[dict[str, Any]] = []
 
