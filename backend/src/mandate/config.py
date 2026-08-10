@@ -77,18 +77,6 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         description="Privy access-token verification material held by the API.",
     ),
     ConfigurationVariable(
-        name="MANDATE_MCP_URL",
-        owners=frozenset({Service.API}),
-        secret=False,
-        description="Public base URL agents use to reach the Mandate Service MCP endpoint.",
-    ),
-    ConfigurationVariable(
-        name="MANDATE_MCP_API_KEY",
-        owners=frozenset({Service.API}),
-        secret=True,
-        description="API key agents include in the MCP connection string.",
-    ),
-    ConfigurationVariable(
         name="RECEIPT_REGISTRY_ADDRESS",
         owners=frozenset({Service.API}),
         secret=False,
@@ -111,18 +99,6 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         owners=frozenset({Service.API}),
         secret=False,
         description="Base URL of the official Circle Gateway x402 transfer-status API.",
-    ),
-    ConfigurationVariable(
-        name="FEE_WALLET_ADDRESS",
-        owners=frozenset({Service.API}),
-        secret=False,
-        description="Address of the Mandate fee wallet that receives the per-payment fee.",
-    ),
-    ConfigurationVariable(
-        name="FEE_PERCENTAGE",
-        owners=frozenset({Service.API}),
-        secret=False,
-        description="Fraction of each payment collected as the Mandate fee (default 0.01).",
     ),
     ConfigurationVariable(
         name="CIRCUIT_BREAKER_FAILURE_THRESHOLD",
@@ -197,8 +173,6 @@ class ApiSettings(BaseSettings):
     port: int = 8000
     privy_app_id: str | None = None
     privy_verification_key: SecretStr | None = None
-    mandate_mcp_url: str = "localhost:8000/mcp"
-    mandate_mcp_api_key: str = "local-mcp-key"
     receipt_registry_address: str | None = None
     service_wallet_address: str | None = None
     circle_chain: str = "ARC-TESTNET"
@@ -207,19 +181,9 @@ class ApiSettings(BaseSettings):
     circuit_breaker_failure_threshold: int = 3
     circuit_breaker_cooldown_seconds: float = 60.0
     circuit_breaker_trial_timeout_seconds: float = 60.0
-    fee_wallet_address: str | None = None
-    fee_percentage: float = 0.01
     arc_rpc_url: str | None = None
     receipt_reader_script: str | None = None
     dashboard_origins: str | None = None
-
-    @field_validator("fee_percentage")
-    @classmethod
-    def fee_percentage_is_a_fraction(cls, value: float) -> float:
-        """Reject a fee percentage outside the 0..1 fraction range."""
-        if value < 0 or value > 1:
-            raise ValueError("fee_percentage must be a fraction between 0 and 1")
-        return value
 
     @field_validator(
         "payment_timeout_seconds",

@@ -5,9 +5,9 @@ import { AuthRoot } from "@/lib/AuthRoot";
 import { Shell } from "@/components/Shell";
 
 export const metadata: Metadata = {
-  title: "Mandate — Authority over agent spending",
+  title: "Mandate — Financial fault tolerance for autonomous agents",
   description:
-    "Mandate gates AI agent spending on Arc: task budgets, per-call caps, allowed services, dedupe, receipts.",
+    "One Intent. No blind retries. Mandate freezes new payment authorization when an agent payment result is unknown.",
   icons: { icon: "/favicon.svg" },
 };
 

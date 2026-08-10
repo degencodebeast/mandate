@@ -1,11 +1,11 @@
 """Mandate creation endpoint tests.
 
 The seam is the REST endpoint POST /mandates. Given an authenticated user and
-mandate parameters, the endpoint creates a mandate, binds a wallet, registers
-the agent identity, and returns the mandate with an MCP connection string.
+mandate parameters, the endpoint creates task-scoped authority and returns the
+stable REST paths. Creating authority does not create an agent identity or an
+MCP credential (ADR-0034, ticket 12).
 
-Tests inject scripted adapters (ADR-0024) so no network or Circle CLI is
-required. The Postgres store uses the real test database.
+The Postgres store uses the real test database.
 """
 
 from __future__ import annotations
@@ -19,10 +19,8 @@ from fastapi.testclient import TestClient
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
 from mandate.config import ApiSettings
-from mandate.identity import ScriptedAgentIdentityRegistrar
 from mandate.persistence.mandate_store import PostgresMandateStore
 from mandate.persistence.migrations import apply_migrations
-from mandate.wallets import ScriptedWalletBinder
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -41,20 +39,15 @@ def client() -> TestClient:
         settings=ApiSettings(database_url=_DATABASE_URL),
         identity_verifier=verifier,
         mandate_store=PostgresMandateStore(_DATABASE_URL),
-        wallet_binder=ScriptedWalletBinder(
-            wallet_address="0xwallet123",
-            circle_wallet_id="cw_endpoint_001",
-        ),
-        identity_registrar=ScriptedAgentIdentityRegistrar(
-            agent_identity="did:erc8004:endpoint-agent"
-        ),
     )
     test_client = TestClient(app)
     test_client.headers["Authorization"] = f"Bearer {token}"
     return test_client
 
 
-def test_create_mandate_returns_mandate_with_connection_string(client: TestClient) -> None:
+def test_create_mandate_returns_rest_authority_without_unverified_identity(
+    client: TestClient,
+) -> None:
     response = client.post(
         "/api/v1/mandates",
         json={
@@ -70,11 +63,12 @@ def test_create_mandate_returns_mandate_with_connection_string(client: TestClien
     assert document["user_id"] == _TEST_USER
     assert document["budget"] == "10.00"
     assert document["status"] == "active"
-    assert document["wallet_address"] == "0xwallet123"
-    assert document["circle_wallet_id"] == "cw_endpoint_001"
-    assert document["agent_identity"] == "did:erc8004:endpoint-agent"
-    assert "connection_string" in document
-    assert document["connection_string"].startswith("mcp://")
+    assert document["operator_wallet"] is None
+    assert document["spend_endpoint"] == f"/api/v1/mandates/{document['id']}/spend"
+    assert document["status_endpoint"] == f"/api/v1/mandates/{document['id']}/status"
+    assert "connection_string" not in document
+    assert "agent_identity" not in document
+    assert "fees_total" not in document
 
 
 def test_create_mandate_requires_auth() -> None:
@@ -83,8 +77,6 @@ def test_create_mandate_requires_auth() -> None:
         settings=ApiSettings(database_url=_DATABASE_URL),
         identity_verifier=verifier,
         mandate_store=PostgresMandateStore(_DATABASE_URL),
-        wallet_binder=ScriptedWalletBinder(wallet_address="0xwallet123", circle_wallet_id="cw_1"),
-        identity_registrar=ScriptedAgentIdentityRegistrar(agent_identity="did:erc8004:agent"),
     )
     test_client = TestClient(app)
 

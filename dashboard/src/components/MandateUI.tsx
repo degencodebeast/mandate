@@ -3,16 +3,106 @@
 import { formatDateTime, formatMoney, formatPercent, formatTimestamp, formatTxHash, meterState } from "@/lib/format";
 import type { BreakerStateRecord, IntentRecord, MandateSummary, ReceiptRecord } from "@/lib/api";
 
+interface EconomicSafetyCopy {
+  state: string;
+  meaning: string;
+  action: string;
+}
+
+function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCopy {
+  if (!intent) {
+    return {
+      state: "NO INTENT",
+      meaning: "No payment authorization has started.",
+      action: "CREATE AN INTENT",
+    };
+  }
+  switch (intent.status.toLowerCase()) {
+    case "settled":
+      return {
+        state: "SETTLED",
+        meaning: "The exact Payment Reference has a final success state.",
+        action: "CONTINUE",
+      };
+    case "unknown":
+      return {
+        state: "UNKNOWN",
+        meaning: "Value may have moved. Mandate freezes new authorization for this Intent.",
+        action: "WAIT or REQUEST_REVIEW",
+      };
+    case "blocked":
+      return {
+        state: "BLOCKED",
+        meaning: "Policy or the Circuit Breaker denies payment authorization.",
+        action: "REDUCE SCOPE or USE A NEW INTENT",
+      };
+    case "settling":
+      return {
+        state: "SETTLING",
+        meaning: "A payment has an accepted reference and awaits an exact final state.",
+        action: "WAIT",
+      };
+    default:
+      return {
+        state: intent.status.toUpperCase(),
+        meaning: "Mandate has recorded this economic Intent.",
+        action: "WAIT",
+      };
+  }
+}
+
+function readableServiceName(serviceUrl: string): string {
+  try {
+    const label = new URL(serviceUrl).hostname.split(".")[0] ?? serviceUrl;
+    return label
+      .split("-")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  } catch {
+    return serviceUrl;
+  }
+}
+
+function breakerReason(state: BreakerStateRecord): string {
+  switch (state.state.toLowerCase()) {
+    case "open":
+      return "Failure threshold reached. New Intents are blocked.";
+    case "half_open":
+      return state.trial_allowed
+        ? "One recovery trial is permitted."
+        : "One recovery trial is already in progress.";
+    default:
+      return "The service can admit a new Intent.";
+  }
+}
+
+export function EconomicSafetyCard({ intent }: { intent: IntentRecord | undefined }) {
+  const copy = economicSafetyCopy(intent);
+  return (
+    <section className="card stack-4" aria-label="Economic Safety State">
+      <div className="card kicker">Economic Safety State</div>
+      <span className="badge" data-state={copy.state.toLowerCase()}>
+        <span className="dot" />
+        {copy.state}
+      </span>
+      <p>{copy.meaning}</p>
+      <div className="stack-2">
+        <span className="kicker">Permitted action</span>
+        <strong>{copy.action}</strong>
+      </div>
+    </section>
+  );
+}
+
 export function BudgetMeter({
   spent,
   budget,
   remaining,
-  fees,
 }: {
   spent: string;
   budget: string;
   remaining: string;
-  fees: string;
 }) {
   const state = meterState(spent, budget);
   const percent = formatPercent(spent, budget);
@@ -34,7 +124,6 @@ export function BudgetMeter({
         <span>
           <strong>{percent.toFixed(0)}%</strong> used
         </span>
-        <span>{formatMoney(fees)} in fees</span>
       </div>
     </div>
   );
@@ -56,18 +145,18 @@ export function PaymentLog({ intents }: { intents: IntentRecord[] }) {
       <div className="log-row log-head">
         <span>Time</span>
         <span>Service</span>
-        <span>Tx</span>
+        <span>Payment Reference</span>
+        <span>Batch Tx</span>
         <span style={{ textAlign: "right" }}>Amount</span>
-        <span style={{ textAlign: "right" }}>Fee</span>
         <span style={{ textAlign: "right" }}>State</span>
       </div>
       {intents.map((intent) => (
         <div key={intent.id} className="log-row">
           <span className="ts">{formatTimestamp(intent.created_at)}</span>
           <span className="svc">{intent.service_url.replace(/^https?:\/\//, "").slice(0, 32) || "—"}</span>
-          <span className="hash">{intent.tx_hash ? formatTxHash(intent.tx_hash) : "—"}</span>
+          <span className="hash">{intent.payment_reference ?? "—"}</span>
+          <span className="batch">{intent.batch_tx_hash ?? "—"}</span>
           <span className="amt">{formatMoney(intent.amount)}</span>
-          <span className="fee">{intent.fee_amount ? formatMoney(intent.fee_amount) : "—"}</span>
           <span className="state">
             <span className="badge" data-state={intent.status}>
               <span className="dot" />
@@ -94,11 +183,13 @@ export function BreakerList({ states }: { states: BreakerStateRecord[] }) {
       {states.map((state) => (
         <div key={state.service_url} className="breaker-card" data-state={state.state}>
           <div>
-            <div className="url">{state.service_url}</div>
+            <div className="url">{readableServiceName(state.service_url)}</div>
             <div className="meta">
               {state.failure_count} failure{state.failure_count === 1 ? "" : "s"}
               {state.last_failure_at ? ` · last ${formatDateTime(state.last_failure_at)}` : ""}
             </div>
+            <div className="meta">{breakerReason(state)}</div>
+            <div className="meta mono">{state.service_url}</div>
           </div>
           <span className="badge" data-state={state.state}>
             <span className="dot" />
@@ -136,7 +227,7 @@ export function ReceiptList({
         <span className="kicker">Task</span>
         <span className="kicker" style={{ textAlign: "right" }}>Amount</span>
         <span className="kicker">When</span>
-        <span className="kicker">Payment Ref</span>
+        <span className="kicker">Payment Reference</span>
         <span className="kicker">Receipt Anchor (Arc)</span>
       </div>
       {receipts.map((receipt) => (

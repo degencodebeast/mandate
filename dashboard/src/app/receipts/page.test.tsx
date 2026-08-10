@@ -15,17 +15,13 @@ function mandate(id: string): MandateSummary {
   return {
     id,
     user_id: "did:privy:alice",
-    agent_identity: "did:erc8004:agent",
     budget: "10.00",
     per_call_cap: "1.00",
     allowed_services: ["https://service-a.example.com"],
     expiry: null,
     status: "active",
     spent_total: "0",
-    fees_total: "0",
-    fees_paid: "0",
-    wallet_address: "0xwallet",
-    circle_wallet_id: "cw_1",
+    operator_wallet: "0xwallet",
     created_at: "2026-08-08T12:00:00Z",
   };
 }
@@ -121,6 +117,10 @@ describe("ReceiptsPage error and empty states", () => {
       expect(screen.getByText(/No receipts yet/)).toBeTruthy();
     });
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("link", { name: "View mandates" })).toHaveProperty(
+      "href",
+      "http://localhost:3000/mandates",
+    );
   });
 
   it("renders separate Payment Ref and Receipt Anchor labels with the anchor linked to Arcscan", async () => {

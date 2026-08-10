@@ -545,11 +545,11 @@ def test_spend_does_not_collect_fee(components: Components) -> None:
     document = resolved.json()
     assert document["outcome"] == "permitted"
     assert document["intent"]["status"] == "settled"
-    assert document["intent"]["fee_amount"] is None
-    assert document["intent"]["fee_tx_hash"] is None
+    assert "fee_amount" not in document["intent"]
+    assert "fee_tx_hash" not in document["intent"]
     assert document["receipt"]["tx_hash"] == "0xsettled"
-    assert document["receipt"]["fee_amount"] is None
-    assert document["receipt"]["fee_tx_hash"] is None
+    assert "fee_amount" not in document["receipt"]
+    assert "fee_tx_hash" not in document["receipt"]
     assert document["spent_total"] == "1.00"
     assert components.payments.calls == [(_SERVICE_URL, "1.00")]
     assert components.fees.calls == []
@@ -643,13 +643,13 @@ def test_spend_collects_no_fee(components: Components) -> None:
 
     document = resolve.json()
     assert document["outcome"] == "permitted"
-    assert document["receipt"]["fee_amount"] is None
-    assert document["receipt"]["fee_tx_hash"] is None
-    assert document["intent"]["fee_amount"] is None
-    assert document["intent"]["fee_tx_hash"] is None
+    assert "fee_amount" not in document["receipt"]
+    assert "fee_tx_hash" not in document["receipt"]
+    assert "fee_amount" not in document["intent"]
+    assert "fee_tx_hash" not in document["intent"]
 
 
-def test_status_shows_zero_fees_paid_per_mandate(components: Components) -> None:
+def test_status_omits_inactive_fee_fields(components: Components) -> None:
     mandate = _create_mandate(components.store)
     _spend(components, mandate.id, task_id="task-1")
     _resolve(components, mandate.id, task_id="task-1")
@@ -661,11 +661,12 @@ def test_status_shows_zero_fees_paid_per_mandate(components: Components) -> None
     assert response.status_code == 200
     document = response.json()
     assert document["mandate"]["spent_total"] == "2.00"
-    assert document["mandate"]["fees_total"] == "0"
+    assert "fees_total" not in document["mandate"]
+    assert "fees_paid" not in document
     settled = [intent for intent in document["intents"] if intent["status"] == "settled"]
     assert len(settled) == 2
-    assert all(intent["fee_amount"] is None for intent in settled)
-    assert all(intent["fee_tx_hash"] is None for intent in settled)
+    assert all("fee_amount" not in intent for intent in settled)
+    assert all("fee_tx_hash" not in intent for intent in settled)
 
 
 def test_spend_concurrent_distinct_intents_cannot_exceed_budget(

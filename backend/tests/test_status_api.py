@@ -155,11 +155,15 @@ def test_get_mandate_status_returns_budget_meter_data(components: Components) ->
     assert document["mandate"]["id"] == str(mandate.id)
     assert document["mandate"]["budget"] == "10.00"
     assert document["spent_total"] == "0"
-    assert document["fees_paid"] == "0"
     assert document["remaining_budget"] == "10.00"
     assert document["recent_intents"][0]["service_url"] == _SERVICE_URL
     assert document["breaker_state"][0]["service_url"] == _SERVICE_URL
     assert document["breaker_state"][0]["state"] == "closed"
+    assert "agent_identity" not in document["mandate"]
+    assert "fees_paid" not in document
+    assert "fees_total" not in document
+    assert "fee_amount" not in document["recent_intents"][0]
+    assert "fee_tx_hash" not in document["recent_intents"][0]
 
 
 def test_get_mandate_status_returns_404_for_other_user(components: Components) -> None:

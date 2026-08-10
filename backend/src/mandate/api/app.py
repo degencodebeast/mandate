@@ -1,17 +1,17 @@
 """The FastAPI web process.
 
 The web process is the private authority zone entry point for the dashboard and
-for agents connecting via MCP. It owns no private credential. Every response is
-a safe summary free of connection strings and provider bodies.
+the stable REST interface used by agents. It owns no private credential. Every
+response is a safe summary free of connection strings and provider bodies.
 
 Authentication: the dashboard sends a Privy access token in the Authorization
 header. The Mandate Service verifies it and scopes all data to the user. When no
 verifier is configured, every protected endpoint rejects the request — fail
 closed.
 
-Mandate creation: an authenticated user creates a mandate. The service binds a
-Circle Agent Wallet, registers the agent identity (ERC-8004), persists the
-mandate, and returns an MCP connection string.
+Mandate creation: an authenticated user creates task-scoped authority. The
+configured Demo Operator Wallet executes authorized payments. Creation returns
+stable REST paths and no private agent credential (ADR-0034, ticket 12).
 
 Note: this module deliberately does not use ``from __future__ import
 annotations``. FastAPI needs real, evaluated type annotations (not strings) to
@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from mandate.api.connection import build_connection_string
 from mandate.auth import (
     AuthenticationDeniedError,
     PrivyIdentity,
@@ -40,7 +39,6 @@ from mandate.auth import (
 from mandate.config import ApiSettings, Service, assert_secret_boundary
 from mandate.gateway_status import GatewayTransferStatusInspector
 from mandate.health import build_service_health, check_database
-from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
 from mandate.persistence.breaker_store import (
     BreakerState,
@@ -65,7 +63,6 @@ from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
 from mandate.spend.policy import finite_positive_decimal
 from mandate.spend.service import FinalizationNotPossibleError
 from mandate.status import MandateStatusService
-from mandate.wallets import WalletBinder
 
 
 def _positive_finite_decimal(value: str) -> Decimal:
@@ -144,8 +141,6 @@ def create_app(
     environment: Mapping[str, str] | None = None,
     identity_verifier: PrivyIdentityVerifier | None = None,
     mandate_store: MandateStore | None = None,
-    wallet_binder: WalletBinder | None = None,
-    identity_registrar: AgentIdentityRegistrar | None = None,
     spend_service: MandateSpendService | None = None,
     status_service: MandateStatusService | None = None,
     breaker_store: BreakerStateStore | None = None,
@@ -157,10 +152,9 @@ def create_app(
     own. That check runs before any route exists, so a misconfigured deployment
     fails closed.
 
-    The identity verifier defaults to a deny-all adapter. The mandate store,
-    wallet binder, identity registrar, and spend service default to
-    Postgres/Circle/Arc implementations when settings permit, or fail closed
-    otherwise. Tests pass scripted adapters.
+    The identity verifier defaults to a deny-all adapter. The mandate store and
+    spend service default to Postgres/Circle/Arc implementations when settings
+    permit, or fail closed otherwise. Tests pass scripted adapters.
     """
     assert_secret_boundary(Service.API, environment)
 
@@ -254,12 +248,6 @@ def create_app(
     ) -> JSONResponse:
         if active_store is None:
             raise StarletteHTTPException(status_code=503)
-        if wallet_binder is None:
-            raise StarletteHTTPException(status_code=503)
-        if identity_registrar is None:
-            raise StarletteHTTPException(status_code=503)
-        binding = wallet_binder.bind(user_id=identity.subject)
-        agent_identity = identity_registrar.register(user_id=identity.subject)
         parameters = MandateParameters(
             budget=command.budget,
             per_call_cap=command.per_call_cap,
@@ -269,12 +257,12 @@ def create_app(
         mandate = active_store.create_mandate(
             user_id=identity.subject,
             parameters=parameters,
-            wallet_address=binding.wallet_address,
-            circle_wallet_id=binding.circle_wallet_id,
-            agent_identity=agent_identity,
+            wallet_address=active_settings.service_wallet_address,
+            agent_identity=identity.subject,
         )
+        mandate_id = str(mandate.id)
         document = {
-            "id": str(mandate.id),
+            "id": mandate_id,
             "user_id": mandate.user_id,
             "budget": mandate.budget,
             "per_call_cap": mandate.per_call_cap,
@@ -283,16 +271,10 @@ def create_app(
             "status": mandate.status,
             "spent_total": mandate.spent_total,
             "reserved_total": mandate.reserved_total,
-            "fees_total": mandate.fees_total,
-            "wallet_address": mandate.wallet_address,
-            "circle_wallet_id": mandate.circle_wallet_id,
-            "agent_identity": mandate.agent_identity,
+            "operator_wallet": mandate.wallet_address,
             "created_at": mandate.created_at.isoformat(),
-            "connection_string": build_connection_string(
-                mandate_id=str(mandate.id),
-                base_url=active_settings.mandate_mcp_url,
-                api_key=active_settings.mandate_mcp_api_key,
-            ),
+            "spend_endpoint": f"/api/v1/mandates/{mandate_id}/spend",
+            "status_endpoint": f"/api/v1/mandates/{mandate_id}/status",
         }
         return JSONResponse(content=document, status_code=201)
 
@@ -535,8 +517,6 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
             "tx_hash": receipt.tx_hash,
             "recorded_at": receipt.recorded_at.isoformat(),
             "intent_state": receipt.intent_state,
-            "fee_amount": receipt.fee_amount,
-            "fee_tx_hash": receipt.fee_tx_hash,
             "receipt_anchor": receipt.receipt_anchor,
         }
     return document
@@ -555,8 +535,6 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "created_at": intent.created_at.isoformat(),
         "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
         "retry_count": intent.retry_count,
-        "fee_amount": intent.fee_amount,
-        "fee_tx_hash": intent.fee_tx_hash,
         "payment_reference": intent.payment_reference,
         "reference_type": intent.reference_type,
         "payment_state": intent.payment_state,
@@ -570,7 +548,6 @@ def _mandate_to_json(mandate: Mandate) -> dict[str, object]:
     return {
         "id": str(mandate.id),
         "user_id": mandate.user_id,
-        "agent_identity": mandate.agent_identity,
         "budget": mandate.budget,
         "per_call_cap": mandate.per_call_cap,
         "allowed_services": list(mandate.allowed_services),
@@ -578,10 +555,7 @@ def _mandate_to_json(mandate: Mandate) -> dict[str, object]:
         "status": mandate.status,
         "spent_total": mandate.spent_total,
         "reserved_total": mandate.reserved_total,
-        "fees_total": mandate.fees_total,
-        "fees_paid": mandate.fees_total,
-        "wallet_address": mandate.wallet_address,
-        "circle_wallet_id": mandate.circle_wallet_id,
+        "operator_wallet": mandate.wallet_address,
         "created_at": mandate.created_at.isoformat(),
     }
 
@@ -635,8 +609,6 @@ def _render_status(
         content={
             "mandate": _mandate_to_json(document.mandate),
             "spent_total": document.mandate.spent_total,
-            "fees_paid": document.mandate.fees_total,
-            "fees_total": document.mandate.fees_total,
             "remaining_budget": document.remaining_budget,
             "intents": [_intent_to_json(intent) for intent in document.recent_intents],
             "recent_intents": [_intent_to_json(intent) for intent in document.recent_intents],

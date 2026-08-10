@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ApiError, type MandateStatus, type ReceiptRecord } from "@/lib/api";
 import { useMandateClient } from "@/lib/useMandateClient";
 import { formatAddress, formatDateTime, formatMoney, formatTxHash } from "@/lib/format";
-import { BudgetMeter, BreakerList, PaymentLog, ReceiptList } from "@/components/MandateUI";
+import { BudgetMeter, BreakerList, EconomicSafetyCard, PaymentLog, ReceiptList } from "@/components/MandateUI";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -136,12 +136,15 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
         </div>
       </div>
 
+      <div style={{ marginBottom: "var(--space-6)" }}>
+        <EconomicSafetyCard intent={status.recent_intents[0]} />
+      </div>
+
       <div className="grid-3" style={{ marginBottom: "var(--space-6)" }}>
         <BudgetMeter
           spent={status.spent_total}
           budget={status.mandate.budget}
           remaining={status.remaining_budget}
-          fees={status.fees_paid}
         />
         <div className="card">
           <div className="card kicker">Mandate</div>
@@ -166,16 +169,12 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
           </div>
         </div>
         <div className="card">
-          <div className="card kicker">Agent identity (ERC-8004)</div>
+          <div className="card kicker">Demo Operator Wallet</div>
           <div
             className="mono"
             style={{ fontSize: 12, color: "var(--ink)", wordBreak: "break-all" }}
           >
-            {status.mandate.agent_identity || "—"}
-          </div>
-          <div className="card-meta" style={{ marginTop: "var(--space-2)" }}>
-            <span>Wallet</span>
-            <span className="mono">{formatAddress(status.mandate.wallet_address)}</span>
+            {status.mandate.operator_wallet || "Not configured"}
           </div>
           <div className="card-meta" style={{ marginTop: "var(--space-1)" }}>
             <span>Tx (latest)</span>

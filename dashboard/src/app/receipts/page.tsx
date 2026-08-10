@@ -131,6 +131,9 @@ export default function ReceiptsPage() {
               <div className="empty-body">
                 Once an agent settles a payment, the receipt will appear here.
               </div>
+              <Link href="/mandates" className="btn btn-primary">
+                View mandates
+              </Link>
             </div>
           ) : null}
           {flat.length > 0 ? (
@@ -140,7 +143,7 @@ export default function ReceiptsPage() {
                 <span className="kicker">Task</span>
                 <span className="kicker" style={{ textAlign: "right" }}>Amount</span>
                 <span className="kicker">When</span>
-                <span className="kicker">Payment Ref</span>
+                <span className="kicker">Payment Reference</span>
                 <span className="kicker">Receipt Anchor (Arc)</span>
               </div>
               {flat.map(({ receipt, mandate }) => (

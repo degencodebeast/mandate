@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { useAuth } from "@/lib/auth";
+import { LoginHero } from "@/components/LoginHero";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? null;
 
@@ -40,7 +41,7 @@ function LoginInner() {
 
   return (
     <section className="auth">
-      <AuthSide />
+      <LoginHero />
       <div className="auth-form-wrap">
         <h6 className="kicker">Connect</h6>
         <h1>Connect wallet</h1>
@@ -167,32 +168,5 @@ function DevConnectButton({
       </button>
       {error ? <div className="notice error">{error}</div> : null}
     </>
-  );
-}
-
-function AuthSide() {
-  return (
-    <aside className="auth-side">
-      <span className="eyebrow">Mandate · v0.1</span>
-      <h1 className="manifesto">
-        Agents can pay.
-        <br />
-        <span className="accent">Mandate makes them pay safely.</span>
-      </h1>
-      <div className="stats">
-        <div className="stat">
-          <div className="v">$0.05</div>
-          <div className="l">per call</div>
-        </div>
-        <div className="stat">
-          <div className="v">1%</div>
-          <div className="l">fee</div>
-        </div>
-        <div className="stat">
-          <div className="v">Arc</div>
-          <div className="l">settlement</div>
-        </div>
-      </div>
-    </aside>
   );
 }

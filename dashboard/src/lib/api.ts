@@ -18,17 +18,13 @@
 export interface MandateSummary {
   id: string;
   user_id: string;
-  agent_identity: string;
   budget: string;
   per_call_cap: string;
   allowed_services: string[];
   expiry: string | null;
   status: string;
   spent_total: string;
-  fees_total: string;
-  fees_paid: string;
-  wallet_address: string | null;
-  circle_wallet_id: string | null;
+  operator_wallet: string | null;
   created_at: string;
 }
 
@@ -43,9 +39,10 @@ export interface IntentRecord {
   created_at: string;
   settled_at: string | null;
   retry_count: number;
-  fee_amount: string | null;
-  fee_tx_hash: string | null;
   payment_reference: string | null;
+  reference_type: string | null;
+  payment_state: string | null;
+  batch_tx_hash: string | null;
   receipt_anchor: string | null;
 }
 
@@ -74,8 +71,6 @@ export interface ReceiptRecord {
 export interface MandateStatus {
   mandate: MandateSummary;
   spent_total: string;
-  fees_paid: string;
-  fees_total: string;
   remaining_budget: string;
   intents: IntentRecord[];
   recent_intents: IntentRecord[];
@@ -90,7 +85,8 @@ export interface CreateMandateInput {
 }
 
 export interface MandateCreated extends MandateSummary {
-  connection_string: string;
+  spend_endpoint: string;
+  status_endpoint: string;
 }
 
 export class ApiError extends Error {

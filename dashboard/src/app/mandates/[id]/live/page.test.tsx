@@ -1,0 +1,80 @@
+import React from "react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import LivePage from "@/app/mandates/[id]/live/page";
+import type { MandateStatus } from "@/lib/api";
+import { useMandateClient } from "@/lib/useMandateClient";
+
+vi.mock("@/lib/useMandateClient", () => ({
+  useMandateClient: vi.fn(),
+}));
+
+const mockedUseMandateClient = vi.mocked(useMandateClient);
+
+function status(): MandateStatus {
+  return {
+    mandate: {
+      id: "mandate-1",
+      user_id: "did:privy:alice",
+      budget: "10.00",
+      per_call_cap: "1.00",
+      allowed_services: ["https://search-a.example.com"],
+      expiry: null,
+      status: "active",
+      spent_total: "0.05",
+      operator_wallet: "0xoperator",
+      created_at: "2026-08-10T09:00:00Z",
+    },
+    spent_total: "0.05",
+    remaining_budget: "9.95",
+    intents: [],
+    recent_intents: [
+      {
+        id: "intent-1",
+        mandate_id: "mandate-1",
+        purpose_hash: "purpose-1",
+        service_url: "https://search-a.example.com",
+        amount: "0.05",
+        status: "unknown",
+        tx_hash: null,
+        created_at: "2026-08-10T09:00:00Z",
+        settled_at: null,
+        retry_count: 0,
+        payment_reference: "transfer-1",
+        reference_type: "circle_gateway_transfer_id",
+        payment_state: "unknown",
+        batch_tx_hash: null,
+        receipt_anchor: null,
+      },
+    ],
+    breaker_state: [],
+  };
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("LivePage submission surface", () => {
+  it("shows economic safety before amount details and names the operator wallet", async () => {
+    mockedUseMandateClient.mockReturnValue({
+      getMandateStatus: async () => status(),
+      listReceipts: async () => ({ receipts: [] }),
+    } as never);
+
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+    const { container, unmount } = view;
+    await waitFor(() => expect(screen.getByText("Economic Safety State")).toBeTruthy());
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Economic Safety State")).toBeLessThan(text.indexOf("Budget authority"));
+    expect(screen.getByText("Demo Operator Wallet")).toBeTruthy();
+    expect(screen.getByText("0xoperator")).toBeTruthy();
+    expect(screen.queryByText(/ERC-8004/i)).toBeNull();
+    expect(screen.queryByText(/fees/i)).toBeNull();
+    unmount();
+  });
+});

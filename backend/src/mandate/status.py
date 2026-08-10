@@ -1,8 +1,7 @@
-"""The mandate.status read: one status document per mandate.
+"""The mandate status read: one REST document per mandate.
 
-Ticket 08: mandate.status is the third MCP tool (ADR-0027). It returns mandate
-details, spent_total, remaining budget, recent intents, breaker state per
-service URL, and total fees paid. The dashboard consumes the same document
+It returns mandate details, spent total, remaining budget, recent Intents, and
+Circuit Breaker state per service URL. The dashboard consumes this document
 through the REST endpoints.
 
 The service is a pure read seam. It resolves the mandate owned by the user,

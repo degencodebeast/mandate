@@ -31,11 +31,11 @@ export default function MandatesPage() {
       <div className="page-head">
         <div>
           <div className="kicker">Mandates</div>
-          <h1>Authority over agent spending</h1>
+          <h1>Financial fault tolerance for agent spending</h1>
           <p className="lede">
-            Each mandate caps a single task. The agent may spend within the
-            budget, the per-call cap, and the allow-list. The dashboard
-            surfaces every intent, blocked or settled, with the on-Arc receipt.
+            Mandate records one economic Intent before it permits payment. If
+            the payment result is unknown, it freezes new authorization. Each
+            mandate also sets the budget, per-call cap, and allowed services.
           </p>
         </div>
         <button
@@ -47,26 +47,45 @@ export default function MandatesPage() {
         </button>
       </div>
 
-      {error ? <div className="notice error" style={{ marginBottom: "var(--space-6)" }}>{error}</div> : null}
+      {error ? (
+        <div className="notice error" role="alert" style={{ marginBottom: "var(--space-6)" }}>
+          {error}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginLeft: "var(--space-3)" }}
+            onClick={() => void load()}
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <>
+          {showCreate ? (
+            <CreateForm
+              onCreated={async (created) => {
+                await load();
+                setMandates((current) =>
+                  current ? [created, ...current] : [created],
+                );
+              }}
+            />
+          ) : null}
 
-      {showCreate ? (
-        <CreateForm
-          onCreated={async (created) => {
-            setShowCreate(false);
-            await load();
-            setMandates((current) =>
-              current ? [created, ...current] : [created],
-            );
-          }}
-        />
-      ) : null}
-
-      <MandateList mandates={mandates} />
+          <MandateList mandates={mandates} onCreate={() => setShowCreate(true)} />
+        </>
+      )}
     </div>
   );
 }
 
-function MandateList({ mandates }: { mandates: MandateSummary[] | null }) {
+function MandateList({
+  mandates,
+  onCreate,
+}: {
+  mandates: MandateSummary[] | null;
+  onCreate: () => void;
+}) {
   if (mandates === null) {
     return (
       <div className="empty">
@@ -83,6 +102,9 @@ function MandateList({ mandates }: { mandates: MandateSummary[] | null }) {
           Issue a mandate to delegate spending authority to an agent. Set the
           budget, the per-call cap, and the services it may pay.
         </div>
+        <button type="button" className="btn btn-primary" onClick={onCreate}>
+          Create your first mandate
+        </button>
       </div>
     );
   }
@@ -110,7 +132,7 @@ function MandateCard({ mandate }: { mandate: MandateSummary }) {
       <div className="grid-3" style={{ marginTop: "var(--space-2)" }}>
         <Stat label="Budget" value={formatMoney(mandate.budget)} />
         <Stat label="Spent" value={formatMoney(mandate.spent_total)} />
-        <Stat label="Fees" value={formatMoney(mandate.fees_paid)} />
+        <Stat label="Per call" value={formatMoney(mandate.per_call_cap)} />
       </div>
       <div className="meter" data-state="calm" style={{ padding: "var(--space-3)" }}>
         <div className="meter-bar">
@@ -122,9 +144,7 @@ function MandateCard({ mandate }: { mandate: MandateSummary }) {
         </div>
       </div>
       <div className="card-meta">
-        <span>Agent: <span className="mono">{formatAddress(mandate.agent_identity, 10)}</span></span>
-        <span>·</span>
-        <span>Wallet: <span className="mono">{formatAddress(mandate.wallet_address)}</span></span>
+        <span>Demo Operator Wallet: <span className="mono">{formatAddress(mandate.operator_wallet)}</span></span>
         {mandate.expiry ? (
           <>
             <span>·</span>
@@ -153,7 +173,7 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
   const [expiry, setExpiry] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ connectionString: string; agentIdentity: string } | null>(null);
+  const [created, setCreated] = useState<{ spendEndpoint: string; statusEndpoint: string } | null>(null);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -172,8 +192,8 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
       };
       const result = await client.createMandate(payload);
       setCreated({
-        connectionString: result.connection_string,
-        agentIdentity: result.agent_identity,
+        spendEndpoint: result.spend_endpoint,
+        statusEndpoint: result.status_endpoint,
       });
       await onCreated(result);
     } catch (err) {
@@ -187,22 +207,22 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
     return (
       <div className="notice info stack-4" style={{ marginBottom: "var(--space-6)" }}>
         <div>
-          <strong>Mandate issued.</strong> Show the agent this connection
-          string so it can call the Mandate Service MCP endpoint.
+          <strong>Mandate issued.</strong> Use these stable REST paths from an
+          authorized agent session.
         </div>
         <div className="field">
-          <label>Agent identity (ERC-8004)</label>
-          <input className="input mono" readOnly value={created.agentIdentity} />
+          <label htmlFor="spend-endpoint">REST spend endpoint</label>
+          <input id="spend-endpoint" className="input mono" readOnly value={created.spendEndpoint} />
         </div>
         <div className="field">
-          <label>Connection string</label>
-          <textarea className="textarea mono" readOnly value={created.connectionString} />
+          <label htmlFor="status-endpoint">REST status endpoint</label>
+          <input id="status-endpoint" className="input mono" readOnly value={created.statusEndpoint} />
         </div>
         <div className="row-2">
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            onClick={() => navigator.clipboard?.writeText(created.connectionString)}
+            onClick={() => navigator.clipboard?.writeText(created.spendEndpoint)}
           >
             Copy
           </button>
@@ -264,7 +284,7 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
         <button type="submit" className="btn btn-primary" disabled={submitting}>
           {submitting ? <span className="spinner" aria-hidden /> : "Issue mandate"}
         </button>
-        <span className="field-hint">Issues a Circle Agent Wallet and an ERC-8004 agent identity.</span>
+          <span className="field-hint">Creates task-scoped authority for the Demo Operator Wallet.</span>
       </div>
     </form>
   );
