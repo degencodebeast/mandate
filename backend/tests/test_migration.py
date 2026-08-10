@@ -587,3 +587,58 @@ def test_migration_0007_adds_reference_metadata_columns(reset_database: None) ->
     assert rows[0]["reference_type"] is None
     assert rows[0]["payment_state"] is None
     assert rows[0]["batch_tx_hash"] is None
+
+
+_0008_VERSION = "0008_intent_trial_epoch"
+
+
+def _downgrade_to_pre_0008() -> None:
+    """Return the intents schema to the pre-0008 state for the upgrade test."""
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("ALTER TABLE intents DROP COLUMN breaker_trial_epoch")
+        connection.execute("DELETE FROM schema_migrations WHERE version = %s", (_0008_VERSION,))
+
+
+def test_migration_0008_adds_intent_trial_epoch(reset_database: None) -> None:
+    _downgrade_to_pre_0008()
+    mandate_id = uuid.uuid4()
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            """
+            INSERT INTO mandates (
+                id, user_id, agent_identity, budget, per_call_cap,
+                allowed_services, expiry, status, spent_total, reserved_total,
+                fees_total, wallet_address, circle_wallet_id, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, NULL, 'active', '0',
+                      '0', '0', NULL, NULL, now())
+            """,
+            (
+                mandate_id,
+                _TEST_USER,
+                "did:erc8004:migration-agent",
+                "10.00",
+                "1.00",
+                '["https://service-a.example.com"]',
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO intents (
+                id, mandate_id, purpose_hash, service_url, amount, status,
+                tx_hash, created_at, settled_at, retry_count, fee_amount,
+                fee_tx_hash, payment_reference
+            ) VALUES (%s, %s, %s, %s, '0.25', 'settling', NULL, now(), NULL,
+                      0, NULL, NULL, '3e80e924-6263-4393-b639-b4ab56da6925')
+            """,
+            (uuid.uuid4(), mandate_id, "legacy-0008-hash", _SERVICE_URL),
+        )
+
+    apply_migrations(_DATABASE_URL)
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        rows = connection.execute(
+            "SELECT breaker_trial_epoch FROM intents WHERE mandate_id = %s",
+            (mandate_id,),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["breaker_trial_epoch"] == 0

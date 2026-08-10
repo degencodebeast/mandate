@@ -33,6 +33,7 @@ from mandate.persistence.mandate_store import (
 from mandate.persistence.migrations import apply_migrations
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import MandateSpendService
+from mandate.spend.service import purpose_hash
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
 _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -114,10 +115,12 @@ def _build_client(
 def client() -> Iterator[None]:
     apply_migrations(_DATABASE_URL)
     with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM breaker_state")
         connection.execute("DELETE FROM intents")
         connection.execute("DELETE FROM mandates")
     yield
     with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM breaker_state")
         connection.execute("DELETE FROM intents")
         connection.execute("DELETE FROM mandates")
 
@@ -311,3 +314,107 @@ def test_concurrent_failed_resolutions_release_reservation_once(
     status = client.get(f"/api/v1/mandates/{mandate.id}/status").json()
     assert status["mandate"]["reserved_total"] == "0.00"
     assert status["mandate"]["spent_total"] == "0"
+
+
+class SequenceInspector:
+    """Return a sequence of statuses in order, then repeat the last one."""
+
+    def __init__(self, states: list[str]) -> None:
+        self._states = states
+        self.calls: list[str] = []
+
+    def lookup_transfer(self, payment_reference: str) -> TransferStatus:
+        self.calls.append(payment_reference)
+        index = min(len(self.calls) - 1, len(self._states) - 1)
+        return TransferStatus(
+            payment_reference=payment_reference,
+            payment_state=self._states[index],
+        )
+
+
+def test_accepted_does_not_record_breaker_success_and_terminal_failed_does(
+    client: TestClient,
+) -> None:
+    from mandate.persistence.breaker_store import PostgresBreakerStateStore
+    from mandate.spend.breaker import CircuitBreaker
+
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    breaker = CircuitBreaker(store=breaker_store, failure_threshold=3, cooldown_seconds=60)
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=PostgresIntentStore(_DATABASE_URL),
+        payment_executor=Executor(),
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        transfer_status_inspector=StatusInspector("failed"),
+    )
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+    )
+    test_client = TestClient(app)
+    test_client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+    mandate_id = mandate.id
+    response = _spend(test_client, mandate_id)
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "accepted"
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        row = connection.execute(
+            "SELECT failure_count FROM breaker_state WHERE service_url = %s",
+            (_SERVICE_URL,),
+        ).fetchone()
+    assert row is not None
+    assert row["failure_count"] == 0
+
+    resolved = _resolve(test_client, mandate_id)
+    assert resolved.status_code == 200
+    assert resolved.json()["outcome"] == "blocked: payment_failed"
+
+    with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
+        row = connection.execute(
+            "SELECT failure_count FROM breaker_state WHERE service_url = %s",
+            (_SERVICE_URL,),
+        ).fetchone()
+    assert row is not None
+    assert row["failure_count"] == 1
+
+
+def test_delayed_received_lookup_cannot_regress_durable_completed(
+    client: TestClient,
+) -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _interrupted_intent(client, store)
+    receipts = ScriptedReceiptRecorder()
+    inspector = SequenceInspector(["completed", "received"])
+    client = _build_client(
+        store, payments=ForbiddenExecutor(), receipts=receipts, inspector=inspector
+    )
+
+    first = _resolve(client, mandate.id)
+    second = _resolve(client, mandate.id)
+
+    assert first.status_code == 200
+    assert first.json()["outcome"] == "permitted"
+    assert first.json()["intent"]["payment_state"] == "completed"
+    assert second.status_code == 200
+    second_doc = second.json()
+    assert second_doc["intent"]["payment_state"] == "completed"
+    assert second_doc["intent"]["status"] == "settled"
+    intent = _stored_intent(mandate.id)
+    assert intent is not None
+    assert intent.payment_state == "completed"
+    assert intent.receipt_anchor is not None
+    assert len(receipts.recorded) == 1
+
+
+def _stored_intent(mandate_id: uuid.UUID) -> Any:
+    store = PostgresIntentStore(_DATABASE_URL)
+    return store.get_intent(
+        mandate_id=mandate_id, purpose_hash=purpose_hash("task-1", "buy a research report")
+    )

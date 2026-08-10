@@ -518,7 +518,9 @@ def test_receipt_read_failure_is_explicit_error_not_empty_list(client: TestClien
     assert response.json()["detail"]
 
 
-def test_payment_reference_is_stored_before_breaker_success(client: TestClient) -> None:
+def test_payment_reference_is_stored_before_terminal_breaker_outcome(
+    client: TestClient,
+) -> None:
     store = PostgresMandateStore(_DATABASE_URL)
     mandate = _create_mandate(store)
     breaker = CircuitBreaker(store=FailingBreakerStateStore())
@@ -529,6 +531,7 @@ def test_payment_reference_is_stored_before_breaker_success(client: TestClient) 
         payment_executor=RecordingPaymentExecutor(),
         receipt_recorder=ScriptedReceiptRecorder(),
         breaker=breaker,
+        transfer_status_inspector=ScriptedTransferStatusInspector("completed"),
     )
     app = create_app(
         settings=ApiSettings(database_url=_DATABASE_URL),
@@ -541,7 +544,8 @@ def test_payment_reference_is_stored_before_breaker_success(client: TestClient) 
 
     response = _spend(client, mandate.id)
 
-    assert response.status_code == 500
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "accepted"
     intent = _stored_intent(mandate.id, "task-1", "buy a research report")
     assert intent is not None
     assert intent.payment_reference == "0xsettled"

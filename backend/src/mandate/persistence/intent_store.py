@@ -37,7 +37,7 @@ _SELECT_INTENT = """
     SELECT id, mandate_id, purpose_hash, service_url, amount,
            status, tx_hash, created_at, settled_at, retry_count,
            fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
-           reference_type, payment_state, batch_tx_hash
+           reference_type, payment_state, batch_tx_hash, breaker_trial_epoch
     FROM intents
 """
 
@@ -107,6 +107,7 @@ class IntentStore(Protocol):
         reference_type: str | None = None,
         payment_state: str | None = None,
         batch_tx_hash: str | None = None,
+        breaker_trial_epoch: int = 0,
     ) -> Intent: ...
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent: ...
@@ -152,6 +153,7 @@ class Intent:
     reference_type: str | None = None
     payment_state: str | None = None
     batch_tx_hash: str | None = None
+    breaker_trial_epoch: int = 0
 
 
 class PostgresIntentStore:
@@ -263,7 +265,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch
                 """,
                 (
                     status,
@@ -288,6 +291,7 @@ class PostgresIntentStore:
         reference_type: str | None = None,
         payment_state: str | None = None,
         batch_tx_hash: str | None = None,
+        breaker_trial_epoch: int = 0,
     ) -> Intent:
         """Write the Payment Reference as soon as value moves (ticket 10e).
 
@@ -297,6 +301,9 @@ class PostgresIntentStore:
         state are write-once: a repeated write keeps the original values and
         never overwrites them (ADR-0032, ticket 11). The batch transaction
         hash is resolved later through the official status boundary, not here.
+        The breaker trial epoch is preserved so the terminal official result
+        can present the same owner and epoch to the Circuit Breaker (ticket 11
+        gate).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
@@ -304,15 +311,19 @@ class PostgresIntentStore:
                 UPDATE intents
                 SET payment_reference = COALESCE(payment_reference, %s),
                     reference_type = COALESCE(reference_type, %s),
-                    payment_state = COALESCE(payment_state, %s)
+                    payment_state = COALESCE(payment_state, %s),
+                    breaker_trial_epoch = COALESCE(
+                        CASE WHEN breaker_trial_epoch = 0 THEN NULL ELSE breaker_trial_epoch END,
+                        %s
+                    )
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash
+                          batch_tx_hash, breaker_trial_epoch
                 """,
-                (reference, reference_type, payment_state, intent_id),
+                (reference, reference_type, payment_state, breaker_trial_epoch, intent_id),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
@@ -330,8 +341,12 @@ class PostgresIntentStore:
         The official Gateway x402 transfer-status interface returns the exact
         reference's state and, once the transfer is batched, the batch-level
         settlement transaction hash. This method records both on the Intent
-        (ticket 11). It applies to a SETTLING or SETTLED Intent and updates the
-        resolved values; it never changes the Payment Reference itself.
+        (ticket 11). The write is monotonic: a non-terminal state
+        (``received``, ``batched``, ``confirmed``) never overwrites a terminal
+        state (``completed`` or ``failed``), so a delayed stale lookup cannot
+        regress a finalized reference (ticket 11 gate Major). It applies to a
+        SETTLING or SETTLED Intent and never changes the Payment Reference
+        itself.
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
@@ -340,11 +355,15 @@ class PostgresIntentStore:
                 SET payment_state = %s,
                     batch_tx_hash = COALESCE(%s, batch_tx_hash)
                 WHERE id = %s AND status IN ('settling', 'settled')
+                  AND (
+                    payment_state IS NULL
+                    OR payment_state NOT IN ('completed', 'failed')
+                  )
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
                           receipt_anchor, reference_type, payment_state,
-                          batch_tx_hash
+                          batch_tx_hash, breaker_trial_epoch
                 """,
                 (payment_state, batch_tx_hash, intent_id),
             ).fetchone()
@@ -371,7 +390,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -403,7 +423,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -481,7 +502,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch
                 """,
                 (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -542,7 +564,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor, reference_type, payment_state, batch_tx_hash
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch
                 """,
                 (intent_id,),
             ).fetchone()
@@ -615,6 +638,7 @@ class PostgresIntentStore:
             reference_type=row["reference_type"],
             payment_state=row["payment_state"],
             batch_tx_hash=row["batch_tx_hash"],
+            breaker_trial_epoch=row["breaker_trial_epoch"],
         )
 
 

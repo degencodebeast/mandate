@@ -123,3 +123,11 @@ mode fails closed: `REAL_DEMO=true` requires the exact normalized official
 Gateway facilitator URL (`https://gateway-api-testnet.circle.com/v1/x402`) and
 rejects a generic or mock URL. The in-process mock facilitator is never selected
 in real-demo mode.
+
+The Circuit Breaker outcome is deferred to the terminal official result. A
+payment accepted through `spend()` does not reset the breaker: the intent keeps
+the breaker trial epoch, and `resolve_reference` records breaker success only on
+a durable `completed` state or breaker failure on a durable `failed` state. The
+status write is monotonic: a delayed non-final lookup can never regress a
+durable `completed` or `failed` state, and a Receipt is created only when the
+durable state is `completed`.

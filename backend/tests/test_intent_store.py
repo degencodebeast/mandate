@@ -464,3 +464,59 @@ def test_block_and_release_is_idempotent_and_single_owner(
     assert again.status == "blocked"
     updated = mandate_store.get_mandate(user_id="u", mandate_id=mandate.id)
     assert updated.reserved_total == "0.00"
+
+
+def test_store_transfer_status_is_monotonic_non_terminal_cannot_regress(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-mono",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+    )
+
+    intent_store.store_transfer_status(
+        intent_id=intent.id, payment_state="completed", batch_tx_hash="0xbatch"
+    )
+    regressed = intent_store.store_transfer_status(
+        intent_id=intent.id, payment_state="received", batch_tx_hash=None
+    )
+
+    assert regressed.payment_state == "completed"
+    assert regressed.batch_tx_hash == "0xbatch"
+
+
+def test_store_transfer_status_monotonic_failed_cannot_be_overwritten(
+    stores: tuple[PostgresMandateStore, PostgresIntentStore],
+) -> None:
+    mandate_store, intent_store = stores
+    intent = intent_store.create_intent(
+        mandate_id=_mandate_id(mandate_store),
+        purpose_hash="hash-mono-fail",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+    )
+    intent_store.transition(intent_id=intent.id, status="settling", expected_status="pending")
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="3e80e924-6263-4393-b639-b4ab56da6925",
+        reference_type="gateway-x402-transfer-uuid",
+        payment_state="accepted",
+    )
+
+    intent_store.store_transfer_status(intent_id=intent.id, payment_state="failed")
+    regressed = intent_store.store_transfer_status(
+        intent_id=intent.id, payment_state="completed", batch_tx_hash="0xbatch"
+    )
+
+    assert regressed.payment_state == "failed"
+    assert regressed.batch_tx_hash is None

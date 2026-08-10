@@ -301,9 +301,7 @@ class MandateSpendService:
             reference=payment_result.payment_reference,
             reference_type=payment_result.reference_type,
             payment_state=payment_result.payment_state,
-        )
-        self._breaker.record_success(
-            service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
+            breaker_trial_epoch=trial_epoch,
         )
         return self._accepted_response(referenced, mandate)
 
@@ -393,27 +391,37 @@ class MandateSpendService:
             transfer = self._transfer_status_inspector.lookup_transfer(intent.payment_reference)
         except TransferLookupUnknownError:
             return self._frozen_unknown_response(intent, mandate)
-        resolved = self._intent_store.store_transfer_status(
+        self._intent_store.store_transfer_status(
             intent_id=intent.id,
             payment_state=transfer.payment_state,
             batch_tx_hash=transfer.batch_tx_hash,
         )
-        if transfer.payment_state == "failed":
-            return self._resolve_failed(intent=resolved, mandate=mandate)
-        if transfer.payment_state == "completed":
+        durable = self._intent_store.get_intent(mandate_id=mandate.id, purpose_hash=intent_hash)
+        if durable is None:
+            raise FinalizationNotPossibleError("There is no intent to resolve.")
+        if durable.payment_state == "failed":
+            return self._resolve_failed(intent=durable, mandate=mandate)
+        if durable.payment_state == "completed":
             return self._resolve_completed(
-                intent=resolved, mandate=mandate, task_id=task_id, purpose_hash=intent_hash
+                intent=durable, mandate=mandate, task_id=task_id, purpose_hash=intent_hash
             )
-        return self._frozen_unknown_response(resolved, mandate)
+        return self._frozen_unknown_response(durable, mandate)
 
     def _resolve_failed(self, *, intent: Intent, mandate: Mandate) -> SpendResponse:
         """Block an Intent whose official reference state is a final failure.
 
         The official boundary reports ``failed``: the payment definitively did
-        not settle. The reserved authority is released and the Intent blocks in
-        one atomic, one-owner operation (ticket 11 gate Major). A concurrent
-        failed resolution can never double-release authority.
+        not settle. The Circuit Breaker records a failure for the exact owner
+        and trial epoch (ticket 11 gate Major): accepted is not confirmed
+        settlement, so success was deferred until the terminal result. The
+        reserved authority is released and the Intent blocks in one atomic,
+        one-owner operation.
         """
+        self._breaker.record_failure(
+            service_url=intent.service_url,
+            owner=str(intent.id),
+            trial_epoch=intent.breaker_trial_epoch,
+        )
         blocked = self._intent_store.block_and_release_reservation(intent_id=intent.id)
         return SpendResponse(
             outcome="blocked: payment_failed",
@@ -432,7 +440,18 @@ class MandateSpendService:
         task_id: str,
         purpose_hash: str,
     ) -> SpendResponse:
-        """Finalize an Intent whose reference reached the official completed state."""
+        """Finalize an Intent whose reference reached the official completed state.
+
+        The Circuit Breaker records success only now: accepted is not confirmed
+        settlement, so the outcome is deferred to the terminal official result
+        (ticket 11 gate Major). The finalizer requires the durable
+        ``payment_state == completed`` before creating a Receipt.
+        """
+        self._breaker.record_success(
+            service_url=intent.service_url,
+            owner=str(intent.id),
+            trial_epoch=intent.breaker_trial_epoch,
+        )
         return self._finalize(
             intent=intent,
             mandate=mandate,
@@ -562,7 +581,10 @@ class MandateSpendService:
         Receipt Anchor from Arc instead of writing a second Receipt.
         ``finalize_settlement`` moves the reservation to spent authority and
         settles the Intent in one transaction. The caller must have stored the
-        Payment Reference before calling this method.
+        Payment Reference before calling this method. A Receipt is created only
+        when the durable official payment state is ``completed`` (ticket 11
+        gate Major): a delayed non-final lookup can never finalize a payment
+        whose durable state is not completed.
         """
         with self._intent_store.finalization_guard(intent_id=intent.id):
             current = self._intent_store.get_intent(
@@ -579,6 +601,10 @@ class MandateSpendService:
             if not current.payment_reference:
                 raise UnresolvedPaymentReferenceError(
                     "The intent has no stored Payment Reference; a Receipt cannot be finalized."
+                )
+            if current.payment_state != "completed":
+                raise FinalizationNotPossibleError(
+                    "The official Gateway status is not completed; the payment is not final."
                 )
             if current.receipt_anchor is None:
                 anchor = self._recover_or_record_receipt(

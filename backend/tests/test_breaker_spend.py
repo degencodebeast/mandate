@@ -226,6 +226,18 @@ def _spend(
     )
 
 
+def _resolve(
+    components: Components,
+    mandate_id: uuid.UUID,
+    *,
+    task_id: str = "task-1",
+) -> Any:
+    return components.client.post(
+        f"/api/v1/mandates/{mandate_id}/resolve",
+        json={"task_id": task_id, "purpose": "buy a research report"},
+    )
+
+
 def _breaker_state(components: Components, service_url: str) -> dict[str, Any]:
     with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
         row = connection.execute(
@@ -314,8 +326,11 @@ def test_after_cooldown_half_open_trial_success_closes(components: Components) -
     components.payments.hard_failure = None
 
     trial = _spend(components, mandate.id, task_id="task-4")
+    resolved = _resolve(components, mandate.id, task_id="task-4")
 
     assert trial.json()["outcome"] == "accepted"
+    assert resolved.status_code == 200
+    assert resolved.json()["outcome"] == "permitted"
     state = _breaker_state(components, _SERVICE_A)
     assert state["state"] == "closed"
     assert state["failure_count"] == 0
@@ -431,8 +446,10 @@ def test_abandoned_trial_expires_and_permits_one_new_trial(components: Component
     components.payments.hard_failure = None
 
     recovered = _spend(components, mandate.id, task_id="task-4")
+    resolved = _resolve(components, mandate.id, task_id="task-4")
 
     assert recovered.json()["outcome"] == "accepted"
+    assert resolved.json()["outcome"] == "permitted"
     state = _breaker_state(components, _SERVICE_A)
     assert state["state"] == "closed"
     assert state["failure_count"] == 0
@@ -502,6 +519,11 @@ def test_held_trial_owner_blocks_a_second_authorization() -> None:
         result = future.result(timeout=20).json()
         assert result["outcome"] == "accepted"
 
+    held_state = _breaker_state(components, _SERVICE_A)
+    assert held_state["state"] == "half_open"
+    resolved = _resolve(components, mandate.id, task_id="task-4")
+    assert resolved.status_code == 200
+    assert resolved.json()["outcome"] == "permitted"
     assert _breaker_state(components, _SERVICE_A)["state"] == "closed"
 
 
