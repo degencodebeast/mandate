@@ -135,7 +135,9 @@ retry. The Scripted breaker store mirrors the Postgres exactly-once semantics:
 it detects an applied outcome against the pre-call state, so a duplicate failed
 outcome counts once and a duplicate completed outcome cannot erase a newer
 independent failure, and a stale owner or epoch leaves the outcome unrecorded
-until a retry completes it. The status write is monotonic: a delayed non-final lookup can never
+until a retry completes it. The recorded-outcome check, the breaker write, and
+the outcome record are one atomic operation under a lock, so concurrent
+resolutions cannot both apply the same Intent outcome. The status write is monotonic: a delayed non-final lookup can never
 regress a durable `completed` or `failed` state, and a Receipt is created only
 when the durable state is `completed`. A consumed half-open trial stays
 exclusive until its owner's terminal breaker outcome commits: a SETTLING Intent

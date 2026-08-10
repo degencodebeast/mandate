@@ -22,6 +22,7 @@ the durable trial owner and start time in migration 0006.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -524,6 +525,7 @@ class ScriptedBreakerStateStore:
             state.service_url: state for state in (states or [])
         }
         self._recorded_outcomes: set[str] = set()
+        self._terminal_lock = threading.Lock()
 
     def list_states(self) -> list[BreakerState]:
         return list(self._states.values())
@@ -610,27 +612,31 @@ class ScriptedBreakerStateStore:
         recorded once per Intent id, so a delayed duplicate completed or failed
         result has no further effect (ticket 11 gate Major). The record is
         marked only when the breaker write actually applied; a stale epoch or
-        owner leaves the outcome pending so a retry can complete it.
+        owner leaves the outcome pending so a retry can complete it. The
+        recorded-outcome check, the breaker write, and the outcome record are
+        one atomic operation under a lock, so concurrent resolutions cannot
+        both apply the same Intent outcome (ticket 11 gate Major).
         """
-        key = str(intent_id)
-        if key in self._recorded_outcomes:
-            return self.get_or_create_state(service_url=service_url)
-        previous = self._states.get(service_url)
-        if outcome == "failed":
-            state = self.record_failure(
-                service_url=service_url,
-                owner=owner,
-                trial_epoch=trial_epoch,
-                now=now,
-                failure_threshold=failure_threshold,
-            )
-        else:
-            state = self.record_success(
-                service_url=service_url, owner=owner, trial_epoch=trial_epoch
-            )
-        if state is not previous:
-            self._recorded_outcomes.add(key)
-        return state
+        with self._terminal_lock:
+            key = str(intent_id)
+            if key in self._recorded_outcomes:
+                return self.get_or_create_state(service_url=service_url)
+            previous = self._states.get(service_url)
+            if outcome == "failed":
+                state = self.record_failure(
+                    service_url=service_url,
+                    owner=owner,
+                    trial_epoch=trial_epoch,
+                    now=now,
+                    failure_threshold=failure_threshold,
+                )
+            else:
+                state = self.record_success(
+                    service_url=service_url, owner=owner, trial_epoch=trial_epoch
+                )
+            if state is not previous:
+                self._recorded_outcomes.add(key)
+            return state
 
     def _epoch_claim_valid(self, current: BreakerState, owner: str, trial_epoch: int) -> bool:
         """Return whether an outcome write may apply to the current state.
