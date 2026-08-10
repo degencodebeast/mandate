@@ -43,8 +43,25 @@ npm run start:a
 | `FAILURE_RATE` | 0.6 (A) / 0 (B) | Probability a paid request fails |
 | `FAILURE_MODE` | `error` | `error` (500) or `timeout` (hang, then socket destroy) |
 | `FACILITATOR_URL` | — | Real facilitator URL; unset uses the in-process mock |
+| `REAL_DEMO` | `false` | `true` requires `FACILITATOR_URL` (the official Circle Gateway) and rejects the in-process mock facilitator |
 | `RESPONSE_TIMEOUT_MS` | `30000` | How long a timeout-mode failure holds the socket |
 | `SYNC_FACILITATOR` | `true` | Sync scheme support with the facilitator on start |
+
+## Real-demo mode
+
+The real demonstration pays through the official Circle Gateway path on Arc
+testnet. Start a service with `REAL_DEMO=true` and
+`FACILITATOR_URL=https://gateway-api-testnet.circle.com/v1/x402`. Real-demo mode
+fails closed: it requires the exact normalized official Gateway facilitator URL
+and never falls back to the in-process mock facilitator (ticket 11). A generic
+or mock URL is rejected. It advertises the `GatewayWalletBatched` x402 option
+with the Gateway authorization window, so the Circle CLI signs and settles
+through the real Gateway.
+
+```bash
+REAL_DEMO=true FACILITATOR_URL=https://gateway-api-testnet.circle.com/v1/x402 \
+  PAY_TO=<demo-operator-wallet> PORT=4022 npm run start:b
+```
 
 ## Tests
 

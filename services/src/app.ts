@@ -3,18 +3,36 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import type { RoutesConfig, FacilitatorClient } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { GatewayEvmScheme } from "@circle-fin/x402-batching/server";
 import type { ServiceConfig } from "./config.js";
+import { isOfficialGatewayFacilitatorUrl } from "./gateway.js";
 import { arcUsdcMoneyParser, ARC_USDC_ERC20_ADDRESS, ARC_USDC_DECIMALS } from "./money.js";
 import { MockFacilitatorClient } from "./facilitator.js";
 import type { FailureSimulator } from "./failure.js";
 import { searchResults } from "./results.js";
 
 /**
+ * The Gateway batching scheme requires the client to sign against a 30-day
+ * authorization window. Advertise that window so the client and server agree
+ * on the exact payment terms (ticket 11, real-demo mode).
+ */
+const GATEWAY_AUTH_WINDOW_SECONDS = 2592000;
+
+/**
  * Choose the facilitator client for a service.
  * A real URL wins over the in-process mock so the demo can run against a real
  * facilitator while still working with none.
+ *
+ * Real-demo mode fails closed: it never falls back to the in-process mock
+ * facilitator. Without a real facilitator URL it throws (ticket 11), so a
+ * configuration omission cannot produce a persuasive but false demo.
  */
 export function resolveFacilitatorClient(config: ServiceConfig): FacilitatorClient {
+  if (config.realDemo && (!config.facilitatorUrl || !isOfficialGatewayFacilitatorUrl(config.facilitatorUrl))) {
+    throw new Error(
+      "REAL_DEMO requires FACILITATOR_URL pointing at the exact official Circle Gateway facilitator.",
+    );
+  }
   if (config.facilitatorUrl) {
     return new HTTPFacilitatorClient({ url: config.facilitatorUrl });
   }
@@ -33,7 +51,9 @@ export function createX402App(
   failureSimulator: FailureSimulator | null,
   facilitatorClient: FacilitatorClient = resolveFacilitatorClient(config),
 ): Express {
-  const scheme = new ExactEvmScheme().registerMoneyParser(arcUsdcMoneyParser);
+  const scheme = config.realDemo
+    ? new GatewayEvmScheme()
+    : new ExactEvmScheme().registerMoneyParser(arcUsdcMoneyParser);
 
   const resourceServer = new x402ResourceServer(facilitatorClient).register(
     config.network,
@@ -47,6 +67,7 @@ export function createX402App(
         price: config.price,
         network: config.network,
         payTo: config.payTo,
+        ...(config.realDemo ? { maxTimeoutSeconds: GATEWAY_AUTH_WINDOW_SECONDS } : {}),
       },
       description: `${config.serviceName}: paid JSON search results`,
       mimeType: "application/json",
