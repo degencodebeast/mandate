@@ -272,7 +272,7 @@ class ScriptedMcpSessionFactory:
         yield ScriptedMcpSession(self._backend)
 
 
-def mcp_tool_result(body: JsonObject) -> Any:
+def mcp_tool_result(body: JsonObject, *, is_error: bool = False) -> Any:
     """Build an MCP tool result carrying one JSON document.
 
     The result shape mirrors the official MCP Python SDK tool result, so the
@@ -285,6 +285,6 @@ def mcp_tool_result(body: JsonObject) -> Any:
     class _Result:
         def __init__(self) -> None:
             self.content: list[Any] = [_Content()]
-            self.is_error: bool = False
+            self.is_error: bool = is_error
 
     return _Result()

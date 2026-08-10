@@ -1,12 +1,14 @@
 # Mandate Agno demo run (deterministic, REST fallback)
 
-Timestamp: 2026-08-10T17:56:24.312376+00:00
+Timestamp: 2026-08-10T18:50:16.979835+00:00
 Interface: REST (scripted transport; no network).
+Agent model: DecisionModel (deterministic).
 Mandate created by the User before the agent starts.
 Agent tools: mandate.spend, mandate.status only (no direct payment tool).
+Injected condition: response loss after the real economic action.
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): 8ab430c2-9117-47b1-b6f8-1ff54e545d5b
+Intent (agent/backend/UI): 6b2be300-c219-42bd-8630-141559acd200 / 6b2be300-c219-42bd-8630-141559acd200 / 6b2be300-c219-42bd-8630-141559acd200
 Decision: request_review
 Authorize: no
 Payment Reference: -
@@ -16,7 +18,7 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): 96452a54-5d3c-4aa3-8570-e31342bffa73
+Intent (agent/backend/UI): c7d6c827-97f5-48d9-845b-c3b1744b5c49 / c7d6c827-97f5-48d9-845b-c3b1744b5c49 / c7d6c827-97f5-48d9-845b-c3b1744b5c49
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -62,7 +64,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "8ab430c2-9117-47b1-b6f8-1ff54e545d5b",
+      "id": "6b2be300-c219-42bd-8630-141559acd200",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -79,7 +81,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "96452a54-5d3c-4aa3-8570-e31342bffa73",
+      "id": "c7d6c827-97f5-48d9-845b-c3b1744b5c49",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",

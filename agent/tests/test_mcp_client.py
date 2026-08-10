@@ -31,13 +31,17 @@ class ScriptedMcpSession:
         self.status_document = status_document
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.error: Exception | None = None
+        self.status_error: Exception | None = None
+        self.is_error_result: bool = False
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((name, arguments))
         if self.error is not None:
             raise self.error
+        if name == "mandate.status" and self.status_error is not None:
+            raise self.status_error
         body = self.spend_document if name == "mandate.spend" else self.status_document
-        return mcp_tool_result(body)
+        return mcp_tool_result(body, is_error=self.is_error_result)
 
 
 class ScriptedSessionFactory:
@@ -219,6 +223,81 @@ def test_mcp_resolve_uses_rest_fallback() -> None:
     assert result.outcome == "accepted"
     assert rest_transport_calls[0]["method"] == "POST"
     assert rest_transport_calls[0]["url"].endswith("/resolve")
+
+
+def test_mcp_status_falls_back_to_rest_on_transport_error() -> None:
+    session = ScriptedMcpSession(_spend_document(), _status_document())
+    session.status_error = ConnectionError("the status transport failed")
+    rest_transport_calls: list[dict[str, Any]] = []
+
+    class RestTransport:
+        def request(
+            self,
+            *,
+            method: str,
+            url: str,
+            headers: dict[str, str],
+            payload: dict[str, Any] | None = None,
+        ) -> tuple[int, dict[str, Any]]:
+            rest_transport_calls.append(
+                {"method": method, "url": url, "headers": headers, "payload": payload}
+            )
+            return 200, _status_document()
+
+    rest = MandateRESTClient(_BASE, bearer_token=_TOKEN, transport=RestTransport())
+    client = McpMandateClient(
+        endpoint=_MCP_URL,
+        credential=_CREDENTIAL,
+        session_factory=ScriptedSessionFactory(session),
+        rest_fallback=rest,
+    )
+
+    status = client.status(mandate_id="mandate-1")
+
+    assert status.mandate_id == "mandate-1"
+    assert rest_transport_calls[0]["method"] == "GET"
+    assert rest_transport_calls[0]["url"].endswith("/status")
+
+
+def test_mcp_spend_propagates_mandate_tool_errors_without_rest_fallback() -> None:
+    from agno_demo.mcp_client import McpToolError
+
+    session = ScriptedMcpSession(_spend_document(), _status_document())
+    session.is_error_result = True
+    rest_transport_calls: list[dict[str, Any]] = []
+
+    class RestTransport:
+        def request(
+            self,
+            *,
+            method: str,
+            url: str,
+            headers: dict[str, str],
+            payload: dict[str, Any] | None = None,
+        ) -> tuple[int, dict[str, Any]]:
+            rest_transport_calls.append(
+                {"method": method, "url": url, "headers": headers, "payload": payload}
+            )
+            return 200, _spend_document()
+
+    rest = MandateRESTClient(_BASE, bearer_token=_TOKEN, transport=RestTransport())
+    client = McpMandateClient(
+        endpoint=_MCP_URL,
+        credential=_CREDENTIAL,
+        session_factory=ScriptedSessionFactory(session),
+        rest_fallback=rest,
+    )
+
+    with pytest.raises(McpToolError):
+        client.spend(
+            mandate_id="mandate-1",
+            task_id="intent-b",
+            purpose="buy market data",
+            service_url="https://service-b.example.com",
+            amount="1.00",
+        )
+
+    assert rest_transport_calls == []
 
 
 def test_mcp_client_requires_a_credential() -> None:

@@ -23,14 +23,6 @@ from agno_demo.scripted import ScriptedMandateBackend, ScriptedMcpSessionFactory
 
 EVIDENCE_DIR = Path(__file__).parent.parent.parent / "evidence"
 
-_SCENES = {
-    "task_a": "intent-a",
-    "purpose_a": "buy a research report",
-    "task_b": "intent-b",
-    "purpose_b": "buy market data",
-    "amount": "1.00",
-}
-
 
 def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str, object]]:
     """Run both scenes through the MCP client with REST fallback."""
@@ -49,17 +41,24 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
     reports = run_demo(
         client=client,
         mandate_id=backend.mandate_id,
+        task_a="intent-a",
+        purpose_a="buy a research report",
+        task_b="intent-b",
+        purpose_b="buy market data",
+        amount="1.00",
         service_a=backend.service_a,
         service_b=backend.service_b,
-        **_SCENES,
+        inject_response_loss=True,
     )
     lines = [
         "# Mandate Agno demo run (deterministic, scripted MCP)",
         "",
         f"Timestamp: {now}",
         "Interface: MCP (Streamable HTTP adapter) with REST fallback.",
+        "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
         "Agent tools: mandate.spend, mandate.status only (no direct payment tool).",
+        "Injected condition: response loss after the real economic action.",
         "",
         *render_demo_report(reports),
     ]
@@ -77,17 +76,24 @@ def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str
     reports = run_demo(
         client=client,
         mandate_id=backend.mandate_id,
+        task_a="intent-a",
+        purpose_a="buy a research report",
+        task_b="intent-b",
+        purpose_b="buy market data",
+        amount="1.00",
         service_a=backend.service_a,
         service_b=backend.service_b,
-        **_SCENES,
+        inject_response_loss=True,
     )
     lines = [
         "# Mandate Agno demo run (deterministic, REST fallback)",
         "",
         f"Timestamp: {now}",
         "Interface: REST (scripted transport; no network).",
+        "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
         "Agent tools: mandate.spend, mandate.status only (no direct payment tool).",
+        "Injected condition: response loss after the real economic action.",
         "",
         *render_demo_report(reports),
     ]

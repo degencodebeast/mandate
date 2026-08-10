@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from agno_demo.models import SpendResponse
+from agno_demo.models import SpendResponse, StatusDocument
 
 ACTION_CONTINUE = "continue"
 ACTION_WAIT = "wait"
@@ -108,4 +108,34 @@ def decide(response: SpendResponse) -> AgentDecision:
         intent_id=intent_id,
         may_authorize=False,
         reason="unrecognized Spend Result; reduce scope",
+    )
+
+
+class ServiceABreakerClosedError(RuntimeError):
+    """Scene B requires the exact Service A Circuit Breaker row to be open."""
+
+
+def decide_switch(service_a_url: str, status: StatusDocument) -> AgentDecision:
+    """Decide to switch to Service B before authorization.
+
+    The safe switch precondition is that the exact Service A Circuit Breaker
+    row is open. When no Service A row is open, switching would claim a safe
+    switch without the required state, so the scene must stop (ADR-0032,
+    ADR-0033). This is a hard precondition, not a fallback.
+    """
+    service_a_breaker = next(
+        (state for state in status.breaker_state if state.service_url == service_a_url),
+        None,
+    )
+    if service_a_breaker is None or service_a_breaker.state != "open":
+        state = "no row" if service_a_breaker is None else service_a_breaker.state
+        raise ServiceABreakerClosedError(
+            f"Service A Circuit Breaker is not open (state={state}); "
+            "the switch scene must stop before authorization."
+        )
+    return AgentDecision(
+        action=ACTION_SWITCH_SERVICE,
+        intent_id=None,
+        may_authorize=True,
+        reason=f"circuit breaker open for {service_a_url}; switch before authorization",
     )

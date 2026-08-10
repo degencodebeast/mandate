@@ -13,7 +13,9 @@ the finalized Payment Reference.
 
 from __future__ import annotations
 
-from agno_demo.decisions import AgentDecision
+import pytest
+
+from agno_demo.decisions import AgentDecision, ServiceABreakerClosedError
 from agno_demo.models import (
     BreakerState,
     SpendIntent,
@@ -60,6 +62,48 @@ class ScriptedSceneBackend:
         self.resolve_calls.append((task_id, purpose))
         return self._settled_response("intent-b", purpose, SERVICE_B, self.receipt_anchor_b)
 
+    def status(self, *, mandate_id: str) -> StatusDocument:
+        """Return a status document the dashboard would render."""
+        intents = [
+            _intent(
+                intent_id="intent-a",
+                service_url=SERVICE_A,
+                status="unknown",
+                spend_outcome="unknown",
+                economic_safety_action="request_review",
+            )
+        ]
+        if self.resolve_calls:
+            intents.append(
+                _intent(
+                    intent_id="intent-b",
+                    service_url=SERVICE_B,
+                    status="settled",
+                    spend_outcome="permitted",
+                    economic_safety_action="none",
+                    payment_reference="gateway-ref-b",
+                    receipt_anchor=self.receipt_anchor_b,
+                    purpose_hash="purpose-b",
+                )
+            )
+        return StatusDocument(
+            mandate_id=mandate_id,
+            spent_total="1.00",
+            remaining_budget="9.00",
+            intents=intents,
+            breaker_state=[
+                BreakerState(
+                    service_url=SERVICE_A,
+                    state=self.breaker_state,
+                    failure_count=3,
+                    last_failure_at="2026-08-10T11:00:00Z",
+                    trial_allowed=False,
+                    trial_owner=None,
+                    trial_started_at=None,
+                )
+            ],
+        )
+
     def _intent_a_spend(self, purpose: str, service_url: str, amount: str) -> SpendResponse:
         return SpendResponse(
             outcome=self.intent_a_outcome,
@@ -88,6 +132,7 @@ class ScriptedSceneBackend:
                     status="blocked",
                     spend_outcome="blocked: breaker_open",
                     economic_safety_action="switch_service",
+                    purpose_hash="purpose-b",
                 ),
                 spent_total="0",
                 receipt=None,
@@ -103,6 +148,7 @@ class ScriptedSceneBackend:
                 spend_outcome="accepted",
                 economic_safety_action="wait",
                 payment_reference="gateway-ref-b",
+                purpose_hash="purpose-b",
             ),
             spent_total="1.00",
             receipt=None,
@@ -127,6 +173,7 @@ class ScriptedSceneBackend:
                 economic_safety_action="none",
                 payment_reference="gateway-ref-b",
                 receipt_anchor=anchor,
+                purpose_hash="purpose-b",
             ),
             spent_total="1.00",
             receipt=SpendReceipt(
@@ -142,32 +189,6 @@ class ScriptedSceneBackend:
         )
 
 
-class ScriptedBreakerStatusClient:
-    """A status-only client used by the switch scene to read the breaker."""
-
-    def __init__(self, breaker_state: str) -> None:
-        self._state = breaker_state
-
-    def status(self, *, mandate_id: str) -> StatusDocument:
-        return StatusDocument(
-            mandate_id=mandate_id,
-            spent_total="0",
-            remaining_budget="10.00",
-            intents=[],
-            breaker_state=[
-                BreakerState(
-                    service_url=SERVICE_A,
-                    state=self._state,
-                    failure_count=3,
-                    last_failure_at="2026-08-10T11:00:00Z",
-                    trial_allowed=False,
-                    trial_owner=None,
-                    trial_started_at=None,
-                )
-            ],
-        )
-
-
 def _intent(
     *,
     intent_id: str,
@@ -177,11 +198,12 @@ def _intent(
     economic_safety_action: str | None,
     payment_reference: str | None = None,
     receipt_anchor: str | None = None,
+    purpose_hash: str = "purpose-hash",
 ) -> SpendIntent:
     return SpendIntent(
         id=intent_id,
         mandate_id="mandate-1",
-        purpose_hash="purpose-hash",
+        purpose_hash=purpose_hash,
         service_url=service_url,
         amount="1.00",
         status=status,
@@ -204,12 +226,14 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     backend = ScriptedSceneBackend()
     scene = FreezeScene(
         client=backend,
+        status_client=backend,
         mandate_id="mandate-1",
         intent_a_task="intent-a",
         intent_a_purpose="buy a research report",
         service_a_url=SERVICE_A,
         service_b_url=SERVICE_B,
         amount="1.00",
+        inject_response_loss=True,
     )
 
     result: SceneResult = scene.run()
@@ -225,11 +249,31 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     assert not any(service == SERVICE_B for (_, _, service) in backend.spend_calls)
 
 
+def test_freeze_scene_does_not_label_without_a_configured_injection() -> None:
+    backend = ScriptedSceneBackend()
+    scene = FreezeScene(
+        client=backend,
+        status_client=backend,
+        mandate_id="mandate-1",
+        intent_a_task="intent-a",
+        intent_a_purpose="buy a research report",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        inject_response_loss=False,
+    )
+
+    result: SceneResult = scene.run()
+
+    assert result.decision.action in ("wait", "request_review")
+    assert result.injected_response_loss is False
+
+
 def test_switch_scene_selects_service_b_before_authorization() -> None:
     backend = ScriptedSceneBackend()
-    breaker_client = ScriptedBreakerStatusClient(breaker_state="open")
+    backend.breaker_state = "open"
     scene = SwitchScene(
-        status_client=breaker_client,
+        status_client=backend,
         spend_client=backend,
         mandate_id="mandate-1",
         intent_b_task="intent-b",
@@ -251,3 +295,23 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
     assert not any(service == SERVICE_A for (_, _, service) in backend.spend_calls)
     assert backend.spend_calls == [("intent-b", "buy market data", SERVICE_B)]
     assert backend.resolve_calls == [("intent-b", "buy market data")]
+
+
+def test_switch_scene_stops_when_service_a_breaker_is_closed() -> None:
+    backend = ScriptedSceneBackend()
+    backend.breaker_state = "closed"
+    scene = SwitchScene(
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+    )
+
+    with pytest.raises(ServiceABreakerClosedError):
+        scene.run()
+
+    assert backend.spend_calls == []

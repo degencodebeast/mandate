@@ -143,8 +143,40 @@ GREEN:
 ```
 
 Rules proven: `mandate.spend` and `mandate.status` run through the MCP session;
-a transport error falls back to REST; `resolve` uses the REST fallback (the MCP
-adapter exposes spend and status only); an empty credential is rejected.
+a transport error on spend or status falls back to REST; a Mandate tool error
+(`is_error`) propagates without the REST fallback; `resolve` uses the REST
+fallback (the MCP adapter exposes spend and status only); an empty credential is
+rejected.
+
+## Behavior 8 — agent run and model provider (8 tests)
+
+Ticket 12a passed; the demo now routes every decision through `agent.run()` with
+an explicit model. RED:
+
+```
+ModuleNotFoundError: No module named 'agno_demo.providers'
+```
+
+Command: `uv run pytest tests/test_agent.py tests/test_providers.py -q`
+
+GREEN:
+
+```
+13 passed
+```
+
+Rules proven: `build_agent` always provides a model (the deterministic
+`DecisionModel` by default); an injected model is used; `run_agent_spend_decision`
+and `run_agent_switch_decision` genuinely run the Agent; the switch decision
+stops when the exact Service A breaker row is not open; the OpenAI provider
+fails closed without `OPENAI_API_KEY`.
+
+## Behavior 9 — injected-response-loss gate and three-surface Intent ID
+
+The freeze scene labels the injected condition only when the demo is configured
+to inject response loss AND the Spend Result is UNKNOWN. The report records the
+Intent identifier separately from the agent, backend, and UI surfaces instead of
+aliasing one backend value into three labels.
 
 ## Full agent suite
 
@@ -153,7 +185,7 @@ Command: `uv run pytest -q`
 Result:
 
 ```
-27 passed
+41 passed
 ```
 
 ## Run evidence
@@ -163,4 +195,5 @@ Result:
 - `evidence/demo-run-rest.txt` — both scenes through the pure REST fallback.
 
 Both record the same Intent identifier in the agent, backend, and UI views and
-keep Payment Reference separate from Receipt Anchor.
+keep Payment Reference separate from Receipt Anchor. Both runs route decisions
+through the deterministic Agent model and label the injected response loss.

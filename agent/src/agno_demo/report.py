@@ -14,7 +14,9 @@ from typing import Any
 def build_scene_report(
     *,
     scene: str,
-    intent_id: str,
+    agent_intent_id: str | None,
+    backend_intent_id: str | None,
+    ui_intent_id: str | None,
     decision_action: str,
     may_authorize: bool,
     payment_reference: str | None,
@@ -25,16 +27,17 @@ def build_scene_report(
 ) -> dict[str, Any]:
     """Build one scene report document.
 
-    The same Intent identifier is deliberately written once and then aliased to
-    the agent, backend, and UI views so the three surfaces cannot diverge in
-    the evidence.
+    The Intent identifier is recorded once per surface that produced it: the
+    agent view (the decision), the backend view (the spend response), and the
+    UI view (the status document the dashboard renders). Recording three
+    distinct sources prevents a single aliased value from reporting proof that
+    did not occur (ticket 10c submission proof).
     """
     return {
         "scene": scene,
-        "intent_id": intent_id,
-        "agent_intent_id": intent_id,
-        "backend_intent_id": intent_id,
-        "ui_intent_id": intent_id,
+        "agent_intent_id": agent_intent_id,
+        "backend_intent_id": backend_intent_id,
+        "ui_intent_id": ui_intent_id,
         "decision_action": decision_action,
         "may_authorize": may_authorize,
         "payment_reference": payment_reference,
@@ -50,7 +53,12 @@ def render_demo_report(reports: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for report in reports:
         lines.append(f"=== SCENE {report['scene'].upper()} ===")
-        lines.append(f"Intent (agent/backend/UI): {report['intent_id']}")
+        lines.append(
+            "Intent (agent/backend/UI): "
+            f"{report['agent_intent_id'] or '-'} / "
+            f"{report['backend_intent_id'] or '-'} / "
+            f"{report['ui_intent_id'] or '-'}"
+        )
         lines.append(f"Decision: {report['decision_action']}")
         lines.append(f"Authorize: {'yes' if report['may_authorize'] else 'no'}")
         lines.append(f"Payment Reference: {report['payment_reference'] or '-'}")

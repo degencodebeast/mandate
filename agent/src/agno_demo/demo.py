@@ -11,7 +11,9 @@ The demo runs two scenes against the Mandate Service:
 The User creates the Mandate before the agent starts. The agent has no direct
 payment tool; every economic action goes through the Mandate interface. The
 agent calls ``mandate.spend`` and ``mandate.status`` through MCP when ticket 12a
-passes, with REST as the fallback (ADR-0033).
+passes, with REST as the fallback (ADR-0033). Every decision is routed through
+``agent.run()``; the model is injectable and defaults to the deterministic
+``DecisionModel``.
 
 Usage:
 
@@ -21,6 +23,7 @@ Usage:
       --base-url http://localhost:8000 \
       --bearer-token <token> \
       --mandate-id <id> \
+      --inject-response-loss \
       --task-a intent-a --purpose-a "buy a research report" \
       --task-b intent-b --purpose-b "buy market data" \
       --service-a https://service-a.example.com \
@@ -35,6 +38,14 @@ import argparse
 import os
 from typing import Protocol
 
+from agno.models.base import Model
+
+from agno_demo.agent import (
+    build_agent,
+    run_agent_spend_decision,
+    run_agent_switch_decision,
+)
+from agno_demo.decisions import AgentDecision
 from agno_demo.models import SpendResponse, StatusDocument
 from agno_demo.report import build_scene_report, render_demo_report
 from agno_demo.rest import MandateRESTClient
@@ -70,16 +81,34 @@ def run_demo(
     service_a: str,
     service_b: str,
     amount: str,
+    inject_response_loss: bool = False,
+    model: Model | None = None,
 ) -> list[dict[str, object]]:
-    """Run both scenes and return the report documents."""
+    """Run both scenes and return the report documents.
+
+    The Agno Agent is built over the client and every scene decision is routed
+    through ``agent.run()``. Scene B stops unless the exact Service A Circuit
+    Breaker row is open.
+    """
+    agent = build_agent(client=client, model=model)
+
+    def agent_spend_decide(response: SpendResponse) -> AgentDecision:
+        return run_agent_spend_decision(agent=agent, response=response)
+
+    def agent_switch_decide(service_a_url: str, status: StatusDocument) -> AgentDecision:
+        return run_agent_switch_decision(agent=agent, service_a_url=service_a_url, status=status)
+
     freeze = FreezeScene(
         client=client,
+        status_client=client,
         mandate_id=mandate_id,
         intent_a_task=task_a,
         intent_a_purpose=purpose_a,
         service_a_url=service_a,
         service_b_url=service_b,
         amount=amount,
+        decider=agent_spend_decide,
+        inject_response_loss=inject_response_loss,
     )
     switch = SwitchScene(
         status_client=client,
@@ -90,6 +119,7 @@ def run_demo(
         service_a_url=service_a,
         service_b_url=service_b,
         amount=amount,
+        decider=agent_switch_decide,
     )
     return [
         _report_from_result(freeze.run()),
@@ -101,7 +131,9 @@ def _report_from_result(result: SceneResult) -> dict[str, object]:
     """Convert one scene result into the shared report document."""
     return build_scene_report(
         scene=result.scene,
-        intent_id=result.intent_id or "-",
+        agent_intent_id=result.agent_intent_id,
+        backend_intent_id=result.backend_intent_id,
+        ui_intent_id=result.ui_intent_id,
         decision_action=result.decision.action,
         may_authorize=result.decision.may_authorize,
         payment_reference=result.payment_reference,
@@ -140,6 +172,23 @@ def main() -> None:
     parser.add_argument(
         "--mandate-id", default=os.environ.get("MANDATE_DEMO_MANDATE_ID", "mandate-demo")
     )
+    parser.add_argument(
+        "--inject-response-loss",
+        action="store_true",
+        default=os.environ.get("MANDATE_DEMO_INJECT_RESPONSE_LOSS", "0") == "1",
+        help="Configure the backend to lose the response after the real economic action.",
+    )
+    parser.add_argument(
+        "--model-provider",
+        default=os.environ.get("MANDATE_DEMO_MODEL_PROVIDER", "decision"),
+        choices=["decision", "openai"],
+        help="Model provider: decision (deterministic) or openai (requires OPENAI_API_KEY).",
+    )
+    parser.add_argument(
+        "--model-id",
+        default=os.environ.get("MANDATE_DEMO_MODEL_ID", ""),
+        help="Model identifier for a real provider (defaults to the provider default).",
+    )
     parser.add_argument("--task-a", default="intent-a")
     parser.add_argument("--purpose-a", default="buy a research report")
     parser.add_argument("--task-b", default="intent-b")
@@ -150,6 +199,12 @@ def main() -> None:
     args = parser.parse_args()
 
     client = _build_client(args)
+    from agno_demo.providers import build_model
+
+    model = build_model(
+        provider=args.model_provider,
+        model_id=args.model_id or None,
+    )
     reports = run_demo(
         client=client,
         mandate_id=args.mandate_id,
@@ -160,6 +215,8 @@ def main() -> None:
         service_a=args.service_a,
         service_b=args.service_b,
         amount=args.amount,
+        inject_response_loss=args.inject_response_loss,
+        model=model,
     )
     print("\n".join(render_demo_report(reports)))
 

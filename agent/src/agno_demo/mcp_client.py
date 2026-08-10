@@ -2,13 +2,15 @@
 
 Ticket 12a passed its gate, so the demo agent calls ``mandate.spend`` and
 ``mandate.status`` through the real Streamable HTTP MCP adapter (ADR-0033). One
-MCP credential grants access to one Mandate only. REST remains the fallback:
-finalization (``resolve``) and transport-error recovery go through the Mandate
-REST client.
+MCP credential grants access to one Mandate only. REST remains the fallback for
+transport failures: ``httpx2`` raises ``TransportError`` subclasses (connect
+failures, connect/read/write timeouts) that do not inherit from the built-in
+``ConnectionError``, and both tools fall back to REST when a transport error
+occurs. Mandate tool errors (an ``is_error`` tool result) are raised, never
+caught as transport errors, because they can carry economic state.
 
-The MCP session is injectable so the client logic is deterministic in tests
-(ADR-0024). The production session factory uses the official MCP Python SDK
-client over ``httpx2``.
+Finalization (``resolve``) always uses the REST fallback because the MCP adapter
+exposes spend and status only (ADR-0033, ticket 12a).
 """
 
 from __future__ import annotations
@@ -32,13 +34,22 @@ class SessionFactory(Protocol):
     def __call__(self, endpoint: str, credential: str) -> AsyncIterator[McpSession]: ...
 
 
+class McpToolError(RuntimeError):
+    """The Mandate MCP tool returned an error result.
+
+    A tool error can carry economic state (authorization, service, or spend
+    information). It is never treated as a transport failure and never triggers
+    the REST fallback.
+    """
+
+
 class McpMandateClient:
     """Call Mandate economic-safety tools through the MCP adapter.
 
-    ``spend`` and ``status`` go through the MCP tools when the session works.
-    On a transport error, ``spend`` falls back to the Mandate REST endpoint.
-    ``resolve`` always uses the REST fallback because the MCP adapter exposes
-    only spend and status (ADR-0033, ticket 12a).
+    ``spend`` and ``status`` go through the MCP tools. On a documented
+    ``httpx2`` transport error either tool falls back to the Mandate REST
+    endpoint. Mandate tool errors propagate. ``resolve`` always uses the REST
+    fallback because the MCP adapter exposes only spend and status.
     """
 
     def __init__(
@@ -65,7 +76,7 @@ class McpMandateClient:
         service_url: str,
         amount: str,
     ) -> SpendResponse:
-        """Call mandate.spend through MCP, or fall back to REST."""
+        """Call mandate.spend through MCP, or fall back to REST on transport error."""
         try:
             return _call_spend(
                 self._endpoint,
@@ -76,7 +87,7 @@ class McpMandateClient:
                 service_url,
                 amount,
             )
-        except ConnectionError:
+        except _transport_errors():
             if self._rest is None:
                 raise
             return self._rest.spend(
@@ -88,8 +99,13 @@ class McpMandateClient:
             )
 
     def status(self, *, mandate_id: str) -> StatusDocument:
-        """Call mandate.status through MCP."""
-        return _call_status(self._endpoint, self._credential, self._session_factory)
+        """Call mandate.status through MCP, or fall back to REST on transport error."""
+        try:
+            return _call_status(self._endpoint, self._credential, self._session_factory)
+        except _transport_errors():
+            if self._rest is None:
+                raise
+            return self._rest.status(mandate_id=mandate_id)
 
     def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
         """Resolve finalization through the REST fallback."""
@@ -146,15 +162,41 @@ def _call_status(
 
 
 def _tool_text(result: Any) -> dict[str, Any]:
-    """Extract the JSON document from an MCP tool result."""
+    """Extract the JSON document from an MCP tool result.
+
+    An ``is_error`` result is a Mandate tool error and is raised as
+    ``McpToolError`` so the caller never mistakes it for a transport failure.
+    """
     if getattr(result, "is_error", False):
-        raise ConnectionError("The MCP tool returned an error.")
+        detail = ""
+        content = getattr(result, "content", [])
+        if content:
+            try:
+                detail = str(content[0].text)[:500]
+            except (AttributeError, IndexError):
+                detail = ""
+        raise McpToolError(f"The Mandate MCP tool returned an error: {detail}")
     content = getattr(result, "content", [])
     if not content:
         raise ConnectionError("The MCP tool returned no content.")
     import json
 
     return json.loads(content[0].text)
+
+
+def _transport_errors() -> tuple[type[BaseException], ...]:
+    """Return the documented transport exception types.
+
+    ``ConnectError``, ``ConnectTimeout``, and ``ReadTimeout`` inherit from
+    ``httpx2.TransportError`` (and ``httpx2.HTTPError``), not from the built-in
+    ``ConnectionError``. Catching the ``httpx2.HTTPError`` base plus the built-in
+    ``ConnectionError`` (used when a session ends) covers every transport
+    failure the MCP client can surface. Mandate tool errors (``McpToolError``)
+    are deliberately not included.
+    """
+    import httpx2
+
+    return (httpx2.HTTPError, ConnectionError)
 
 
 async def _real_session_factory(endpoint: str, credential: str) -> AsyncIterator[McpSession]:
