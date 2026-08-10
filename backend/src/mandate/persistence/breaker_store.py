@@ -22,6 +22,7 @@ the durable trial owner and start time in migration 0006.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,6 +58,18 @@ class BreakerStateStore(Protocol):
     ) -> BreakerState: ...
 
     def record_success(self, *, service_url: str, owner: str, trial_epoch: int) -> BreakerState: ...
+
+    def record_terminal_outcome(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        outcome: str,
+        now: datetime,
+        failure_threshold: int,
+    ) -> BreakerState: ...
 
     def open_to_half_open(self, *, service_url: str) -> BreakerState | None: ...
 
@@ -270,6 +283,157 @@ class PostgresBreakerStateStore:
             raise RuntimeError("record_success did not return a breaker row")
         return self._from_row(row)
 
+    def record_terminal_outcome(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        outcome: str,
+        now: datetime,
+        failure_threshold: int,
+    ) -> BreakerState:
+        """Apply the durable terminal breaker outcome for one Intent atomically.
+
+        One finalized Intent affects the Circuit Breaker exactly once (ticket
+        11 gate Major). The claim flag (``breaker_outcome_recorded`` on the
+        Intent) and the breaker change commit in the same transaction: either
+        both apply or neither does, so a process stop cannot strand a claimed
+        failure that was never recorded, and a delayed duplicate success cannot
+        erase a newer independent failure. ``outcome`` is ``completed`` or
+        ``failed``. When the flag is already true the method returns the current
+        breaker state without further effect.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            locked = connection.execute(
+                """
+                SELECT id, breaker_outcome_recorded
+                FROM intents WHERE id = %s FOR UPDATE
+                """,
+                (intent_id,),
+            ).fetchone()
+            if locked is None:
+                raise RuntimeError("record_terminal_outcome: intent not found")
+            if locked["breaker_outcome_recorded"]:
+                row = connection.execute(
+                    _SELECT_FROM_BREAKER + "WHERE service_url = %s",
+                    (service_url,),
+                ).fetchone()
+                if row is None:
+                    return self._create_default(connection, service_url)
+                return self._from_row(row)
+            if outcome == "failed":
+                row = connection.execute(
+                    """
+                    INSERT INTO breaker_state (
+                        id, service_url, failure_count, state, last_failure_at,
+                        trial_allowed, trial_owner, trial_started_at, trial_epoch
+                    ) VALUES (%s, %s, 1, 'closed', %s, false, NULL, NULL, 0)
+                    ON CONFLICT (service_url) DO UPDATE SET
+                        failure_count = breaker_state.failure_count + 1,
+                        last_failure_at = EXCLUDED.last_failure_at,
+                        trial_allowed = false,
+                        trial_owner = NULL,
+                        trial_started_at = NULL,
+                        state = CASE
+                            WHEN breaker_state.state = 'half_open' THEN 'open'
+                            WHEN breaker_state.failure_count + 1 >= %s THEN 'open'
+                            ELSE breaker_state.state
+                        END
+                    WHERE (
+                        (%s = 0 AND breaker_state.trial_owner IS NULL)
+                        OR (
+                            %s > 0
+                            AND breaker_state.trial_epoch = %s
+                            AND breaker_state.trial_owner = %s
+                        )
+                    )
+                    RETURNING service_url, failure_count, state, last_failure_at,
+                              trial_allowed, trial_owner, trial_started_at, trial_epoch
+                    """,
+                    (
+                        uuid.uuid4(),
+                        service_url,
+                        now,
+                        failure_threshold,
+                        trial_epoch,
+                        trial_epoch,
+                        trial_epoch,
+                        owner,
+                    ),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    INSERT INTO breaker_state (
+                        id, service_url, failure_count, state, last_failure_at,
+                        trial_allowed, trial_owner, trial_started_at, trial_epoch
+                    ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
+                    ON CONFLICT (service_url) DO UPDATE SET
+                        failure_count = 0,
+                        state = 'closed',
+                        last_failure_at = NULL,
+                        trial_allowed = false,
+                        trial_owner = NULL,
+                        trial_started_at = NULL
+                    WHERE (
+                        (%s = 0 AND breaker_state.trial_owner IS NULL)
+                        OR (
+                            %s > 0
+                            AND breaker_state.trial_epoch = %s
+                            AND breaker_state.trial_owner = %s
+                        )
+                    )
+                    RETURNING service_url, failure_count, state, last_failure_at,
+                              trial_allowed, trial_owner, trial_started_at, trial_epoch
+                    """,
+                    (
+                        uuid.uuid4(),
+                        service_url,
+                        trial_epoch,
+                        trial_epoch,
+                        trial_epoch,
+                        owner,
+                    ),
+                ).fetchone()
+            if row is not None:
+                connection.execute(
+                    """
+                    UPDATE intents SET breaker_outcome_recorded = true WHERE id = %s
+                    """,
+                    (intent_id,),
+                )
+            else:
+                row = connection.execute(
+                    _SELECT_FROM_BREAKER + "WHERE service_url = %s",
+                    (service_url,),
+                ).fetchone()
+        if row is None:
+            raise RuntimeError("record_terminal_outcome did not return a breaker row")
+        return self._from_row(row)
+
+    def _create_default(
+        self, connection: psycopg.Connection[dict[str, Any]], service_url: str
+    ) -> BreakerState:
+        """Insert and return a fresh CLOSED breaker row for a service."""
+        connection.execute(
+            """
+            INSERT INTO breaker_state (
+                id, service_url, failure_count, state, last_failure_at,
+                trial_allowed, trial_owner, trial_started_at, trial_epoch
+            ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
+            """,
+            (uuid.uuid4(), service_url),
+        )
+        row = connection.execute(
+            _SELECT_FROM_BREAKER + "WHERE service_url = %s",
+            (service_url,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("breaker_state insert did not persist the row")
+        return self._from_row(row)
+
     def open_to_half_open(self, *, service_url: str) -> BreakerState | None:
         """Move an OPEN breaker to HALF_OPEN and allow a fresh trial."""
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
@@ -360,6 +524,8 @@ class ScriptedBreakerStateStore:
         self._states: dict[str, BreakerState] = {
             state.service_url: state for state in (states or [])
         }
+        self._recorded_outcomes: set[str] = set()
+        self._terminal_lock = threading.Lock()
 
     def list_states(self) -> list[BreakerState]:
         return list(self._states.values())
@@ -428,6 +594,49 @@ class ScriptedBreakerStateStore:
         )
         self._states[service_url] = state
         return state
+
+    def record_terminal_outcome(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        service_url: str,
+        owner: str,
+        trial_epoch: int,
+        outcome: str,
+        now: datetime,
+        failure_threshold: int,
+    ) -> BreakerState:
+        """Apply the durable terminal breaker outcome for one Intent exactly once.
+
+        Scripted mirror of the Postgres atomic operation: the outcome is
+        recorded once per Intent id, so a delayed duplicate completed or failed
+        result has no further effect (ticket 11 gate Major). The record is
+        marked only when the breaker write actually applied; a stale epoch or
+        owner leaves the outcome pending so a retry can complete it. The
+        recorded-outcome check, the breaker write, and the outcome record are
+        one atomic operation under a lock, so concurrent resolutions cannot
+        both apply the same Intent outcome (ticket 11 gate Major).
+        """
+        with self._terminal_lock:
+            key = str(intent_id)
+            if key in self._recorded_outcomes:
+                return self.get_or_create_state(service_url=service_url)
+            previous = self._states.get(service_url)
+            if outcome == "failed":
+                state = self.record_failure(
+                    service_url=service_url,
+                    owner=owner,
+                    trial_epoch=trial_epoch,
+                    now=now,
+                    failure_threshold=failure_threshold,
+                )
+            else:
+                state = self.record_success(
+                    service_url=service_url, owner=owner, trial_epoch=trial_epoch
+                )
+            if state is not previous:
+                self._recorded_outcomes.add(key)
+            return state
 
     def _epoch_claim_valid(self, current: BreakerState, owner: str, trial_epoch: int) -> bool:
         """Return whether an outcome write may apply to the current state.

@@ -18,6 +18,7 @@
     "dev:b": "tsx watch src/service-b.ts"
   },
   "dependencies": {
+    "@circle-fin/x402-batching": "^3.3.0",
     "@x402/core": "^2.21.0",
     "@x402/evm": "^2.21.0",
     "@x402/express": "^2.21.0",

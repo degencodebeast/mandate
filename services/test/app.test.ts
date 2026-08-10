@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import type { ServiceConfig } from "../src/config.js";
-import { createX402App } from "../src/app.js";
+import { createX402App, resolveFacilitatorClient } from "../src/app.js";
 import { FailureSimulator } from "../src/failure.js";
 import { ARC_USDC_ERC20_ADDRESS, ARC_TESTNET_NETWORK } from "../src/money.js";
 
@@ -13,6 +13,7 @@ const baseConfig: ServiceConfig = {
   network: ARC_TESTNET_NETWORK,
   failureRate: 0,
   failureMode: "error",
+  realDemo: false,
   responseTimeoutMs: 30_000,
   syncFacilitatorOnStart: true,
 };
@@ -141,5 +142,50 @@ describe("health", () => {
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+});
+
+describe("real-demo facilitator resolution", () => {
+  it("returns the real HTTP facilitator when real-demo is enabled", () => {
+    const config: ServiceConfig = {
+      ...baseConfig,
+      realDemo: true,
+      facilitatorUrl: "https://gateway-api-testnet.circle.com/v1/x402",
+    };
+    const client = resolveFacilitatorClient(config);
+    expect(client.constructor.name).toBe("HTTPFacilitatorClient");
+  });
+
+  it("rejects the mock facilitator when real-demo is enabled without a URL", () => {
+    const config: ServiceConfig = { ...baseConfig, realDemo: true };
+    expect(() => resolveFacilitatorClient(config)).toThrow(/mock|FACILITATOR_URL/);
+  });
+
+  it("rejects a generic facilitator URL when real-demo is enabled", () => {
+    const config: ServiceConfig = {
+      ...baseConfig,
+      realDemo: true,
+      facilitatorUrl: "http://127.0.0.1:9999/mock",
+    };
+    expect(() => resolveFacilitatorClient(config)).toThrow(/FACILITATOR_URL/);
+  });
+});
+
+describe("real-demo scheme selection", () => {
+  it("advertises the GatewayWalletBatched scheme in real-demo mode", async () => {
+    const config: ServiceConfig = {
+      ...baseConfig,
+      realDemo: true,
+      facilitatorUrl: "https://gateway-api-testnet.circle.com/v1/x402",
+    };
+    const app = createX402App(config, null);
+    const res = await request(app).get("/search");
+    expect(res.status).toBe(402);
+    const paymentRequired = JSON.parse(
+      Buffer.from(res.headers["payment-required"], "base64").toString(),
+    );
+    const accept = paymentRequired.accepts[0];
+    expect(accept.extra?.name).toBe("GatewayWalletBatched");
+    expect(accept.extra?.verifyingContract).toBeTruthy();
   });
 });

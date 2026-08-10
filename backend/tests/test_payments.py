@@ -2,34 +2,77 @@
 
 The seam is the adapter boundary. Production adapters run the Circle CLI via an
 injectable runner (ADR-0012); tests script the runner so no CLI or network is
-used. The tests pin the command shape and the transaction hash extraction.
+used. The tests pin the command shape and the exact Payment Reference
+extraction (ticket 11). The undocumented ``circle services payments
+--purpose-hash`` production path is never built.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Sequence
 
 import pytest
 
 from mandate.payments import (
+    GATEWAY_X402_REFERENCE_TYPE,
     CircleCliPaymentExecutor,
     PaymentExecutionError,
+    PaymentResult,
     PaymentUnknownError,
     ScriptedPaymentExecutor,
-    _extract_tx_hash,
+    _extract_payment_result,
 )
 from mandate.receipts import ArcReceiptRecorder, ReceiptWriteError, ScriptedReceiptRecorder
 
 
+def _real_cli_output(*, transaction: str, success: bool = True) -> str:
+    """Build a document shaped exactly like the real CLI ``services pay`` output."""
+    receipt = {
+        "success": success,
+        "payer": "0xf2f10f24a374b424c5faaa53b335703a6f2acf1f",
+        "transaction": transaction,
+        "network": "eip155:5042002",
+    }
+    encoded = base64.b64encode(json.dumps(receipt).encode()).decode()
+    return json.dumps(
+        {
+            "data": {
+                "response": {"ok": True},
+                "payment": {
+                    "amount": "$0.50 USDC",
+                    "chain": "eip155:5042002",
+                    "scheme": "GatewayWalletBatched",
+                    "seller": "0x4547170e8bbe7cb563a12270e94586602dc4834c",
+                    "receipt": encoded,
+                },
+            }
+        }
+    )
+
+
 class CommandRecorder:
-    """Capture the last command and answer with a fake settlement hash."""
+    """Capture the last command and answer with a real-shaped settle receipt."""
+
+    def __init__(self, *, reference: str = "3e80e924-6263-4393-b639-b4ab56da6925") -> None:
+        self.command: list[str] = []
+        self._reference = reference
+
+    def __call__(self, args: Sequence[str]) -> str:
+        self.command = list(args)
+        return _real_cli_output(transaction=self._reference)
+
+
+class AnchorRunner:
+    """Capture the last command and answer with a Receipt Anchor hash."""
 
     def __init__(self) -> None:
         self.command: list[str] = []
 
     def __call__(self, args: Sequence[str]) -> str:
         self.command = list(args)
-        return '{"txHash": "0xsettled"}'
+        return '{"txHash": "0xanchor"}'
 
 
 def test_circle_payment_executor_builds_pay_command() -> None:
@@ -40,12 +83,13 @@ def test_circle_payment_executor_builds_pay_command() -> None:
         runner=runner,
     )
 
-    tx_hash = executor.execute_payment(
+    result = executor.execute_payment(
         service_url="https://service-a.example.com",
         amount="0.50",
     )
 
-    assert tx_hash == "0xsettled"
+    assert result.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert result.reference_type == GATEWAY_X402_REFERENCE_TYPE
     command = runner.command
     assert command[:4] == ["circle", "services", "pay", "https://service-a.example.com"]
     assert "--address" in command and "0xwallet" in command
@@ -54,41 +98,73 @@ def test_circle_payment_executor_builds_pay_command() -> None:
     assert "--output" in command and "json" in command
 
 
-def test_scripted_payment_executor_returns_fixed_hash() -> None:
-    executor = ScriptedPaymentExecutor(tx_hash="0xscripted")
+def test_circle_payment_executor_never_builds_purpose_hash_path() -> None:
+    runner = CommandRecorder()
+    executor = CircleCliPaymentExecutor(
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=runner,
+    )
+
+    executor.execute_payment(service_url="https://service-a.example.com", amount="0.50")
+
+    command = runner.command
+    assert "--purpose-hash" not in command
+    assert "payments" not in command
+
+
+def test_scripted_payment_executor_returns_fixed_result() -> None:
+    executor = ScriptedPaymentExecutor(payment_reference="0xscripted")
 
     result = executor.execute_payment(service_url="https://x.example.com", amount="0.01")
 
-    assert result == "0xscripted"
+    assert result == PaymentResult(
+        payment_reference="0xscripted",
+        reference_type=GATEWAY_X402_REFERENCE_TYPE,
+        payment_state="accepted",
+    )
 
 
-def test_extract_tx_hash_reads_top_level_field() -> None:
-    assert _extract_tx_hash('{"txHash": "0xabc"}') == "0xabc"
-    assert _extract_tx_hash('{"transactionHash": "0xabc"}') == "0xabc"
+def test_extract_payment_result_reads_base64_receipt() -> None:
+    result = _extract_payment_result(
+        _real_cli_output(transaction="3e80e924-6263-4393-b639-b4ab56da6925")
+    )
+
+    assert result.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
+    assert result.reference_type == GATEWAY_X402_REFERENCE_TYPE
 
 
-def test_extract_tx_hash_reads_nested_payment_field() -> None:
-    document = '{"payment": {"txHash": "0xabc", "amount": "0.01"}}'
-    assert _extract_tx_hash(document) == "0xabc"
-
-
-def test_extract_tx_hash_raises_unknown_on_missing_hash() -> None:
+def test_extract_payment_result_raises_unknown_on_missing_receipt() -> None:
     with pytest.raises(PaymentUnknownError):
-        _extract_tx_hash('{"status": "ok"}')
+        _extract_payment_result('{"data": {"payment": {"amount": "$0.01 USDC"}}}')
 
 
-def test_extract_tx_hash_raises_unknown_on_non_json() -> None:
+def test_extract_payment_result_raises_unknown_on_non_json() -> None:
     with pytest.raises(PaymentUnknownError):
-        _extract_tx_hash("not json at all")
+        _extract_payment_result("not json at all")
 
 
-def test_extract_tx_hash_raises_definite_on_explicit_error() -> None:
+def test_extract_payment_result_raises_definite_on_explicit_error() -> None:
     with pytest.raises(PaymentExecutionError):
-        _extract_tx_hash('{"error": "insufficient balance"}')
+        _extract_payment_result('{"error": "insufficient balance"}')
+
+
+def test_extract_payment_result_raises_definite_on_settle_failure() -> None:
+    receipt = {
+        "success": False,
+        "errorReason": "insufficient_balance",
+        "transaction": "",
+        "network": "eip155:5042002",
+    }
+    encoded = base64.b64encode(json.dumps(receipt).encode()).decode()
+    document = json.dumps({"data": {"payment": {"receipt": encoded}}})
+
+    with pytest.raises(PaymentExecutionError):
+        _extract_payment_result(document)
 
 
 def test_arc_receipt_recorder_builds_record_command() -> None:
-    runner = CommandRecorder()
+    runner = AnchorRunner()
     recorder = ArcReceiptRecorder(
         registry_address="0xregistry",
         wallet_address="0xwallet",
@@ -96,7 +172,7 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
         runner=runner,
     )
 
-    tx_hash = recorder.record_receipt(
+    anchor = recorder.record_receipt(
         user_id="did:erc8004:agent",
         mandate_id="mandate-1",
         task_id="task-1",
@@ -107,7 +183,7 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
         fee_tx_hash="0xfeepaid",
     )
 
-    assert tx_hash == "0xsettled"
+    assert anchor == "0xanchor"
     command = runner.command
     assert command[:3] == ["circle", "wallet", "execute"]
     assert "recordReceipt(string,string,string,string,string,string,string,string)" in command
@@ -166,16 +242,7 @@ def test_scripted_receipt_recorder_rejects_duplicate_for_one_intent() -> None:
 
 
 def test_receipt_anchor_rejects_operation_id_only_document() -> None:
-    runner = CommandRecorder()
-    recorder = ArcReceiptRecorder(
-        registry_address="0xregistry",
-        wallet_address="0xwallet",
-        chain="ARC-TESTNET",
-        runner=runner,
-    )
-
     def id_only(command: Sequence[str]) -> str:
-        runner.command = list(command)
         return '{"data": {"id": "operation-123", "status": "confirmed"}}'
 
     recorder = ArcReceiptRecorder(

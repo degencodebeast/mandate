@@ -19,7 +19,7 @@ resolve ``Annotated[...]`` dependency aliases.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated
@@ -38,6 +38,7 @@ from mandate.auth import (
     rejecting_identity_verifier,
 )
 from mandate.config import ApiSettings, Service, assert_secret_boundary
+from mandate.gateway_status import GatewayTransferStatusInspector
 from mandate.health import build_service_health, check_database
 from mandate.identity import AgentIdentityRegistrar
 from mandate.payments import CircleCliPaymentExecutor
@@ -341,6 +342,29 @@ def create_app(
             raise StarletteHTTPException(status_code=502, detail=str(error)) from None
         return JSONResponse(content=_spend_to_json(result))
 
+    @app.post("/api/v1/mandates/{mandate_id}/resolve")
+    def resolve(
+        mandate_id: uuid.UUID,
+        command: FinalizeRequest,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        if active_spend is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            result = active_spend.resolve_reference(
+                user_id=identity.subject,
+                mandate_id=mandate_id,
+                task_id=command.task_id,
+                purpose=command.purpose,
+            )
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        except (FinalizationNotPossibleError, UnresolvedPaymentReferenceError) as error:
+            raise StarletteHTTPException(status_code=409, detail=str(error)) from None
+        except (ReceiptReadError, ReceiptWriteError) as error:
+            raise StarletteHTTPException(status_code=502, detail=str(error)) from None
+        return JSONResponse(content=_spend_to_json(result))
+
     @app.get("/api/v1/mandates/{mandate_id}")
     def get_mandate(
         mandate_id: uuid.UUID,
@@ -383,6 +407,28 @@ def create_app(
     return app
 
 
+def _trial_owner_pending(
+    intent_store: PostgresIntentStore,
+) -> Callable[[str], bool]:
+    """Return a predicate that asks whether a trial owner still has a pending transfer.
+
+    The Circuit Breaker uses the predicate so a consumed half-open trial stays
+    exclusive while its owner has an accepted transfer still awaiting the
+    official terminal result (ticket 11 gate Major). The owner is the Intent
+    UUID stored by ``consume_trial``.
+    """
+    import uuid as _uuid
+
+    def pending(owner: str) -> bool:
+        try:
+            intent_id = _uuid.UUID(owner)
+        except (ValueError, AttributeError):
+            return False
+        return intent_store.is_pending_accepted(intent_id=intent_id)
+
+    return pending
+
+
 def _spend_service_from_settings(
     settings: ApiSettings,
     store: MandateStore | None,
@@ -412,6 +458,7 @@ def _spend_service_from_settings(
             failure_threshold=settings.circuit_breaker_failure_threshold,
             cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
             trial_timeout_seconds=settings.circuit_breaker_trial_timeout_seconds,
+            trial_owner_pending=_trial_owner_pending(intent_store),
         )
         if breaker_store is not None
         else None
@@ -426,6 +473,10 @@ def _spend_service_from_settings(
         receipt_recorder=receipt_recorder,
         breaker=breaker,
         receipt_reader=receipt_reader,
+        transfer_status_inspector=GatewayTransferStatusInspector(
+            base_url=settings.gateway_api_base_url,
+            timeout_seconds=settings.payment_timeout_seconds,
+        ),
     )
 
 
@@ -507,6 +558,9 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "fee_amount": intent.fee_amount,
         "fee_tx_hash": intent.fee_tx_hash,
         "payment_reference": intent.payment_reference,
+        "reference_type": intent.reference_type,
+        "payment_state": intent.payment_state,
+        "batch_tx_hash": intent.batch_tx_hash,
         "receipt_anchor": intent.receipt_anchor,
     }
 

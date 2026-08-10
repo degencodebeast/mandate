@@ -36,7 +36,9 @@ from psycopg.rows import dict_row
 _SELECT_INTENT = """
     SELECT id, mandate_id, purpose_hash, service_url, amount,
            status, tx_hash, created_at, settled_at, retry_count,
-           fee_amount, fee_tx_hash, payment_reference, receipt_anchor
+           fee_amount, fee_tx_hash, payment_reference, receipt_anchor,
+           reference_type, payment_state, batch_tx_hash, breaker_trial_epoch,
+           breaker_outcome_recorded
     FROM intents
 """
 
@@ -98,9 +100,26 @@ class IntentStore(Protocol):
         fee_tx_hash: str | None = None,
     ) -> Intent: ...
 
-    def store_payment_reference(self, *, intent_id: uuid.UUID, reference: str) -> Intent: ...
+    def store_payment_reference(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        reference: str,
+        reference_type: str | None = None,
+        payment_state: str | None = None,
+        batch_tx_hash: str | None = None,
+        breaker_trial_epoch: int = 0,
+    ) -> Intent: ...
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent: ...
+
+    def store_transfer_status(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        payment_state: str,
+        batch_tx_hash: str | None = None,
+    ) -> Intent: ...
 
     def finalize_settlement(
         self,
@@ -108,6 +127,10 @@ class IntentStore(Protocol):
         intent_id: uuid.UUID,
         settled_at: datetime,
     ) -> Intent: ...
+
+    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent: ...
+
+    def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool: ...
 
     def finalization_guard(self, *, intent_id: uuid.UUID) -> AbstractContextManager[None]: ...
 
@@ -130,6 +153,11 @@ class Intent:
     fee_tx_hash: str | None
     payment_reference: str | None = None
     receipt_anchor: str | None = None
+    reference_type: str | None = None
+    payment_state: str | None = None
+    batch_tx_hash: str | None = None
+    breaker_trial_epoch: int = 0
+    breaker_outcome_recorded: bool = False
 
 
 class PostgresIntentStore:
@@ -241,7 +269,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (
                     status,
@@ -258,34 +287,121 @@ class PostgresIntentStore:
             raise self._state_mismatch_error(intent_id, expected_status)
         return self._from_row(row)
 
-    def store_payment_reference(self, *, intent_id: uuid.UUID, reference: str) -> Intent:
+    def store_payment_reference(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        reference: str,
+        reference_type: str | None = None,
+        payment_state: str | None = None,
+        batch_tx_hash: str | None = None,
+        breaker_trial_epoch: int = 0,
+    ) -> Intent:
         """Write the Payment Reference as soon as value moves (ticket 10e).
 
         The write keeps the Intent in SETTLING. It applies only to a SETTLING
         Intent, so a duplicate reference write never touches a settled or
-        blocked Intent. The stored value is write-once: a repeated write keeps
-        the original reference and never overwrites it (ADR-0032).
+        blocked Intent. The reference, reference type, and initial payment
+        state are write-once: a repeated write keeps the original values and
+        never overwrites them (ADR-0032, ticket 11). The batch transaction
+        hash is resolved later through the official status boundary, not here.
+        The breaker trial epoch is preserved so the terminal official result
+        can present the same owner and epoch to the Circuit Breaker (ticket 11
+        gate).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
                 UPDATE intents
-                SET payment_reference = COALESCE(payment_reference, %s)
+                SET payment_reference = COALESCE(payment_reference, %s),
+                    reference_type = COALESCE(reference_type, %s),
+                    payment_state = COALESCE(payment_state, %s),
+                    breaker_trial_epoch = COALESCE(
+                        CASE WHEN breaker_trial_epoch = 0 THEN NULL ELSE breaker_trial_epoch END,
+                        %s
+                    )
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state,
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
                 """,
-                (reference, intent_id),
+                (reference, reference_type, payment_state, breaker_trial_epoch, intent_id),
             ).fetchone()
         if row is None:
             return self._reload(intent_id)
         return self._from_row(row)
 
+    def store_transfer_status(
+        self,
+        *,
+        intent_id: uuid.UUID,
+        payment_state: str,
+        batch_tx_hash: str | None = None,
+    ) -> Intent:
+        """Resolve the Payment Reference state through the official boundary.
+
+        The official Gateway x402 transfer-status interface returns the exact
+        reference's state and, once the transfer is batched, the batch-level
+        settlement transaction hash. This method records both on the Intent
+        (ticket 11). The write is monotonic: a non-terminal state
+        (``received``, ``batched``, ``confirmed``) never overwrites a terminal
+        state (``completed`` or ``failed``), so a delayed stale lookup cannot
+        regress a finalized reference (ticket 11 gate Major). It applies to a
+        SETTLING or SETTLED Intent and never changes the Payment Reference
+        itself.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                UPDATE intents
+                SET payment_state = %s,
+                    batch_tx_hash = COALESCE(%s, batch_tx_hash)
+                WHERE id = %s AND status IN ('settling', 'settled')
+                  AND (
+                    payment_state IS NULL
+                    OR payment_state NOT IN ('completed', 'failed')
+                  )
+                RETURNING id, mandate_id, purpose_hash, service_url, amount,
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash, payment_reference,
+                          receipt_anchor, reference_type, payment_state,
+                          batch_tx_hash, breaker_trial_epoch, breaker_outcome_recorded
+                """,
+                (payment_state, batch_tx_hash, intent_id),
+            ).fetchone()
+        if row is None:
+            return self._reload(intent_id)
+        return self._from_row(row)
+
+    def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool:
+        """Return whether the Intent's transfer is still awaiting its breaker outcome.
+
+        An Intent is pending while it is SETTLING with a stored Payment
+        Reference and its terminal Circuit Breaker outcome has not been durably
+        recorded. This holds even when the official ``payment_state`` is already
+        ``completed`` or ``failed``: the half-open Circuit Breaker trial must
+        stay exclusive until the terminal breaker outcome commits, so the local
+        trial timer cannot open a second Payment Authorization for the same
+        service (ticket 11 gate).
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            row = connection.execute(
+                """
+                SELECT status, payment_reference, breaker_outcome_recorded
+                FROM intents WHERE id = %s
+                """,
+                (intent_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        if row["status"] != "settling" or row["payment_reference"] is None:
+            return False
+        return not row["breaker_outcome_recorded"]
+
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent:
         """Record the Receipt Anchor after the Receipt is written (ticket 10e).
-
         The Receipt Anchor is the Arc transaction that wrote the Receipt
         (CONTEXT.md). It stays separate from the Payment Reference. The stored
         value is write-once: one finalized Intent can create at most one Receipt
@@ -302,7 +418,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (anchor, intent_id),
             ).fetchone()
@@ -334,7 +451,8 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
@@ -412,13 +530,76 @@ class PostgresIntentStore:
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
                           fee_amount, fee_tx_hash, payment_reference,
-                          receipt_anchor
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch, breaker_outcome_recorded
                 """,
                 (settled_at, locked["payment_reference"], fee_amount, fee_tx_hash, intent_id),
             ).fetchone()
         if settled is None:
             return self._reload(intent_id)
         return self._from_row(settled)
+
+    def block_and_release_reservation(self, *, intent_id: uuid.UUID) -> Intent:
+        """Block one SETTLING Intent and release its reservation atomically.
+
+        The whole failed-resolution runs in one transaction (ADR-0032, ticket
+        11 gate): the Intent locks its row, returns the reserved amount to the
+        Mandate, and transitions SETTLING → BLOCKED. Only the caller that wins
+        the row lock releases the reservation, so concurrent failed resolutions
+        can never double-release authority (ticket 11 gate Major). A repeated
+        call returns the already-blocked Intent without changing accounting.
+        """
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            locked = connection.execute(
+                """
+                SELECT id, mandate_id, amount, status
+                FROM intents WHERE id = %s FOR UPDATE
+                """,
+                (intent_id,),
+            ).fetchone()
+            if locked is None:
+                raise IntentNotFoundError("The intent does not exist.")
+            if locked["status"] == "blocked":
+                blocked = connection.execute(
+                    _SELECT_INTENT + "WHERE id = %s", (intent_id,)
+                ).fetchone()
+                if blocked is None:
+                    raise IntentNotFoundError("The intent does not exist.")
+                return self._from_row(blocked)
+            if locked["status"] != "settling":
+                raise UnexpectedIntentStateError(
+                    f"Intent {intent_id} is {locked['status']}, not settling."
+                )
+            amount = str(locked["amount"])
+            mandate = connection.execute(
+                """
+                UPDATE mandates
+                SET reserved_total = reserved_total - %s
+                WHERE id = %s AND reserved_total >= %s
+                RETURNING id
+                """,
+                (amount, locked["mandate_id"], amount),
+            ).fetchone()
+            if mandate is None:
+                raise UnexpectedIntentStateError(
+                    "The Mandate reservation cannot cover the release."
+                )
+            blocked = connection.execute(
+                """
+                UPDATE intents
+                SET status = 'blocked'
+                WHERE id = %s AND status = 'settling'
+                RETURNING id, mandate_id, purpose_hash, service_url, amount,
+                          status, tx_hash, created_at, settled_at, retry_count,
+                          fee_amount, fee_tx_hash, payment_reference,
+                          receipt_anchor, reference_type, payment_state, batch_tx_hash,
+                          breaker_trial_epoch, breaker_outcome_recorded
+                """,
+                (intent_id,),
+            ).fetchone()
+        if blocked is None:
+            return self._reload(intent_id)
+        return self._from_row(blocked)
 
     @contextmanager
     def finalization_guard(self, *, intent_id: uuid.UUID) -> Iterator[None]:
@@ -482,6 +663,11 @@ class PostgresIntentStore:
             fee_tx_hash=row["fee_tx_hash"],
             payment_reference=row["payment_reference"],
             receipt_anchor=row["receipt_anchor"],
+            reference_type=row["reference_type"],
+            payment_state=row["payment_state"],
+            batch_tx_hash=row["batch_tx_hash"],
+            breaker_trial_epoch=row["breaker_trial_epoch"],
+            breaker_outcome_recorded=row["breaker_outcome_recorded"],
         )
 
 

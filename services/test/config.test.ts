@@ -54,3 +54,34 @@ describe("loadServiceConfig", () => {
     expect(() => parseFailureMode("mixed")).toThrow(/Invalid FAILURE_MODE/);
   });
 });
+
+describe("real-demo mode", () => {
+  it("is off by default", () => {
+    const config = loadServiceConfig({}, { serviceName: "search-a", port: 4021, failureRate: 0.6 });
+    expect(config.realDemo).toBe(false);
+  });
+
+  it("requires the exact official facilitator URL when enabled", () => {
+    expect(() =>
+      loadServiceConfig({ REAL_DEMO: "true" }, { serviceName: "search-a", port: 4021, failureRate: 0.6 }),
+    ).toThrow(/FACILITATOR_URL/);
+    expect(() =>
+      loadServiceConfig(
+        { REAL_DEMO: "true", FACILITATOR_URL: "http://127.0.0.1:9999/mock" },
+        { serviceName: "search-a", port: 4021, failureRate: 0.6 },
+      ),
+    ).toThrow(/FACILITATOR_URL/);
+  });
+
+  it("accepts a real facilitator URL when enabled", () => {
+    const config = loadServiceConfig(
+      {
+        REAL_DEMO: "true",
+        FACILITATOR_URL: "https://gateway-api-testnet.circle.com/v1/x402",
+      },
+      { serviceName: "search-a", port: 4021, failureRate: 0.6 },
+    );
+    expect(config.realDemo).toBe(true);
+    expect(config.facilitatorUrl).toBe("https://gateway-api-testnet.circle.com/v1/x402");
+  });
+});
