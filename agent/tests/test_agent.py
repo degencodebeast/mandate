@@ -72,6 +72,30 @@ class StubClient:
                 spent_total="1.00",
                 receipt=None,
             )
+        if task_id == "intent-b" and self.intent_b_outcome == "blocked: budget_exceeded":
+            intent = SpendIntent(
+                id="intent-intent-b",
+                mandate_id=mandate_id,
+                purpose_hash="hash-intent-b",
+                service_url=service_url,
+                amount=amount,
+                status="blocked",
+                economic_safety_state="BLOCKED",
+                spend_outcome="blocked: budget_exceeded",
+                reason="The mandate budget does not cover the amount.",
+                economic_safety_action="none",
+                created_at="2026-08-10T12:00:00Z",
+                settled_at=None,
+                retry_count=0,
+            )
+            return SpendResponse(
+                outcome="blocked: budget_exceeded",
+                reason="The mandate budget does not cover the amount.",
+                action="none",
+                intent=intent,
+                spent_total="0",
+                receipt=None,
+            )
         intent = SpendIntent(
             id=f"intent-{task_id}",
             mandate_id=mandate_id,
@@ -213,7 +237,7 @@ def test_agent_switch_run_invokes_status_then_spend_and_decides() -> None:
     client = StubClient(breaker_state="open")
     agent = build_agent(client=client, mandate_id="mandate-1")
 
-    decision = run_agent_switch(
+    decision, spend_result = run_agent_switch(
         agent=agent,
         service_a_url="https://service-a.example.com",
         task_id="intent-b",
@@ -223,8 +247,10 @@ def test_agent_switch_run_invokes_status_then_spend_and_decides() -> None:
     )
 
     assert isinstance(decision, AgentDecision)
-    assert decision.action == "switch_service"
-    assert decision.may_authorize is True
+    assert decision.action == "wait"
+    assert decision.may_authorize is False
+    assert spend_result.outcome == "accepted"
+    assert spend_result.intent.id == "intent-intent-b"
     assert ("intent-b", "buy market data", "https://service-b.example.com") in client.spend_calls
 
 
@@ -233,7 +259,7 @@ def test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review() -> 
     client.intent_b_outcome = "unknown"
     agent = build_agent(client=client, mandate_id="mandate-1")
 
-    decision = run_agent_switch(
+    decision, spend_result = run_agent_switch(
         agent=agent,
         service_a_url="https://service-a.example.com",
         task_id="intent-b",
@@ -246,6 +272,27 @@ def test_agent_switch_run_maps_unknown_service_b_to_wait_or_request_review() -> 
     assert decision.action in ("wait", "request_review")
     assert decision.may_authorize is False
     assert decision.intent_id == "intent-intent-b"
+    assert spend_result.outcome == "unknown"
+
+
+def test_agent_switch_run_maps_service_b_policy_denial_to_reduce_scope() -> None:
+    client = StubClient(breaker_state="open")
+    client.intent_b_outcome = "blocked: budget_exceeded"
+    agent = build_agent(client=client, mandate_id="mandate-1")
+
+    decision, spend_result = run_agent_switch(
+        agent=agent,
+        service_a_url="https://service-a.example.com",
+        task_id="intent-b",
+        purpose="buy market data",
+        service_url="https://service-b.example.com",
+        amount="1.00",
+    )
+
+    assert isinstance(decision, AgentDecision)
+    assert decision.action == "reduce_scope"
+    assert decision.may_authorize is False
+    assert spend_result.outcome == "blocked: budget_exceeded"
 
 
 def test_agent_switch_run_stops_when_service_a_breaker_is_closed() -> None:

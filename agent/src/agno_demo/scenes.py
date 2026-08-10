@@ -32,9 +32,9 @@ from agno_demo.agent import (
     run_agent_switch,
 )
 from agno_demo.decisions import (
-    ACTION_SWITCH_SERVICE,
     AgentDecision,
     ServiceABreakerClosedError,
+    decide_switch,
 )
 from agno_demo.models import SpendResponse, StatusDocument
 
@@ -60,6 +60,11 @@ class SceneResult:
     Spend Result), and the UI view (the status document the dashboard renders).
     Recording three distinct sources prevents a single aliased value from
     reporting proof that did not occur (ticket 10c submission proof).
+
+    ``switch_choice`` is the pre-authorization switch decision recorded as
+    separate evidence (Scene B): the agent chose Service B because the exact
+    Service A breaker row was open. It is distinct from the post-spend
+    ``decision``, which reflects the Service B Spend Result.
     """
 
     scene: str
@@ -73,6 +78,7 @@ class SceneResult:
     service_url: str | None
     spend_calls: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
     injected_response_loss: bool = False
+    switch_choice: AgentDecision | None = None
 
     def as_lines(self) -> list[str]:
         """Render the scene as demo-readable terminal lines."""
@@ -88,6 +94,8 @@ class SceneResult:
             f"Receipt Anchor: {self.receipt_anchor or '-'}",
             f"Service: {self.service_url or '-'}",
         ]
+        if self.switch_choice is not None:
+            lines.append(f"Switch choice (pre-authorization): {self.switch_choice.name}")
         if self.injected_response_loss:
             lines.append("Injected condition: response loss after the real economic action")
         if decision.reason:
@@ -196,10 +204,12 @@ class SwitchScene:
         """Read the open breaker, choose Service B, pay once, and resolve.
 
         The safe-switch precondition (the exact Service A breaker row is open)
-        is enforced by the scene before any authorization. The Agent then reads
-        status and spends on Service B as real tools, and the decision mapping
-        re-checks the precondition. The scene validates the decision is
-        SWITCH_SERVICE with ``may_authorize`` before it accepts the outcome.
+        is enforced by the scene before any authorization and recorded as the
+        pre-authorization switch choice. The Agent then reads status and spends
+        on Service B as real tools; the decision mapping applies the full
+        Service B Spend Result. The scene finalizes only a genuinely accepted
+        paid action: it resolves only when the Service B outcome is ``accepted``,
+        and it never resolves a blocked, denied, or UNKNOWN Intent.
         """
         status = self._status_client.status(mandate_id=self._mandate_id)
         service_a_breaker = next(
@@ -212,8 +222,9 @@ class SwitchScene:
                 f"Service A Circuit Breaker is not open (state={state}); "
                 "the switch scene must stop before authorization."
             )
+        switch_choice = decide_switch(self._service_a, status)
 
-        decision = run_agent_switch(
+        decision, spend_result = run_agent_switch(
             agent=self._agent,
             service_a_url=self._service_a,
             task_id=self._task,
@@ -221,10 +232,11 @@ class SwitchScene:
             service_url=self._service_b,
             amount=self._amount,
         )
-        if decision.action != ACTION_SWITCH_SERVICE or not decision.may_authorize:
+        if spend_result.outcome != "accepted":
             raise RuntimeError(
-                "The Agent decision is not SWITCH_SERVICE with may_authorize; "
-                "the scene must stop and must not accept Service B."
+                f"Service B did not complete a paid action (outcome="
+                f"{spend_result.outcome}); the scene must stop and must not "
+                f"resolve a blocked or unknown Intent."
             )
 
         resolved = self._spend_client.resolve(
@@ -246,6 +258,7 @@ class SwitchScene:
             payment_reference=resolved.intent.payment_reference,
             receipt_anchor=resolved.intent.receipt_anchor,
             service_url=resolved.intent.service_url,
+            switch_choice=switch_choice,
         )
 
 

@@ -38,21 +38,23 @@ class _IntentState:
 class ScriptedMandateBackend:
     """An in-memory Mandate REST backend for the two demo scenes.
 
-    ``inject_response_loss`` is the real Service A failure control: when true,
-    the backend deliberately loses the application response after the real
-    economic action and returns an UNKNOWN outcome for Intent A. The field is
-    read from a response header so callers can verify the injection actually
-    occurred before labeling it (ticket 10c).
+    ``inject_response_loss_service_url`` mirrors the real executor control
+    (ticket 10c): the exact Service A URL whose payment response the
+    application deliberately loses once after the real economic action. The
+    marker is explicit so callers can verify the loss actually occurred. Only
+    that exact service URL is affected; Service B and later calls behave
+    normally.
     """
 
     mandate_id: str = "mandate-demo"
     service_a: str = "https://service-a.example.com"
     service_b: str = "https://service-b.example.com"
     breaker_state_a: str = "closed"
-    inject_response_loss: bool = False
+    inject_response_loss_service_url: str | None = None
     spend_calls: list[tuple[str, str, str]] = field(default_factory=list)
     intents: dict[str, _IntentState] = field(default_factory=dict)
     now: str = "2026-08-10T12:00:00Z"
+    _response_loss_injected: bool = field(default=False, init=False)
 
     def request(
         self,
@@ -78,9 +80,15 @@ class ScriptedMandateBackend:
         amount = str(payload["amount"])
         self.spend_calls.append((task_id, purpose, service_url))
 
-        if task_id == "intent-a" and self.inject_response_loss:
-            # The configured Service A failure control loses the application
-            # response after the real economic action, so Intent A enters
+        should_inject = (
+            self.inject_response_loss_service_url is not None
+            and service_url == self.inject_response_loss_service_url
+            and not self._response_loss_injected
+        )
+        if should_inject:
+            self._response_loss_injected = True
+            # The exact Service A failure control loses the application
+            # response after the real economic action, so the payment enters
             # UNKNOWN. The injection marker is explicit so the caller can
             # verify the loss actually occurred.
             state = _IntentState(

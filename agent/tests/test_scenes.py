@@ -41,6 +41,7 @@ class ScriptedSceneBackend:
         self.resolve_calls: list[tuple[str, str]] = []
         self.breaker_state = "closed"
         self.intent_a_outcome = "unknown"
+        self.intent_b_outcome = "accepted"
         self.receipt_anchor_b: str | None = "0xreceipt-anchor-b"
 
     def spend(
@@ -121,6 +122,22 @@ class ScriptedSceneBackend:
         )
 
     def _intent_b_spend(self, purpose: str, service_url: str, amount: str) -> SpendResponse:
+        if self.intent_b_outcome == "blocked: budget_exceeded":
+            return SpendResponse(
+                outcome="blocked: budget_exceeded",
+                reason="The mandate budget does not cover the amount.",
+                action="none",
+                intent=_intent(
+                    intent_id="intent-b",
+                    service_url=service_url,
+                    status="blocked",
+                    spend_outcome="blocked: budget_exceeded",
+                    economic_safety_action="none",
+                    purpose_hash="purpose-b",
+                ),
+                spent_total="0",
+                receipt=None,
+            )
         if service_url == SERVICE_A:
             return SpendResponse(
                 outcome="blocked: breaker_open",
@@ -315,8 +332,11 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
     result: SceneResult = scene.run()
 
     assert result.scene == "switch"
-    assert result.decision.action == "switch_service"
-    assert result.decision.may_authorize is True
+    assert result.switch_choice is not None
+    assert result.switch_choice.action == "switch_service"
+    assert result.switch_choice.may_authorize is True
+    assert result.decision.action == "wait"
+    assert result.decision.may_authorize is False
     assert result.intent_id == "intent-b"
     assert result.payment_reference == "gateway-ref-b"
     assert result.receipt_anchor == "0xreceipt-anchor-b"
@@ -324,6 +344,29 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
     assert not any(service == SERVICE_A for (_, _, service) in backend.spend_calls)
     assert backend.spend_calls == [("intent-b", "buy market data", SERVICE_B)]
     assert backend.resolve_calls == [("intent-b", "buy market data")]
+
+
+def test_switch_scene_stops_when_service_b_is_policy_denied() -> None:
+    backend = ScriptedSceneBackend()
+    backend.breaker_state = "open"
+    backend.intent_b_outcome = "blocked: budget_exceeded"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+    )
+
+    with pytest.raises(RuntimeError):
+        scene.run()
+
+    assert backend.resolve_calls == []
 
 
 def test_switch_scene_stops_when_service_a_breaker_is_closed() -> None:

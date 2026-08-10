@@ -192,7 +192,7 @@ Command: `uv run pytest -q`
 Result:
 
 ```
-47 passed
+49 passed
 ```
 
 ## Run evidence
@@ -274,3 +274,65 @@ RED: the old provider test expected an OpenAI path.
 Command: `uv run pytest tests/test_providers.py`
 
 GREEN: `build_model(provider="openai")` raises `ModelProviderError`.
+
+## Correction round 2 — TDD evidence for the three gate findings
+
+### Finding 1 — exact, one-shot response-loss control
+
+The backend control is now exact: `INJECT_RESPONSE_LOSS_SERVICE_URL` is an
+API-owned config variable naming the exact Service A URL. `CircleCliPaymentExecutor`
+injects the deliberate response loss only for that exact service URL, once;
+Service B and later calls behave normally. The scripted backend mirrors the
+same exact selector.
+
+RED (backend): the old boolean flag injected for every service.
+
+```
+Failed: DID NOT RAISE PaymentUnknownError
+```
+
+Command: `uv run pytest tests/test_payments.py`
+
+GREEN:
+
+```
+37 passed
+```
+
+Rules proven: exact Service A injection once; Service B not injected; genuine
+timeout carries `injected_response_loss=False`; default returns the result.
+
+### Finding 2 — a genuine fault is never labeled injected
+
+`CircleCliPaymentExecutor` sets `injected_response_loss=True` only on the
+verified deliberate-loss path after the real economic action. Timeout and
+CalledProcessError paths always raise with `injected_response_loss=False`.
+Backend suite: 350 passed.
+
+### Finding 3 — Scene B applies the full Service B Spend Result mapping
+
+`decide_switch_document` now applies the full `decide()` mapping of the Service
+B Spend Result to the post-spend decision: UNKNOWN -> WAIT/REQUEST_REVIEW
+(may_authorize=False), policy denial -> REDUCE_SCOPE/REQUEST_USER
+(may_authorize=False). The pre-authorization switch choice (SWITCH_SERVICE) is
+recorded as separate evidence (`SceneResult.switch_choice` and
+`report.switch_choice_action`). `SwitchScene` resolves only a genuinely
+`accepted` paid action and never resolves a blocked, denied, or UNKNOWN Intent.
+
+RED (agent): a policy-denied Service B result returned SWITCH_SERVICE.
+
+```
+assert decision.action == "reduce_scope"
+E AssertionError: assert 'switch_service' == 'reduce_scope'
+```
+
+Command: `uv run pytest tests/test_agent.py tests/test_scenes.py`
+
+GREEN:
+
+```
+test_agent_switch_run_maps_service_b_policy_denial_to_reduce_scope
+test_switch_scene_stops_when_service_b_is_policy_denied
+```
+
+Agent suite: 49 passed.

@@ -77,20 +77,25 @@ class CircleCliPaymentExecutor:
         chain: str = "ARC-TESTNET",
         runner: Callable[[Sequence[str]], str] | None = None,
         timeout_seconds: float | None = None,
-        inject_response_loss: bool = False,
+        inject_response_loss_service_url: str | None = None,
     ) -> None:
         self._wallet_address = wallet_address
         self._chain = chain
         self._runner = runner
         self._timeout_seconds = timeout_seconds
-        self._inject_response_loss = inject_response_loss
+        self._inject_response_loss_service_url = inject_response_loss_service_url
+        self._response_loss_injected = False
 
     def execute_payment(self, *, service_url: str, amount: str) -> PaymentResult:
         """Run the CLI payment and return the exact Payment Reference.
 
-        When ``inject_response_loss`` is set, the real economic action runs
-        first and the application then deliberately loses the response, so the
-        payment is UNKNOWN and carries the injected marker (ticket 10c).
+        The response-loss control is exact and one-shot (ticket 10c). When
+        ``inject_response_loss_service_url`` is set, the application runs the
+        real economic action first and then deliberately loses the response for
+        exactly that service URL, once. Service B and any later call behave
+        normally. A genuine executor fault (timeout, non-zero exit) is never an
+        injected loss: those paths raise ``PaymentUnknownError`` with
+        ``injected_response_loss=False``.
         """
         try:
             output = run_cli(
@@ -112,16 +117,17 @@ class CircleCliPaymentExecutor:
                 timeout=self._timeout_seconds,
             )
         except subprocess.TimeoutExpired as error:
-            raise PaymentUnknownError(
-                "The payment call timed out.",
-                injected_response_loss=self._inject_response_loss,
-            ) from error
+            raise PaymentUnknownError("The payment call timed out.") from error
         except subprocess.CalledProcessError as error:
             raise PaymentUnknownError(
-                "The payment call failed without a usable response.",
-                injected_response_loss=self._inject_response_loss,
+                "The payment call failed without a usable response."
             ) from error
-        if self._inject_response_loss:
+        if (
+            self._inject_response_loss_service_url is not None
+            and service_url == self._inject_response_loss_service_url
+            and not self._response_loss_injected
+        ):
+            self._response_loss_injected = True
             raise PaymentUnknownError(
                 "The application deliberately lost the response after the real economic action.",
                 injected_response_loss=True,

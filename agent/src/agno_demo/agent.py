@@ -262,12 +262,15 @@ def run_agent_switch(
     purpose: str,
     service_url: str,
     amount: str,
-) -> AgentDecision:
+) -> tuple[AgentDecision, SpendResponse]:
     """Run one real Agent execution that reads status, spends, and decides.
 
     The Agent invokes ``mandate.status`` then ``mandate.spend`` as tools. The
     model maps the breaker state and the Spend Result through the deterministic
-    policy layer, which enforces the Service A open precondition.
+    policy layer, which enforces the Service A open precondition and applies the
+    full Service B Spend Result mapping to the post-spend decision. Returns the
+    decision and the Service B Spend Result so the scene can finalize only a
+    genuinely accepted paid action.
     """
     plan = [
         {
@@ -291,7 +294,11 @@ def run_agent_switch(
     ]
     from agno_demo.decisions import decide_switch_document
 
-    return _run_plan(agent, plan, lambda results: decide_switch_document(service_a_url, results))
+    decision, results = _run_plan_with_results(
+        agent, plan, lambda rs: decide_switch_document(service_a_url, rs)
+    )
+    spend_result = SpendResponse.from_json(results[-1])
+    return decision, spend_result
 
 
 def _run_plan(

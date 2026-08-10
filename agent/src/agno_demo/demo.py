@@ -33,7 +33,7 @@ Usage:
 Without ``--mcp-endpoint`` the demo runs entirely over REST.
 
 ``--inject-response-loss`` is the real Service A failure control. Start the
-Mandate backend with ``INJECT_RESPONSE_LOSS=1`` so the real Spend Result
+Mandate backend with ``INJECT_RESPONSE_LOSS_SERVICE_URL=<service-a>`` so the real Spend Result
 carries the ``injected_response_loss`` marker; the freeze scene verifies that
 marker before it labels the injected condition.
 """
@@ -137,6 +137,7 @@ def _report_from_result(result: SceneResult) -> dict[str, object]:
         service_url=result.service_url or "-",
         reason=result.decision.reason,
         injected_response_loss=result.injected_response_loss,
+        switch_choice_action=result.switch_choice.action if result.switch_choice else None,
     )
 
 
@@ -174,7 +175,7 @@ def main() -> None:
         default=os.environ.get("MANDATE_DEMO_INJECT_RESPONSE_LOSS", "0") == "1",
         help=(
             "Enable the real Service A failure control. Start the Mandate "
-            "backend with INJECT_RESPONSE_LOSS=1 so the Spend Result carries "
+            "backend with INJECT_RESPONSE_LOSS_SERVICE_URL=<service-a> so the Spend Result carries "
             "the injected_response_loss marker; the scene verifies that marker."
         ),
     )

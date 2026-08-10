@@ -25,6 +25,7 @@ def build_scene_report(
     service_url: str,
     reason: str | None,
     injected_response_loss: bool = False,
+    switch_choice_action: str | None = None,
 ) -> dict[str, Any]:
     """Build one scene report document.
 
@@ -35,6 +36,9 @@ def build_scene_report(
     that did not occur. ``ui_source`` names where the UI value came from so a
     judge never mistakes a status-API read for a dashboard render (ticket 10c
     submission proof).
+
+    ``switch_choice_action`` records the pre-authorization switch choice
+    (Scene B) as separate evidence, distinct from the post-spend decision.
     """
     return {
         "scene": scene,
@@ -49,6 +53,7 @@ def build_scene_report(
         "service_url": service_url,
         "reason": reason,
         "injected_response_loss": injected_response_loss,
+        "switch_choice_action": switch_choice_action,
     }
 
 
@@ -69,6 +74,10 @@ def render_demo_report(reports: list[dict[str, Any]]) -> list[str]:
         lines.append(f"Payment Reference: {report['payment_reference'] or '-'}")
         lines.append(f"Receipt Anchor: {report['receipt_anchor'] or '-'}")
         lines.append(f"Service: {report['service_url']}")
+        if report.get("switch_choice_action"):
+            lines.append(
+                f"Switch choice (pre-authorization): {report['switch_choice_action'].upper()}"
+            )
         if report.get("injected_response_loss"):
             lines.append("Injected condition: response loss after the real economic action")
         if report["reason"]:

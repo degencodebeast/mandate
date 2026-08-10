@@ -1,15 +1,15 @@
 # Mandate Agno demo run (deterministic, REST fallback)
 
-Timestamp: 2026-08-10T21:35:56.696633+00:00
+Timestamp: 2026-08-10T21:57:51.220640+00:00
 Interface: REST (scripted transport; no network).
 Agent model: DecisionModel (deterministic).
 Mandate created by the User before the agent starts.
 Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).
 Injected condition: response loss after the real economic action
-Backend control: INJECT_RESPONSE_LOSS=1 (real Mandate marker).
+Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): d455f1b7-e460-4bd2-b6cc-646fe50015d8 / d455f1b7-e460-4bd2-b6cc-646fe50015d8 / d455f1b7-e460-4bd2-b6cc-646fe50015d8
+Intent (agent/backend/UI): 93e15039-cdd8-411b-9e4e-a971374d259b / 93e15039-cdd8-411b-9e4e-a971374d259b / 93e15039-cdd8-411b-9e4e-a971374d259b
 UI source: status API (rendered by the dashboard)
 Decision: request_review
 Authorize: no
@@ -20,14 +20,15 @@ Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): da13f2c5-f5ad-4796-aac7-153283bc30a8 / da13f2c5-f5ad-4796-aac7-153283bc30a8 / da13f2c5-f5ad-4796-aac7-153283bc30a8
+Intent (agent/backend/UI): 4eab2e7c-5347-4da8-a0dc-276ef36e1fbf / 4eab2e7c-5347-4da8-a0dc-276ef36e1fbf / 4eab2e7c-5347-4da8-a0dc-276ef36e1fbf
 UI source: status API (rendered by the dashboard)
-Decision: switch_service
-Authorize: yes
+Decision: wait
+Authorize: no
 Payment Reference: gateway-x402-ref-b
 Receipt Anchor: 0xreceipt-anchor-b
 Service: https://service-b.example.com
-Reason: circuit breaker open for https://service-a.example.com; switch before authorization
+Switch choice (pre-authorization): SWITCH_SERVICE
+Reason: payment accepted; awaiting official finalization
 
 One Intent. No blind retries.
 
@@ -67,7 +68,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "d455f1b7-e460-4bd2-b6cc-646fe50015d8",
+      "id": "93e15039-cdd8-411b-9e4e-a971374d259b",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -84,7 +85,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "da13f2c5-f5ad-4796-aac7-153283bc30a8",
+      "id": "4eab2e7c-5347-4da8-a0dc-276ef36e1fbf",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",
