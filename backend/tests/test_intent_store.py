@@ -437,6 +437,11 @@ def test_store_payment_reference_metadata_is_write_once(
         reference="3e80e924-6263-4393-b639-b4ab56da6925",
         reference_type="gateway-x402-transfer-uuid",
         payment_state="accepted",
+        spend_result=DurableSpendResult(
+            outcome="accepted",
+            reason="payment accepted; awaiting official finalization",
+            action="wait",
+        ),
     )
 
     again = intent_store.store_payment_reference(
@@ -444,11 +449,19 @@ def test_store_payment_reference_metadata_is_write_once(
         reference="9f8e7d6c-5b4a-3210-fedc-ba9876543210",
         reference_type="gateway-x402-transfer-uuid",
         payment_state="completed",
+        spend_result=DurableSpendResult(
+            outcome="unknown",
+            reason="A duplicate writer lost its response.",
+            action="request_review",
+        ),
     )
 
     assert again.payment_reference == "3e80e924-6263-4393-b639-b4ab56da6925"
     assert again.reference_type == "gateway-x402-transfer-uuid"
     assert again.payment_state == "accepted"
+    assert again.spend_outcome == "accepted"
+    assert again.spend_reason == "payment accepted; awaiting official finalization"
+    assert again.economic_safety_action == "wait"
 
 
 def test_store_transfer_status_resolves_batch_tx_hash(

@@ -379,10 +379,15 @@ class PostgresIntentStore:
                         CASE WHEN breaker_trial_epoch = 0 THEN NULL ELSE breaker_trial_epoch END,
                         %s
                     ),
-                    spend_outcome = CASE WHEN %s THEN %s ELSE spend_outcome END,
-                    spend_reason = CASE WHEN %s THEN %s ELSE spend_reason END,
+                    spend_outcome = CASE
+                        WHEN payment_reference IS NULL AND %s
+                        THEN %s ELSE spend_outcome END,
+                    spend_reason = CASE
+                        WHEN payment_reference IS NULL AND %s
+                        THEN %s ELSE spend_reason END,
                     economic_safety_action = CASE
-                        WHEN %s THEN %s ELSE economic_safety_action END
+                        WHEN payment_reference IS NULL AND %s
+                        THEN %s ELSE economic_safety_action END
                 WHERE id = %s AND status = 'settling'
                 RETURNING id, mandate_id, purpose_hash, service_url, amount,
                           status, tx_hash, created_at, settled_at, retry_count,
