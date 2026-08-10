@@ -18,6 +18,7 @@ annotations``. FastAPI needs real, evaluated type annotations (not strings) to
 resolve ``Annotated[...]`` dependency aliases.
 """
 
+import contextlib
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -29,6 +30,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from mandate.api.documents import (
+    breaker_state_document,
+    intent_document,
+    mandate_document,
+    receipt_document,
+    spend_document,
+    status_document,
+)
 from mandate.auth import (
     AuthenticationDeniedError,
     PrivyIdentity,
@@ -39,6 +48,8 @@ from mandate.auth import (
 from mandate.config import ApiSettings, Service, assert_secret_boundary
 from mandate.gateway_status import GatewayTransferStatusInspector
 from mandate.health import build_service_health, check_database
+from mandate.mcp.adapter import McpDependencies, build_mcp_server
+from mandate.mcp.credentials import PostgresMcpCredentialStore
 from mandate.payments import CircleCliPaymentExecutor
 from mandate.persistence.breaker_store import (
     BreakerState,
@@ -181,6 +192,29 @@ def create_app(
         active_settings, active_store, active_breaker
     )
     active_receipts = receipt_reader or _receipt_reader_from_settings(active_settings)
+    active_mcp_credentials = (
+        PostgresMcpCredentialStore(active_settings.database_url)
+        if active_settings.database_url is not None
+        else None
+    )
+    active_mcp = build_mcp_server(
+        dependencies=McpDependencies(
+            spend_service=active_spend,
+            status_service=active_status,
+            credential_store=active_mcp_credentials,
+        )
+    )
+    mcp_subapp = None
+    if active_mcp_credentials is not None:
+        mcp_subapp = active_mcp.streamable_http_app(json_response=True, streamable_http_path="/")
+
+    @contextlib.asynccontextmanager
+    async def app_lifespan(_app: FastAPI):  # noqa: ANN202 - async generator helper
+        if mcp_subapp is not None:
+            async with active_mcp.session_manager.run():
+                yield
+        else:
+            yield
 
     app = FastAPI(
         title="Mandate API",
@@ -188,7 +222,11 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=app_lifespan,
     )
+
+    if mcp_subapp is not None:
+        app.mount("/mcp", mcp_subapp)
 
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -277,6 +315,34 @@ def create_app(
             "status_endpoint": f"/api/v1/mandates/{mandate_id}/status",
         }
         return JSONResponse(content=document, status_code=201)
+
+    @app.post("/api/v1/mandates/{mandate_id}/mcp-credentials")
+    def mint_mcp_credential(
+        mandate_id: uuid.UUID,
+        identity: identity_dependency,
+    ) -> JSONResponse:
+        """Mint one MCP credential scoped to a Mandate the User owns.
+
+        The User creates the Mandate first. The credential grants access to one
+        Mandate only (ADR-0033). The raw credential is returned once; only its
+        hash is stored. It never appears in a URL or connection string.
+        """
+        if active_store is None or active_mcp_credentials is None:
+            raise StarletteHTTPException(status_code=503)
+        try:
+            active_store.get_mandate(user_id=identity.subject, mandate_id=mandate_id)
+        except NotFoundError:
+            raise StarletteHTTPException(status_code=404) from None
+        credential = active_mcp_credentials.mint(user_id=identity.subject, mandate_id=mandate_id)
+        return JSONResponse(
+            content={
+                "credential": credential,
+                "mandate_id": str(mandate_id),
+                "endpoint": "/mcp",
+                "tools": ["mandate.spend", "mandate.status"],
+            },
+            status_code=201,
+        )
 
     @app.post("/api/v1/mandates/{mandate_id}/spend")
     def spend(
@@ -497,84 +563,22 @@ def _receipt_reader_from_settings(settings: ApiSettings) -> ReceiptReader | None
 
 def _spend_to_json(response: SpendResponse) -> dict[str, object]:
     """Render a SpendResponse as a safe JSON document."""
-    intent = response.intent
-    document: dict[str, object] = {
-        "outcome": response.outcome,
-        "reason": response.reason,
-        "action": response.action,
-        "intent": _intent_to_json(intent),
-        "spent_total": response.spent_total,
-    }
-    if response.receipt is None:
-        document["receipt"] = None
-    else:
-        receipt = response.receipt
-        document["receipt"] = {
-            "task_id": receipt.task_id,
-            "purpose_hash": receipt.purpose_hash,
-            "service_url": receipt.service_url,
-            "amount": receipt.amount,
-            "payment_reference": receipt.tx_hash,
-            "recorded_at": receipt.recorded_at.isoformat(),
-            "intent_state": receipt.intent_state,
-            "receipt_anchor": receipt.receipt_anchor,
-        }
-    return document
+    return spend_document(response)
 
 
 def _intent_to_json(intent: Intent) -> dict[str, object]:
     """Render one intent as a safe JSON document."""
-    economic_safety_state = (intent.spend_outcome or intent.status).upper()
-    return {
-        "id": str(intent.id),
-        "mandate_id": str(intent.mandate_id),
-        "purpose_hash": intent.purpose_hash,
-        "service_url": intent.service_url,
-        "amount": intent.amount,
-        "status": intent.status,
-        "economic_safety_state": economic_safety_state,
-        "spend_outcome": intent.spend_outcome,
-        "reason": intent.spend_reason,
-        "economic_safety_action": intent.economic_safety_action,
-        "created_at": intent.created_at.isoformat(),
-        "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
-        "retry_count": intent.retry_count,
-        "payment_reference": intent.payment_reference,
-        "reference_type": intent.reference_type,
-        "payment_state": intent.payment_state,
-        "batch_tx_hash": intent.batch_tx_hash,
-        "receipt_anchor": intent.receipt_anchor,
-    }
+    return intent_document(intent)
 
 
 def _mandate_to_json(mandate: Mandate) -> dict[str, object]:
     """Render one mandate as a safe JSON document for list endpoints."""
-    return {
-        "id": str(mandate.id),
-        "user_id": mandate.user_id,
-        "budget": mandate.budget,
-        "per_call_cap": mandate.per_call_cap,
-        "allowed_services": list(mandate.allowed_services),
-        "expiry": mandate.expiry.isoformat() if mandate.expiry else None,
-        "status": mandate.status,
-        "spent_total": mandate.spent_total,
-        "reserved_total": mandate.reserved_total,
-        "operator_wallet": mandate.wallet_address,
-        "created_at": mandate.created_at.isoformat(),
-    }
+    return mandate_document(mandate)
 
 
 def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
     """Render one breaker state row as a safe JSON document."""
-    return {
-        "service_url": state.service_url,
-        "state": state.state,
-        "failure_count": state.failure_count,
-        "last_failure_at": state.last_failure_at.isoformat() if state.last_failure_at else None,
-        "trial_allowed": state.trial_allowed,
-        "trial_owner": state.trial_owner,
-        "trial_started_at": state.trial_started_at.isoformat() if state.trial_started_at else None,
-    }
+    return breaker_state_document(state)
 
 
 def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
@@ -583,16 +587,7 @@ def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
     The API uses the exact public domain names. It does not expose the legacy
     authority field stored in the deployed event.
     """
-    return {
-        "mandate_id": receipt.mandate_id,
-        "task_id": receipt.task_id,
-        "purpose_hash": receipt.purpose_hash,
-        "service_url": receipt.service_url,
-        "amount": receipt.amount,
-        "payment_reference": receipt.tx_hash,
-        "receipt_anchor": receipt.anchor,
-        "timestamp": receipt.timestamp.isoformat(),
-    }
+    return receipt_document(receipt)
 
 
 def _render_status(
@@ -607,13 +602,4 @@ def _render_status(
         document = status_service.status(user_id=identity.subject, mandate_id=mandate_id)
     except NotFoundError:
         raise StarletteHTTPException(status_code=404) from None
-    return JSONResponse(
-        content={
-            "mandate": _mandate_to_json(document.mandate),
-            "spent_total": document.mandate.spent_total,
-            "remaining_budget": document.remaining_budget,
-            "intents": [_intent_to_json(intent) for intent in document.recent_intents],
-            "recent_intents": [_intent_to_json(intent) for intent in document.recent_intents],
-            "breaker_state": [_breaker_state_to_json(state) for state in document.breaker_states],
-        }
-    )
+    return JSONResponse(content=status_document(document))

@@ -31,6 +31,7 @@ Mandate adds that missing safety boundary.
 | What did Arc record? | The Receipt Registry recorded the finalized Gateway Payment Reference. | [Arc Receipt Anchor](https://testnet.arcscan.app/tx/0xc29eecd907ee53038e1c35c8d974b735f8f996b259f1025bbd77d3cf691c01fd) |
 | Does the refusal path work? | `UNKNOWN` permits `WAIT` or `REQUEST_REVIEW`. It permits no new authorization. | [Same-Intent safety tests](backend/tests/test_spend_api.py) |
 | Can an agent use it now? | REST is the stable interface. | [`POST /spend` and `GET /status`](backend/src/mandate/api/app.py) |
+| Is there an MCP Adapter? | Yes. The official MCP Python SDK client passed discovery, authorization, spend, and status over Streamable HTTP. | [`mandate.spend` and `mandate.status`](backend/src/mandate/mcp/adapter.py) |
 
 ## Proof of one complete economic path
 
@@ -132,7 +133,8 @@ User
   → creates task-scoped mandate authority
 
 Agent
-  → Mandate REST API
+  → Mandate REST API        (stable interface)
+  → Mandate MCP Adapter     (tested: MCP Python SDK client over Streamable HTTP)
       → atomic policy and Intent state
       → Circle Gateway USDC payment on Arc testnet
       → official Payment Reference lookup
@@ -146,6 +148,27 @@ The Demo Operator Wallet executes the authorized testnet payment.
 Circle Gateway moves USDC and provides the exact payment state. Arc stores
 Mandate's independent receipt record. Mandate protects the authorization
 decision.
+
+## MCP Adapter (tested)
+
+Mandate exposes the same application services through a real Streamable HTTP
+MCP endpoint at `/mcp`. The official MCP Python SDK client passed discovery,
+authorization, invocation, spend, and status tests against the deployed
+endpoint. The endpoint exposes exactly two tools:
+
+- `mandate.spend` — gate one Payment Authorization for the credential's Mandate.
+- `mandate.status` — return the Economic Safety State for the credential's Mandate.
+
+A User creates the Mandate first, then mints a credential scoped to one Mandate
+through `POST /api/v1/mandates/{id}/mcp-credentials`. One credential grants
+access to one Mandate only. The credential travels only in the `Authorization`
+header; it never appears in an endpoint URL, a log, a screenshot, or a tool
+result. The MCP Adapter calls the same policy, Intent, budget, Circuit Breaker,
+payment, and finalization services as REST, and it returns the same Spend
+Outcome and Economic Safety Action fields. It cannot call Circle directly.
+
+The claim is limited to the tested client and transport combination. REST
+remains the stable submission fallback.
 
 ## Run locally
 
