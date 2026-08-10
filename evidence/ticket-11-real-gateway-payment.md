@@ -131,7 +131,11 @@ in the same transaction, so a process stop cannot strand a claimed-but-
 unrecorded failure and a delayed duplicate success cannot erase a newer
 independent failure. The outcome record is marked only when the breaker write
 actually applied, so a stale epoch or owner leaves the outcome pending for a
-retry. The status write is monotonic: a delayed non-final lookup can never
+retry. The Scripted breaker store mirrors the Postgres exactly-once semantics:
+it detects an applied outcome against the pre-call state, so a duplicate failed
+outcome counts once and a duplicate completed outcome cannot erase a newer
+independent failure, and a stale owner or epoch leaves the outcome unrecorded
+until a retry completes it. The status write is monotonic: a delayed non-final lookup can never
 regress a durable `completed` or `failed` state, and a Receipt is created only
 when the durable state is `completed`. A consumed half-open trial stays
 exclusive until its owner's terminal breaker outcome commits: a SETTLING Intent

@@ -428,6 +428,130 @@ def test_scripted_stale_owner_failure_after_replacement_success_is_a_noop() -> N
     assert stale.failure_count == 0
 
 
+def test_scripted_duplicate_failed_terminal_outcome_counts_once() -> None:
+    scripted = ScriptedBreakerStateStore()
+    intent_id = uuid.uuid4()
+
+    first = scripted.record_terminal_outcome(
+        intent_id=intent_id,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    duplicate = scripted.record_terminal_outcome(
+        intent_id=intent_id,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert first.failure_count == 1
+    assert duplicate.failure_count == 1
+
+
+def test_scripted_duplicate_completed_outcome_cannot_erase_newer_failure() -> None:
+    scripted = ScriptedBreakerStateStore()
+    completed_intent = uuid.uuid4()
+    failed_intent = uuid.uuid4()
+
+    scripted.record_terminal_outcome(
+        intent_id=completed_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        outcome="completed",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    scripted.record_terminal_outcome(
+        intent_id=failed_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+        failure_threshold=3,
+    )
+    newer_failure = scripted.get_or_create_state(service_url="https://service-a.example.com")
+    assert newer_failure.failure_count == 1
+
+    duplicate = scripted.record_terminal_outcome(
+        intent_id=completed_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=0,
+        outcome="completed",
+        now=datetime(2026, 8, 9, 12, 2, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert duplicate.failure_count == 1
+
+
+def test_scripted_stale_terminal_outcome_stays_unrecorded_until_retry() -> None:
+    scripted = ScriptedBreakerStateStore(
+        [
+            BreakerState(
+                service_url="https://service-a.example.com",
+                state="open",
+                failure_count=3,
+                last_failure_at=datetime(2026, 8, 9, 11, 0, tzinfo=UTC),
+                trial_allowed=False,
+            )
+        ]
+    )
+    scripted.open_to_half_open(service_url="https://service-a.example.com")
+    scripted.consume_trial(
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        now=datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    stale_intent = uuid.uuid4()
+
+    stale = scripted.record_terminal_outcome(
+        intent_id=stale_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-2",
+        trial_epoch=1,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert stale.state == "half_open"
+    assert stale.trial_owner == "worker-1"
+
+    applied = scripted.record_terminal_outcome(
+        intent_id=stale_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=1,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert applied.state == "open"
+
+    duplicate = scripted.record_terminal_outcome(
+        intent_id=stale_intent,
+        service_url="https://service-a.example.com",
+        owner="worker-1",
+        trial_epoch=1,
+        outcome="failed",
+        now=datetime(2026, 8, 9, 12, 1, tzinfo=UTC),
+        failure_threshold=3,
+    )
+
+    assert duplicate.failure_count == applied.failure_count
+
+
 def test_consume_trial_consumes_the_single_trial(store: PostgresBreakerStateStore) -> None:
     _insert_state(
         service_url="https://service-a.example.com", state="half_open", trial_allowed=True

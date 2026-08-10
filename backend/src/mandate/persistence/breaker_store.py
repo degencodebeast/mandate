@@ -615,6 +615,7 @@ class ScriptedBreakerStateStore:
         key = str(intent_id)
         if key in self._recorded_outcomes:
             return self.get_or_create_state(service_url=service_url)
+        previous = self._states.get(service_url)
         if outcome == "failed":
             state = self.record_failure(
                 service_url=service_url,
@@ -627,8 +628,7 @@ class ScriptedBreakerStateStore:
             state = self.record_success(
                 service_url=service_url, owner=owner, trial_epoch=trial_epoch
             )
-        current = self._states.get(service_url)
-        if current is None or state is not current:
+        if state is not previous:
             self._recorded_outcomes.add(key)
         return state
 
