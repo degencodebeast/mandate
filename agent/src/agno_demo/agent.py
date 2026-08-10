@@ -301,15 +301,6 @@ def run_agent_switch(
     return decision, spend_result
 
 
-def _run_plan(
-    agent: Agent,
-    tool_plan: list[ToolPlanItem],
-    decide_fn: DecisionFn,
-) -> AgentDecision:
-    decision, _ = _run_plan_with_results(agent, tool_plan, decide_fn)
-    return decision
-
-
 def _run_plan_with_results(
     agent: Agent,
     tool_plan: list[ToolPlanItem],
