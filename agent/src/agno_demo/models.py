@@ -9,7 +9,6 @@ backend records and the dashboard displays.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 
@@ -170,8 +169,3 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
-
-
-def parse_timestamp(value: str) -> datetime:
-    """Parse an ISO-8601 timestamp from a REST document."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
