@@ -376,18 +376,20 @@ class PostgresIntentStore:
         return self._from_row(row)
 
     def is_pending_accepted(self, *, intent_id: uuid.UUID) -> bool:
-        """Return whether the Intent is an accepted transfer still pending.
+        """Return whether the Intent's transfer is still awaiting its breaker outcome.
 
-        An Intent is pending when it is SETTLING with a stored Payment
-        Reference and a non-terminal official state. The half-open Circuit
-        Breaker trial must stay exclusive while its owner has such a pending
-        transfer (ticket 11 gate Major): the local trial timer cannot open a
-        second Payment Authorization for the same service.
+        An Intent is pending while it is SETTLING with a stored Payment
+        Reference and its terminal Circuit Breaker outcome has not been durably
+        recorded. This holds even when the official ``payment_state`` is already
+        ``completed`` or ``failed``: the half-open Circuit Breaker trial must
+        stay exclusive until the terminal breaker outcome commits, so the local
+        trial timer cannot open a second Payment Authorization for the same
+        service (ticket 11 gate).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
-                SELECT status, payment_reference, payment_state
+                SELECT status, payment_reference, breaker_outcome_recorded
                 FROM intents WHERE id = %s
                 """,
                 (intent_id,),
@@ -396,7 +398,7 @@ class PostgresIntentStore:
             return False
         if row["status"] != "settling" or row["payment_reference"] is None:
             return False
-        return row["payment_state"] not in ("completed", "failed")
+        return not row["breaker_outcome_recorded"]
 
     def store_receipt_anchor(self, *, intent_id: uuid.UUID, anchor: str) -> Intent:
         """Record the Receipt Anchor after the Receipt is written (ticket 10e).

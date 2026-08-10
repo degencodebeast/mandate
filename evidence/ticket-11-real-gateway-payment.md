@@ -129,8 +129,12 @@ recorded as one atomic, durable, exactly-once operation per Intent (ticket 11
 gate). The claim flag (`breaker_outcome_recorded`) and the breaker change commit
 in the same transaction, so a process stop cannot strand a claimed-but-
 unrecorded failure and a delayed duplicate success cannot erase a newer
-independent failure. The status write is monotonic: a delayed non-final lookup
-can never regress a durable `completed` or `failed` state, and a Receipt is
-created only when the durable state is `completed`. A consumed half-open trial
-stays exclusive while its owner has a pending accepted transfer: the local trial
-timer cannot open a second Payment Authorization for the same service.
+independent failure. The outcome record is marked only when the breaker write
+actually applied, so a stale epoch or owner leaves the outcome pending for a
+retry. The status write is monotonic: a delayed non-final lookup can never
+regress a durable `completed` or `failed` state, and a Receipt is created only
+when the durable state is `completed`. A consumed half-open trial stays
+exclusive until its owner's terminal breaker outcome commits: a SETTLING Intent
+with `breaker_outcome_recorded=false` is pending even when `payment_state` is
+terminal, so a failed half-open trial reopens the Circuit Breaker before another
+Payment Authorization for the same service.

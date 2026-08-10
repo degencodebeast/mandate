@@ -396,13 +396,14 @@ class PostgresBreakerStateStore:
                         owner,
                     ),
                 ).fetchone()
-            connection.execute(
-                """
-                UPDATE intents SET breaker_outcome_recorded = true WHERE id = %s
-                """,
-                (intent_id,),
-            )
-            if row is None:
+            if row is not None:
+                connection.execute(
+                    """
+                    UPDATE intents SET breaker_outcome_recorded = true WHERE id = %s
+                    """,
+                    (intent_id,),
+                )
+            else:
                 row = connection.execute(
                     _SELECT_FROM_BREAKER + "WHERE service_url = %s",
                     (service_url,),
@@ -607,7 +608,9 @@ class ScriptedBreakerStateStore:
 
         Scripted mirror of the Postgres atomic operation: the outcome is
         recorded once per Intent id, so a delayed duplicate completed or failed
-        result has no further effect (ticket 11 gate Major).
+        result has no further effect (ticket 11 gate Major). The record is
+        marked only when the breaker write actually applied; a stale epoch or
+        owner leaves the outcome pending so a retry can complete it.
         """
         key = str(intent_id)
         if key in self._recorded_outcomes:
@@ -624,7 +627,9 @@ class ScriptedBreakerStateStore:
             state = self.record_success(
                 service_url=service_url, owner=owner, trial_epoch=trial_epoch
             )
-        self._recorded_outcomes.add(key)
+        current = self._states.get(service_url)
+        if current is None or state is not current:
+            self._recorded_outcomes.add(key)
         return state
 
     def _epoch_claim_valid(self, current: BreakerState, owner: str, trial_epoch: int) -> bool:

@@ -248,7 +248,7 @@ def _resolve(
     )
 
 
-def _breaker_state(components: Components, service_url: str) -> dict[str, Any]:
+def _breaker_state(components: Any, service_url: str) -> dict[str, Any]:
     with psycopg.connect(_DATABASE_URL, row_factory=psycopg.rows.dict_row) as connection:
         row = connection.execute(
             """
@@ -260,6 +260,25 @@ def _breaker_state(components: Components, service_url: str) -> dict[str, Any]:
         ).fetchone()
     assert row is not None
     return dict(row)
+
+
+def _spend_client(client: TestClient, mandate_id: uuid.UUID, *, task_id: str) -> Any:
+    return client.post(
+        f"/api/v1/mandates/{mandate_id}/spend",
+        json={
+            "task_id": task_id,
+            "purpose": "buy a research report",
+            "service_url": _SERVICE_A,
+            "amount": "1.00",
+        },
+    )
+
+
+def _resolve_client(client: TestClient, mandate_id: uuid.UUID, *, task_id: str) -> Any:
+    return client.post(
+        f"/api/v1/mandates/{mandate_id}/resolve",
+        json={"task_id": task_id, "purpose": "buy a research report"},
+    )
 
 
 def test_three_hard_failures_open_breaker_and_next_spend_blocked(
@@ -603,3 +622,118 @@ def test_pending_accepted_transfer_keeps_half_open_trial_exclusive(
     second_state = _breaker_state(components, _SERVICE_A)
     assert second_state["state"] == "half_open"
     assert second_state["trial_owner"] == first_state["trial_owner"]
+
+
+class FailedStatusInspector:
+    """Return a fixed official ``failed`` transfer status."""
+
+    def lookup_transfer(self, payment_reference: str) -> Any:
+        from mandate.gateway_status import TransferStatus
+
+        return TransferStatus(payment_reference=payment_reference, payment_state="failed")
+
+
+class CrashOnceBreakerStore:
+    """Raise on the first record_terminal_outcome, then delegate.
+
+    Simulates a process stop after the durable failed status is stored but
+    before the breaker outcome commits. The Postgres transaction rolls back, so
+    a retry must complete the same outcome exactly once and the trial owner
+    must stay exclusive in between (ticket 11 gate).
+    """
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self._crashed = False
+
+    def record_terminal_outcome(self, **kwargs: object) -> Any:
+        if not self._crashed:
+            self._crashed = True
+            raise RuntimeError("process stopped before the breaker outcome")
+        return self._delegate.record_terminal_outcome(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def test_failed_half_open_trial_reopens_breaker_before_second_authorization() -> None:
+    store = PostgresMandateStore(_DATABASE_URL)
+    breaker_store = PostgresBreakerStateStore(_DATABASE_URL)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    crashing = CrashOnceBreakerStore(breaker_store)
+    clock = FakeClock()
+
+    def pending(owner: str) -> bool:
+        try:
+            intent_id = uuid.UUID(owner)
+        except (ValueError, AttributeError):
+            return False
+        return intent_store.is_pending_accepted(intent_id=intent_id)
+
+    breaker = CircuitBreaker(
+        store=crashing,
+        failure_threshold=3,
+        cooldown_seconds=_COOLDOWN_SECONDS,
+        trial_timeout_seconds=60.0,
+        now=clock,
+        trial_owner_pending=pending,
+    )
+    payments = RecordingPaymentExecutor()
+    spend_service = MandateSpendService(
+        mandate_store=store,
+        intent_store=intent_store,
+        payment_executor=payments,
+        receipt_recorder=ScriptedReceiptRecorder(),
+        breaker=breaker,
+        now=clock,
+        transfer_status_inspector=FailedStatusInspector(),
+    )
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=store,
+        spend_service=spend_service,
+        breaker_store=breaker_store,
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+    mandate = store.create_mandate(
+        user_id=_TEST_USER,
+        parameters=MandateParameters(
+            budget="10.00",
+            per_call_cap="1.00",
+            allowed_services=[_SERVICE_A],
+            expiry=None,
+        ),
+        wallet_address="0xwallet123",
+        circle_wallet_id="cw_trial_open_001",
+        agent_identity="did:erc8004:breaker-agent",
+    )
+
+    payments.hard_failure = PaymentExecutionError("Down.")
+    for task in ("task-1", "task-2", "task-3"):
+        _spend_client(client, mandate.id, task_id=task)
+    assert _breaker_state(breaker_store, _SERVICE_A)["state"] == "open"
+
+    clock.advance(_COOLDOWN_SECONDS)
+    payments.hard_failure = None
+
+    first = _spend_client(client, mandate.id, task_id="task-4")
+    assert first.json()["outcome"] == "accepted"
+    assert _breaker_state(breaker_store, _SERVICE_A)["state"] == "half_open"
+
+    clock.advance(2 * _COOLDOWN_SECONDS)
+
+    first_resolve = _resolve_client(client, mandate.id, task_id="task-4")
+    assert first_resolve.status_code == 500
+
+    second = _spend_client(client, mandate.id, task_id="task-5")
+    assert second.json()["outcome"] == "blocked: breaker_open"
+    assert payments.calls == [(_SERVICE_A, "1.00")]
+    assert _breaker_state(breaker_store, _SERVICE_A)["state"] == "half_open"
+
+    retry_resolve = _resolve_client(client, mandate.id, task_id="task-4")
+    assert retry_resolve.status_code == 200
+    assert retry_resolve.json()["outcome"] == "blocked: payment_failed"
+    assert _breaker_state(breaker_store, _SERVICE_A)["state"] == "open"
