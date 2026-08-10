@@ -1,21 +1,22 @@
 # Mandate Agno demo run (deterministic, REST fallback)
 
-Timestamp: 2026-08-10T17:28:56.459108+00:00
+Timestamp: 2026-08-10T17:48:43.939384+00:00
 Interface: REST (scripted transport; no network).
 Mandate created by the User before the agent starts.
 Agent tools: mandate.spend, mandate.status only (no direct payment tool).
 
 === SCENE FREEZE ===
-Intent (agent/backend/UI): 7b67f95d-8669-41ba-9698-a2b46d90ad5e
+Intent (agent/backend/UI): c88c43cc-930a-420e-bc28-5bbc897c108d
 Decision: request_review
 Authorize: no
 Payment Reference: -
 Receipt Anchor: -
 Service: https://service-a.example.com
+Injected condition: response loss after the real economic action
 Reason: unknown outcome; wait or request review; no new authorization
 
 === SCENE SWITCH ===
-Intent (agent/backend/UI): ae038d8b-7264-48a4-a260-ed4dcd5ec25b
+Intent (agent/backend/UI): 9ce237d5-cfc8-40f2-b31c-8012848ff1ad
 Decision: switch_service
 Authorize: yes
 Payment Reference: gateway-x402-ref-b
@@ -27,16 +28,6 @@ One Intent. No blind retries.
 
 === SCRIPTED BACKEND SPEND CALLS ===
 [
-  [
-    "intent-a",
-    "buy a research report",
-    "https://service-a.example.com"
-  ],
-  [
-    "intent-b",
-    "buy market data",
-    "https://service-b.example.com"
-  ],
   [
     "intent-a",
     "buy a research report",
@@ -71,7 +62,7 @@ One Intent. No blind retries.
   "remaining_budget": "9.00",
   "recent_intents": [
     {
-      "id": "7b67f95d-8669-41ba-9698-a2b46d90ad5e",
+      "id": "c88c43cc-930a-420e-bc28-5bbc897c108d",
       "mandate_id": "mandate-demo",
       "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
       "service_url": "https://service-a.example.com",
@@ -88,7 +79,7 @@ One Intent. No blind retries.
       "receipt_anchor": null
     },
     {
-      "id": "ae038d8b-7264-48a4-a260-ed4dcd5ec25b",
+      "id": "9ce237d5-cfc8-40f2-b31c-8012848ff1ad",
       "mandate_id": "mandate-demo",
       "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
       "service_url": "https://service-b.example.com",

@@ -35,10 +35,10 @@ import argparse
 import os
 from typing import Protocol
 
-from agno_demo.decisions import decide
 from agno_demo.models import SpendResponse, StatusDocument
 from agno_demo.report import build_scene_report, render_demo_report
 from agno_demo.rest import MandateRESTClient
+from agno_demo.scenes import FreezeScene, SceneResult, SwitchScene
 
 
 class DemoClient(Protocol):
@@ -72,71 +72,44 @@ def run_demo(
     amount: str,
 ) -> list[dict[str, object]]:
     """Run both scenes and return the report documents."""
-    reports: list[dict[str, object]] = []
-
-    # Scene A — freeze. One spend for Intent A on Service A. The injected
-    # response loss leaves Intent A UNKNOWN; the agent stops without a second
-    # authorization and without paying Service B.
-    spend_a = client.spend(
+    freeze = FreezeScene(
+        client=client,
         mandate_id=mandate_id,
-        task_id=task_a,
-        purpose=purpose_a,
-        service_url=service_a,
+        intent_a_task=task_a,
+        intent_a_purpose=purpose_a,
+        service_a_url=service_a,
+        service_b_url=service_b,
         amount=amount,
     )
-    decision_a = decide(spend_a)
-    reports.append(
-        build_scene_report(
-            scene="freeze",
-            intent_id=spend_a.intent.id,
-            decision_action=decision_a.action,
-            may_authorize=decision_a.may_authorize,
-            payment_reference=spend_a.intent.payment_reference,
-            receipt_anchor=spend_a.intent.receipt_anchor,
-            service_url=spend_a.intent.service_url,
-            reason=decision_a.reason,
-        )
-    )
-
-    # Scene B — switch. Read the breaker, choose Service B before
-    # authorization, pay once, resolve into one Receipt Anchor.
-    status: StatusDocument = client.status(mandate_id=mandate_id)
-    open_service = next(
-        (state.service_url for state in status.breaker_state if state.state == "open"),
-        None,
-    )
-    spend_b = client.spend(
+    switch = SwitchScene(
+        status_client=client,
+        spend_client=client,
         mandate_id=mandate_id,
-        task_id=task_b,
-        purpose=purpose_b,
-        service_url=service_b,
+        intent_b_task=task_b,
+        intent_b_purpose=purpose_b,
+        service_a_url=service_a,
+        service_b_url=service_b,
         amount=amount,
     )
-    if spend_b.outcome == "accepted":
-        resolved = client.resolve(mandate_id=mandate_id, task_id=task_b, purpose=purpose_b)
-        final_b = resolved
-    else:
-        final_b = spend_b
-    decision_b = decide(final_b)
-    reason_b = (
-        f"circuit breaker open for {open_service}; switch before authorization"
-        if open_service is not None
-        else decision_b.reason
-    )
-    reports.append(
-        build_scene_report(
-            scene="switch",
-            intent_id=final_b.intent.id,
-            decision_action="switch_service",
-            may_authorize=decision_b.may_authorize,
-            payment_reference=final_b.intent.payment_reference,
-            receipt_anchor=final_b.intent.receipt_anchor,
-            service_url=final_b.intent.service_url,
-            reason=reason_b,
-        )
-    )
+    return [
+        _report_from_result(freeze.run()),
+        _report_from_result(switch.run()),
+    ]
 
-    return reports
+
+def _report_from_result(result: SceneResult) -> dict[str, object]:
+    """Convert one scene result into the shared report document."""
+    return build_scene_report(
+        scene=result.scene,
+        intent_id=result.intent_id or "-",
+        decision_action=result.decision.action,
+        may_authorize=result.decision.may_authorize,
+        payment_reference=result.payment_reference,
+        receipt_anchor=result.receipt_anchor,
+        service_url=result.service_url or "-",
+        reason=result.decision.reason,
+        injected_response_loss=result.injected_response_loss,
+    )
 
 
 def _build_client(args: argparse.Namespace) -> DemoClient:

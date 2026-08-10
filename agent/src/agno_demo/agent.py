@@ -16,7 +16,6 @@ from typing import Any, Protocol
 
 from agno.agent import Agent
 from agno.tools import Function
-from pydantic import BaseModel
 
 from agno_demo.decisions import AgentDecision
 from agno_demo.models import SpendResponse, StatusDocument
@@ -203,12 +202,3 @@ def _intent_document(intent: Any) -> dict[str, object]:
         "payment_reference": intent.payment_reference,
         "receipt_anchor": intent.receipt_anchor,
     }
-
-
-class AgentDecisionSchema(BaseModel):
-    """Backwards-compatible schema alias for the strict output model."""
-
-    action: str
-    intent_id: str | None
-    may_authorize: bool
-    reason: str | None = None

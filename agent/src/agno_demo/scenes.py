@@ -58,6 +58,7 @@ class SceneResult:
     receipt_anchor: str | None
     service_url: str | None
     spend_calls: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
+    injected_response_loss: bool = False
 
     def as_lines(self) -> list[str]:
         """Render the scene as demo-readable terminal lines."""
@@ -71,6 +72,8 @@ class SceneResult:
             f"Receipt Anchor: {self.receipt_anchor or '-'}",
             f"Service: {self.service_url or '-'}",
         ]
+        if self.injected_response_loss:
+            lines.append("Injected condition: response loss after the real economic action")
         if decision.reason:
             lines.append(f"Reason: {decision.reason}")
         return lines
@@ -104,7 +107,9 @@ class FreezeScene:
         The agent issues exactly one ``mandate.spend`` call for Intent A. The
         injected response loss leaves Intent A UNKNOWN; the decision is WAIT or
         REQUEST_REVIEW with ``may_authorize=False``, so no second authorization
-        and no payment to Service B for Intent A.
+        and no payment to Service B for Intent A. The terminal labels the
+        injected response loss so the test condition stays separate from the
+        real payment (spec User Story 35).
         """
         response = self._client.spend(
             mandate_id=self._mandate_id,
@@ -120,6 +125,7 @@ class FreezeScene:
             decision=decision,
             payment_reference=response.intent.payment_reference,
             receipt_anchor=response.intent.receipt_anchor,
+            injected_response_loss=True,
             service_url=response.intent.service_url,
         )
 

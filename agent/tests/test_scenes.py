@@ -13,6 +13,7 @@ the finalized Payment Reference.
 
 from __future__ import annotations
 
+from agno_demo.decisions import AgentDecision
 from agno_demo.models import (
     BreakerState,
     SpendIntent,
@@ -214,9 +215,11 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     result: SceneResult = scene.run()
 
     assert result.scene == "freeze"
+    assert isinstance(result.decision, AgentDecision)
     assert result.decision.action in ("wait", "request_review")
     assert result.decision.may_authorize is False
     assert result.intent_id == "intent-a"
+    assert result.injected_response_loss is True
     assert len(backend.spend_calls) == 1
     assert backend.spend_calls[0] == ("intent-a", "buy a research report", SERVICE_A)
     assert not any(service == SERVICE_B for (_, _, service) in backend.spend_calls)

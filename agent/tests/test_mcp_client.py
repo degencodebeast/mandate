@@ -8,7 +8,6 @@ MCP session so the client logic is deterministic (ADR-0024).
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -16,6 +15,7 @@ import pytest
 
 from agno_demo.mcp_client import McpMandateClient
 from agno_demo.rest import MandateRESTClient
+from agno_demo.scripted import mcp_tool_result
 
 _MCP_URL = "http://localhost:8000/mcp"
 _CREDENTIAL = "mcp-demo-credential"
@@ -37,7 +37,7 @@ class ScriptedMcpSession:
         if self.error is not None:
             raise self.error
         body = self.spend_document if name == "mandate.spend" else self.status_document
-        return _tool_result(body)
+        return mcp_tool_result(body)
 
 
 class ScriptedSessionFactory:
@@ -50,15 +50,6 @@ class ScriptedSessionFactory:
     async def __call__(self, endpoint: str, credential: str) -> AsyncIterator[ScriptedMcpSession]:
         self.sessions.append(self._session)
         yield self._session
-
-
-def _tool_result(body: dict[str, Any]) -> Any:
-    class _Result:
-        def __init__(self) -> None:
-            self.content: list[Any] = [type("_Content", (), {"text": json.dumps(body)})()]
-            self.is_error: bool = False
-
-    return _Result()
 
 
 def _spend_document() -> dict[str, Any]:

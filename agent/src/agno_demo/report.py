@@ -21,6 +21,7 @@ def build_scene_report(
     receipt_anchor: str | None,
     service_url: str,
     reason: str | None,
+    injected_response_loss: bool = False,
 ) -> dict[str, Any]:
     """Build one scene report document.
 
@@ -40,6 +41,7 @@ def build_scene_report(
         "receipt_anchor": receipt_anchor,
         "service_url": service_url,
         "reason": reason,
+        "injected_response_loss": injected_response_loss,
     }
 
 
@@ -54,6 +56,8 @@ def render_demo_report(reports: list[dict[str, Any]]) -> list[str]:
         lines.append(f"Payment Reference: {report['payment_reference'] or '-'}")
         lines.append(f"Receipt Anchor: {report['receipt_anchor'] or '-'}")
         lines.append(f"Service: {report['service_url']}")
+        if report.get("injected_response_loss"):
+            lines.append("Injected condition: response loss after the real economic action")
         if report["reason"]:
             lines.append(f"Reason: {report['reason']}")
         lines.append("")

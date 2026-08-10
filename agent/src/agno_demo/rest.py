@@ -8,7 +8,6 @@ responses without a network (ADR-0024).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from agno_demo.models import SpendResponse, StatusDocument
@@ -167,6 +166,3 @@ def format_decision_line(
         f"[{decision.name}] intent {intent_id} service {service_url} "
         f"amount ${amount} authorize={decision.may_authorize}"
     )
-
-
-TransportBuilder = Callable[..., tuple[int, Mapping[str, Any]]]

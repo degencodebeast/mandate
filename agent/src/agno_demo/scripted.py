@@ -259,7 +259,7 @@ class ScriptedMcpSession:
             body = self._backend._spend(dict(arguments))
         else:
             raise ConnectionError(f"Unknown MCP tool: {name}")
-        return _mcp_tool_result(body)
+        return mcp_tool_result(body)
 
 
 class ScriptedMcpSessionFactory:
@@ -272,7 +272,13 @@ class ScriptedMcpSessionFactory:
         yield ScriptedMcpSession(self._backend)
 
 
-def _mcp_tool_result(body: JsonObject) -> Any:
+def mcp_tool_result(body: JsonObject) -> Any:
+    """Build an MCP tool result carrying one JSON document.
+
+    The result shape mirrors the official MCP Python SDK tool result, so the
+    demo client and its tests parse it exactly as a real session response.
+    """
+
     class _Content:
         text: str = json.dumps(body)
 
