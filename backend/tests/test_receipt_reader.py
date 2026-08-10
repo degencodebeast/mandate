@@ -1,8 +1,8 @@
 """Receipt reader adapter tests.
 
-The seam is the ReceiptReader. It lists on-Arc receipts for a user's ERC-8004
-agent identity by reading ReceiptRecorded events from the Receipt Registry
-contract on Arc (ADR-0016). The production adapter runs a viem script via
+The seam is the ReceiptReader. It lists on-Arc receipts for a User authority
+by reading ReceiptRecorded events from the Receipt Registry contract on Arc.
+The production adapter runs a viem script via
 subprocess (ADR-0012); tests script the runner so no Node, viem, or network is
 required (ADR-0024).
 """
@@ -79,13 +79,13 @@ def test_parse_receipts_reads_all_fields() -> None:
     output = json.dumps(
         [
             {
-                "userId": "did:erc8004:agent",
+                "authorityId": "did:privy:user",
                 "mandateId": "mandate-1",
                 "taskId": "task-1",
                 "purposeHash": "hash-1",
                 "serviceUrl": "https://service-a.example.com",
                 "amount": "1.00",
-                "txHash": "0xsettled",
+                "paymentReference": "0xsettled",
                 "timestamp": 1783600000,
                 "transactionHash": "0xanchor",
             }
@@ -96,7 +96,7 @@ def test_parse_receipts_reads_all_fields() -> None:
 
     assert len(receipts) == 1
     receipt = receipts[0]
-    assert receipt.user_id == "did:erc8004:agent"
+    assert receipt.user_id == "did:privy:user"
     assert receipt.mandate_id == "mandate-1"
     assert receipt.task_id == "task-1"
     assert receipt.purpose_hash == "hash-1"
@@ -107,7 +107,9 @@ def test_parse_receipts_reads_all_fields() -> None:
 
 
 def test_parse_receipts_handles_missing_optional_fields() -> None:
-    output = json.dumps([{"amount": "0.50", "txHash": "0xabc", "userId": "", "timestamp": None}])
+    output = json.dumps(
+        [{"amount": "0.50", "paymentReference": "0xabc", "authorityId": "", "timestamp": None}]
+    )
 
     receipts = _parse_receipts(output)
 
@@ -119,7 +121,7 @@ def test_parse_receipts_handles_missing_optional_fields() -> None:
 
 def test_parse_receipts_rejects_missing_required_field() -> None:
     with pytest.raises(ReceiptReadError):
-        _parse_receipts(json.dumps([{"userId": "did:erc8004:agent", "timestamp": 0}]))
+        _parse_receipts(json.dumps([{"authorityId": "did:privy:user", "timestamp": 0}]))
 
 
 def test_parse_receipts_rejects_non_list_output() -> None:
@@ -137,12 +139,12 @@ def test_viem_reader_uses_scripted_runner() -> None:
     output = json.dumps(
         [
             {
-                "userId": "did:erc8004:agent",
+                "authorityId": "did:privy:user",
                 "taskId": "task-1",
                 "purposeHash": "hash-1",
                 "serviceUrl": "https://service-a.example.com",
                 "amount": "1.00",
-                "txHash": "0xsettled",
+                "paymentReference": "0xsettled",
                 "timestamp": 1783600000,
             }
         ]
@@ -166,7 +168,8 @@ def test_viem_reader_uses_scripted_runner() -> None:
     assert command[0] == "node"
     assert "--registry" in command
     assert "0xregistry" in command
-    assert "--user-id" in command
+    assert "--authority-id" in command
+    assert "--user-id" not in command
     assert "did:erc8004:agent" in command
     assert "--mandate-id" in command
     assert "mandate-1" in command

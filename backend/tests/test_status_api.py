@@ -157,6 +157,8 @@ def test_get_mandate_status_returns_budget_meter_data(components: Components) ->
     assert document["spent_total"] == "0"
     assert document["remaining_budget"] == "10.00"
     assert document["recent_intents"][0]["service_url"] == _SERVICE_URL
+    assert document["recent_intents"][0]["economic_safety_state"] == "PENDING"
+    assert document["recent_intents"][0]["permitted_actions"] == ["WAIT"]
     assert document["breaker_state"][0]["service_url"] == _SERVICE_URL
     assert document["breaker_state"][0]["state"] == "closed"
     assert "agent_identity" not in document["mandate"]
@@ -206,8 +208,11 @@ def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
     assert response.status_code == 200
     document = response.json()
     assert len(document["receipts"]) == 1
-    assert document["receipts"][0]["user_id"] == "did:erc8004:status-api-agent"
-    assert document["receipts"][0]["tx_hash"] == "0xsettled"
+    assert "user_id" not in document["receipts"][0]
+    assert "tx_hash" not in document["receipts"][0]
+    assert "anchor" not in document["receipts"][0]
+    assert document["receipts"][0]["payment_reference"] == "0xsettled"
+    assert document["receipts"][0]["receipt_anchor"] is None
     assert document["receipts"][0]["mandate_id"] == str(mandate.id)
 
 
@@ -248,13 +253,13 @@ def test_get_mandate_receipts_scopes_by_mandate_for_shared_agent_identity() -> N
     first_document = first_response.json()
     assert len(first_document["receipts"]) == 1
     assert first_document["receipts"][0]["mandate_id"] == str(first.id)
-    assert first_document["receipts"][0]["tx_hash"] == "0xfirst"
+    assert first_document["receipts"][0]["payment_reference"] == "0xfirst"
 
     assert second_response.status_code == 200
     second_document = second_response.json()
     assert len(second_document["receipts"]) == 1
     assert second_document["receipts"][0]["mandate_id"] == str(second.id)
-    assert second_document["receipts"][0]["tx_hash"] == "0xsecond"
+    assert second_document["receipts"][0]["payment_reference"] == "0xsecond"
 
 
 def test_get_mandate_receipts_scopes_to_own_mandate(components: Components) -> None:

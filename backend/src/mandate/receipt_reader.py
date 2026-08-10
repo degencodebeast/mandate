@@ -1,16 +1,15 @@
 """Receipt reading Interface and Adapters.
 
-A ReceiptReader lists on-Arc Receipts for a user's ERC-8004 agent identity
-(CONTEXT.md). It reads ReceiptRecorded events emitted by the Receipt Registry
-contract on Arc and filters them by the userId field (ADR-0016). The dashboard
+A ReceiptReader lists on-Arc Receipts for a User authority. It reads
+ReceiptRecorded events emitted by the Receipt Registry contract on Arc and
+filters them by the authority field. The dashboard
 consumes these via GET /mandates/:id/receipts.
 
 Adapters:
 - ViemReceiptReader: production. Runs a small Node.js viem script via
-  subprocess to read the ReceiptRecorded logs and filter them by userId
-  (ADR-0012 subprocess pattern; viem is the dashboard's chain reader per
-  README). The runner is injectable so tests can script it without Node,
-  viem, or network.
+  subprocess to read the ReceiptRecorded logs and filter them by authority.
+  The runner is injectable so tests can script it without Node, viem, or
+  network.
 - ScriptedReceiptReader: test. Returns fixed receipts (ADR-0024).
 """
 
@@ -44,12 +43,12 @@ class ArcReceipt:
 
 
 class ReceiptReader(Protocol):
-    """Read on-Arc receipts for one ERC-8004 agent identity and Mandate."""
+    """Read on-Arc receipts for one User authority and Mandate."""
 
     def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
-        """Return the receipts for the agent identity and Mandate, newest first.
+        """Return the receipts for the User authority and Mandate, newest first.
 
-        The Agent Identity is user-scoped and shared across a user's Mandates,
+        The authority is User-scoped and shared across the User's Mandates,
         so the Mandate ID is required to scope the read. Without it one Mandate
         would see another Mandate's proof.
         """
@@ -95,7 +94,7 @@ class ViemReceiptReader:
                     self._registry_address,
                     "--rpc-url",
                     self._rpc_url,
-                    "--user-id",
+                    "--authority-id",
                     user_id,
                     "--mandate-id",
                     mandate_id,
@@ -158,12 +157,12 @@ def _parse_receipts(output: str) -> list[ArcReceipt]:
             continue
         timestamp = _parse_timestamp(entry.get("timestamp"))
         amount = _string_field(entry, "amount")
-        tx_hash = _string_field(entry, "txHash")
+        tx_hash = _string_field(entry, "paymentReference")
         if amount is None or tx_hash is None:
             raise ReceiptReadError("A receipt entry is missing a required field.")
         receipts.append(
             ArcReceipt(
-                user_id=_string_field(entry, "userId") or "",
+                user_id=_string_field(entry, "authorityId") or "",
                 mandate_id=_string_field(entry, "mandateId") or "",
                 task_id=_string_field(entry, "taskId") or "",
                 purpose_hash=_string_field(entry, "purposeHash") or "",

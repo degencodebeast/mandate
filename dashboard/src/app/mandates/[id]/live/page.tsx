@@ -177,15 +177,15 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
             {status.mandate.operator_wallet || "Not configured"}
           </div>
           <div className="card-meta" style={{ marginTop: "var(--space-1)" }}>
-            <span>Tx (latest)</span>
-            <span className="mono">{formatTxHash(status.recent_intents[0]?.tx_hash ?? null)}</span>
+            <span>Payment Reference</span>
+            <span className="mono">{formatTxHash(status.recent_intents[0]?.payment_reference ?? null)}</span>
           </div>
         </div>
       </div>
 
       <div className="grid-2">
         <div className="stack-4">
-          <h3>Payment log</h3>
+          <h3>Intent history</h3>
           <PaymentLog intents={status.recent_intents} />
         </div>
         <div className="stack-4">

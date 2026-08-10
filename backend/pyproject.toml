@@ -1,7 +1,7 @@
 [project]
 name = "mandate"
 version = "0.1.0"
-description = "Mandate backend package. It runs as a FastAPI web process exposing MCP tools and REST endpoints for the dashboard."
+description = "Mandate REST service for agent spend safety and the dashboard."
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi>=0.121.0",

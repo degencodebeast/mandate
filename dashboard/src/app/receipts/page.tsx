@@ -72,7 +72,7 @@ export default function ReceiptsPage() {
           <h1>On-Arc receipts</h1>
           <p className="lede">
             Every settled payment writes one ReceiptRecorded event to the
-            Receipt Registry on Arc. Click a tx hash to inspect it on the Arc
+            Receipt Registry on Arc. Click a Receipt Anchor to inspect it on the Arc
             testnet explorer.
           </p>
         </div>
@@ -147,7 +147,7 @@ export default function ReceiptsPage() {
                 <span className="kicker">Receipt Anchor (Arc)</span>
               </div>
               {flat.map(({ receipt, mandate }) => (
-                <div key={receipt.anchor ?? receipt.tx_hash} className="receipt-row">
+                <div key={receipt.receipt_anchor ?? receipt.payment_reference} className="receipt-row">
                   <span className="stack-2">
                     <Link href={`/mandates/${mandate.id}/live`} className="mono">
                       {mandate.id.slice(0, 8)}…
@@ -157,15 +157,15 @@ export default function ReceiptsPage() {
                   <span className="mono">{receipt.task_id}</span>
                   <span className="mono" style={{ textAlign: "right" }}>{formatMoney(receipt.amount)}</span>
                   <span className="mono">{formatDateTime(receipt.timestamp)}</span>
-                  <span className="mono">{formatTxHash(receipt.tx_hash)}</span>
-                  {receipt.anchor ? (
+                  <span className="mono">{formatTxHash(receipt.payment_reference)}</span>
+                  {receipt.receipt_anchor ? (
                     <a
                       className="tx"
-                      href={`https://testnet.arcscan.app/tx/${receipt.anchor}`}
+                      href={`https://testnet.arcscan.app/tx/${receipt.receipt_anchor}`}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      {formatTxHash(receipt.anchor)} ↗
+                      {formatTxHash(receipt.receipt_anchor)} ↗
                     </a>
                   ) : (
                     <span className="card-meta">anchor pending</span>

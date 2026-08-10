@@ -1,7 +1,7 @@
 "use client";
 
 import { formatDateTime, formatMoney, formatPercent, formatTimestamp, formatTxHash, meterState } from "@/lib/format";
-import type { BreakerStateRecord, IntentRecord, MandateSummary, ReceiptRecord } from "@/lib/api";
+import type { BreakerStateRecord, IntentRecord, ReceiptRecord } from "@/lib/api";
 
 interface EconomicSafetyCopy {
   state: string;
@@ -17,36 +17,38 @@ function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCop
       action: "CREATE AN INTENT",
     };
   }
-  switch (intent.status.toLowerCase()) {
+  const state = intent.economic_safety_state;
+  const action = intent.permitted_actions.join(" or ");
+  switch (state.toLowerCase()) {
     case "settled":
       return {
-        state: "SETTLED",
+        state,
         meaning: "The exact Payment Reference has a final success state.",
-        action: "CONTINUE",
+        action,
       };
     case "unknown":
       return {
-        state: "UNKNOWN",
+        state,
         meaning: "Value may have moved. Mandate freezes new authorization for this Intent.",
-        action: "WAIT or REQUEST_REVIEW",
+        action,
       };
     case "blocked":
       return {
-        state: "BLOCKED",
+        state,
         meaning: "Policy or the Circuit Breaker denies payment authorization.",
-        action: "REDUCE SCOPE or USE A NEW INTENT",
+        action,
       };
     case "settling":
       return {
-        state: "SETTLING",
+        state,
         meaning: "A payment has an accepted reference and awaits an exact final state.",
-        action: "WAIT",
+        action,
       };
     default:
       return {
-        state: intent.status.toUpperCase(),
+        state,
         meaning: "Mandate has recorded this economic Intent.",
-        action: "WAIT",
+        action,
       };
   }
 }
@@ -203,12 +205,8 @@ export function BreakerList({ states }: { states: BreakerStateRecord[] }) {
 
 export function ReceiptList({
   receipts,
-  mandatesById,
-  showMandate = false,
 }: {
   receipts: ReceiptRecord[];
-  mandatesById?: Map<string, MandateSummary>;
-  showMandate?: boolean;
 }) {
   if (receipts.length === 0) {
     return (
@@ -223,7 +221,7 @@ export function ReceiptList({
   return (
     <div className="card" style={{ padding: 0 }}>
       <div className="receipt-row" style={{ background: "var(--surface-2)" }}>
-        {showMandate ? <span className="kicker">Mandate · service</span> : <span className="kicker">Service</span>}
+        <span className="kicker">Service</span>
         <span className="kicker">Task</span>
         <span className="kicker" style={{ textAlign: "right" }}>Amount</span>
         <span className="kicker">When</span>
@@ -231,29 +229,20 @@ export function ReceiptList({
         <span className="kicker">Receipt Anchor (Arc)</span>
       </div>
       {receipts.map((receipt) => (
-        <div key={receipt.anchor ?? receipt.tx_hash} className="receipt-row">
-          {showMandate ? (
-            <span className="stack-2">
-              {mandatesById?.get(receipt.user_id) ? (
-                <span className="mono">{mandatesById.get(receipt.user_id)!.id.slice(0, 8)}…</span>
-              ) : null}
-              <span className="card-meta mono">{receipt.service_url}</span>
-            </span>
-          ) : (
-            <span className="mono">{receipt.service_url}</span>
-          )}
+        <div key={receipt.receipt_anchor ?? receipt.payment_reference} className="receipt-row">
+          <span className="mono">{receipt.service_url}</span>
           <span className="mono">{receipt.task_id}</span>
           <span className="mono" style={{ textAlign: "right" }}>{formatMoney(receipt.amount)}</span>
           <span className="mono">{formatTimestamp(receipt.timestamp)}</span>
-          <span className="mono">{formatTxHash(receipt.tx_hash)}</span>
-          {receipt.anchor ? (
+          <span className="mono">{formatTxHash(receipt.payment_reference)}</span>
+          {receipt.receipt_anchor ? (
             <a
               className="tx"
-              href={`https://testnet.arcscan.app/tx/${receipt.anchor}`}
+              href={`https://testnet.arcscan.app/tx/${receipt.receipt_anchor}`}
               target="_blank"
               rel="noopener noreferrer"
             >
-              {formatTxHash(receipt.anchor)} ↗
+              {formatTxHash(receipt.receipt_anchor)} ↗
             </a>
           ) : (
             <span className="card-meta">anchor pending</span>

@@ -10,6 +10,8 @@ describe("login product promise", () => {
     expect(screen.getByText(/Financial fault tolerance for autonomous agents/)).toBeTruthy();
     expect(screen.getByText(/One Intent\. No blind retries\./)).toBeTruthy();
     expect(screen.getByText("1 Intent")).toBeTruthy();
+    expect(screen.getByText("per economic action")).toBeTruthy();
+    expect(screen.queryByText("per task")).toBeNull();
     expect(screen.getByText("0 blind retries")).toBeTruthy();
     expect(screen.getByText("Arc + USDC")).toBeTruthy();
     expect(screen.queryByText(/fee/i)).toBeNull();

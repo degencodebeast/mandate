@@ -10,7 +10,7 @@ export function LoginHero() {
       <div className="stats">
         <div className="stat">
           <div className="v">1 Intent</div>
-          <div className="l">per task</div>
+          <div className="l">per economic action</div>
         </div>
         <div className="stat">
           <div className="v">0 blind retries</div>

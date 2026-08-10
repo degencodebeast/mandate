@@ -190,10 +190,11 @@ def test_spend_within_budget_settles_and_updates_spent_total(
     assert document["outcome"] == "permitted"
     assert document["reason"] is None
     assert document["intent"]["status"] == "settled"
-    assert document["intent"]["tx_hash"] == "0xsettled"
+    assert "tx_hash" not in document["intent"]
+    assert document["intent"]["payment_reference"] == "0xsettled"
     assert document["intent"]["settled_at"] is not None
     assert document["receipt"]["task_id"] == "task-1"
-    assert document["receipt"]["tx_hash"] == "0xsettled"
+    assert document["receipt"]["payment_reference"] == "0xsettled"
     assert document["receipt"]["intent_state"] == "settled"
     assert document["receipt"]["amount"] == "1.00"
     assert document["spent_total"] == "1.00"
@@ -283,7 +284,7 @@ def test_spend_same_intent_second_call_returns_existing_receipt(
     assert second_document["receipt"] is not None
     assert second_document["receipt"]["task_id"] == "task-1"
     assert second_document["receipt"]["purpose_hash"] == resolved.json()["receipt"]["purpose_hash"]
-    assert second_document["receipt"]["tx_hash"] == "0xsettled"
+    assert second_document["receipt"]["payment_reference"] == "0xsettled"
     assert second_document["receipt"]["intent_state"] == "settled"
     assert second_document["intent"]["status"] == "settled"
     assert len(components.payments.calls) == 1
@@ -547,7 +548,7 @@ def test_spend_does_not_collect_fee(components: Components) -> None:
     assert document["intent"]["status"] == "settled"
     assert "fee_amount" not in document["intent"]
     assert "fee_tx_hash" not in document["intent"]
-    assert document["receipt"]["tx_hash"] == "0xsettled"
+    assert document["receipt"]["payment_reference"] == "0xsettled"
     assert "fee_amount" not in document["receipt"]
     assert "fee_tx_hash" not in document["receipt"]
     assert document["spent_total"] == "1.00"

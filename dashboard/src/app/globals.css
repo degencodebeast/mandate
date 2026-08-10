@@ -466,7 +466,7 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 .auth-form-wrap h1 { font-size: 36px; }
 .auth-form-wrap p { color: var(--ink-3); font-size: 14px; margin-top: var(--space-3); margin-bottom: var(--space-6); }
 
-/* Payment log */
+/* Intent history */
 .log-row {
   display: grid;
   grid-template-columns: 90px 1fr 1.2fr 1fr 100px 80px;

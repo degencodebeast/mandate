@@ -35,7 +35,8 @@ export interface IntentRecord {
   service_url: string;
   amount: string;
   status: string;
-  tx_hash: string | null;
+  economic_safety_state: string;
+  permitted_actions: string[];
   created_at: string;
   settled_at: string | null;
   retry_count: number;
@@ -57,14 +58,13 @@ export interface BreakerStateRecord {
 }
 
 export interface ReceiptRecord {
-  user_id: string;
   mandate_id: string;
   task_id: string;
   purpose_hash: string;
   service_url: string;
   amount: string;
-  tx_hash: string;
-  anchor: string | null;
+  payment_reference: string;
+  receipt_anchor: string | null;
   timestamp: string;
 }
 

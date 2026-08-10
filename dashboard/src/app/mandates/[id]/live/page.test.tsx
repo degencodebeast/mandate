@@ -36,7 +36,8 @@ function status(): MandateStatus {
         service_url: "https://search-a.example.com",
         amount: "0.05",
         status: "unknown",
-        tx_hash: null,
+        economic_safety_state: "UNKNOWN",
+        permitted_actions: ["WAIT", "REQUEST_REVIEW"],
         created_at: "2026-08-10T09:00:00Z",
         settled_at: null,
         retry_count: 0,
@@ -73,6 +74,10 @@ describe("LivePage submission surface", () => {
     expect(text.indexOf("Economic Safety State")).toBeLessThan(text.indexOf("Budget authority"));
     expect(screen.getByText("Demo Operator Wallet")).toBeTruthy();
     expect(screen.getByText("0xoperator")).toBeTruthy();
+    expect(screen.getAllByText("Payment Reference").length).toBeGreaterThan(0);
+    expect(screen.getByText("Intent history")).toBeTruthy();
+    expect(screen.queryByText("Tx (latest)")).toBeNull();
+    expect(screen.queryByText("Payment log")).toBeNull();
     expect(screen.queryByText(/ERC-8004/i)).toBeNull();
     expect(screen.queryByText(/fees/i)).toBeNull();
     unmount();

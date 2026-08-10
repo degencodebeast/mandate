@@ -28,14 +28,13 @@ function mandate(id: string): MandateSummary {
 
 function receipt(anchor: string): ReceiptRecord {
   return {
-    user_id: "did:erc8004:agent",
     mandate_id: "m-1",
     task_id: "task-1",
     purpose_hash: "hash-1",
     service_url: "https://service-a.example.com",
     amount: "1.00",
-    tx_hash: "0xsettled",
-    anchor,
+    payment_reference: "0xsettled",
+    receipt_anchor: anchor,
     timestamp: "2026-08-08T12:00:00Z",
   };
 }
@@ -133,7 +132,7 @@ describe("ReceiptsPage error and empty states", () => {
     await waitFor(() => {
       expect(screen.getByText(/Payment Ref/)).toBeTruthy();
     });
-    expect(screen.getByText(/Receipt Anchor/)).toBeTruthy();
+    expect(screen.getByText("Receipt Anchor (Arc)")).toBeTruthy();
     expect(screen.getByText(/0xsettled/)).toBeTruthy();
     const anchorLink = screen.getByRole("link", { name: /0xanchor-1/ }) as HTMLAnchorElement;
     expect(anchorLink.href).toContain("testnet.arcscan.app/tx/0xanchor-1");

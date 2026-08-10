@@ -1,5 +1,6 @@
 """Public submission claim tests for ticket 12."""
 
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -18,3 +19,19 @@ def test_readme_leads_judges_to_real_and_injected_proof_without_pending_claims()
     assert "mcp" not in readme.lower()
     assert "erc-8004" not in readme.lower()
     assert "payment fee" not in readme.lower()
+
+    local_links = re.findall(r"\[[^\]]+\]\((?!https?://)([^)#]+)(?:#[^)]+)?\)", readme)
+    assert all((_ROOT / target).exists() for target in local_links)
+
+
+def test_public_package_and_receipt_contract_use_truthful_boundary_names() -> None:
+    package = (_ROOT / "backend" / "pyproject.toml").read_text()
+    registry = (_ROOT / "contracts" / "src" / "ReceiptRegistry.sol").read_text()
+
+    assert "MCP" not in package
+    assert "ERC-8004" not in registry
+    assert "userId" not in registry
+    assert "txHash" not in registry
+    assert "feeTxHash" not in registry
+    assert "authorityId" in registry
+    assert "paymentReference" in registry

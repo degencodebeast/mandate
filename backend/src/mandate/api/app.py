@@ -514,7 +514,7 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
             "purpose_hash": receipt.purpose_hash,
             "service_url": receipt.service_url,
             "amount": receipt.amount,
-            "tx_hash": receipt.tx_hash,
+            "payment_reference": receipt.tx_hash,
             "recorded_at": receipt.recorded_at.isoformat(),
             "intent_state": receipt.intent_state,
             "receipt_anchor": receipt.receipt_anchor,
@@ -524,6 +524,17 @@ def _spend_to_json(response: SpendResponse) -> dict[str, object]:
 
 def _intent_to_json(intent: Intent) -> dict[str, object]:
     """Render one intent as a safe JSON document."""
+    state = intent.status.upper()
+    if state == "UNKNOWN":
+        permitted_actions = ["WAIT", "REQUEST_REVIEW"]
+    elif state == "SETTLED":
+        permitted_actions = ["CONTINUE"]
+    elif state == "BLOCKED":
+        permitted_actions = (
+            ["SWITCH_SERVICE"] if intent.payment_state == "failed" else ["REQUEST_REVIEW"]
+        )
+    else:
+        permitted_actions = ["WAIT"]
     return {
         "id": str(intent.id),
         "mandate_id": str(intent.mandate_id),
@@ -531,7 +542,8 @@ def _intent_to_json(intent: Intent) -> dict[str, object]:
         "service_url": intent.service_url,
         "amount": intent.amount,
         "status": intent.status,
-        "tx_hash": intent.tx_hash,
+        "economic_safety_state": state,
+        "permitted_actions": permitted_actions,
         "created_at": intent.created_at.isoformat(),
         "settled_at": intent.settled_at.isoformat() if intent.settled_at else None,
         "retry_count": intent.retry_count,
@@ -576,19 +588,17 @@ def _breaker_state_to_json(state: BreakerState) -> dict[str, object]:
 def _receipt_to_json(receipt: ArcReceipt) -> dict[str, object]:
     """Render one on-Arc receipt as a safe JSON document.
 
-    The Payment Reference (``tx_hash``) and the Receipt Anchor
-    (``anchor``) stay separate values (CONTEXT.md, ticket 10e). The dashboard
-    links only the Receipt Anchor to Arcscan.
+    The API uses the exact public domain names. It does not expose the legacy
+    authority field stored in the deployed event.
     """
     return {
-        "user_id": receipt.user_id,
         "mandate_id": receipt.mandate_id,
         "task_id": receipt.task_id,
         "purpose_hash": receipt.purpose_hash,
         "service_url": receipt.service_url,
         "amount": receipt.amount,
-        "tx_hash": receipt.tx_hash,
-        "anchor": receipt.anchor,
+        "payment_reference": receipt.tx_hash,
+        "receipt_anchor": receipt.anchor,
         "timestamp": receipt.timestamp.isoformat(),
     }
 

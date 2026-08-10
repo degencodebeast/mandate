@@ -12,7 +12,8 @@ function unknownIntent(): IntentRecord {
     service_url: "https://search-a.example.com/pay",
     amount: "0.05",
     status: "unknown",
-    tx_hash: null,
+    economic_safety_state: "UNKNOWN",
+    permitted_actions: ["REQUEST_REVIEW"],
     created_at: "2026-08-10T09:00:00Z",
     settled_at: null,
     retry_count: 0,
@@ -31,7 +32,8 @@ describe("EconomicSafetyCard", () => {
     expect(screen.getByText("Economic Safety State")).toBeTruthy();
     expect(screen.getByText("UNKNOWN")).toBeTruthy();
     expect(screen.getByText(/Value may have moved/)).toBeTruthy();
-    expect(screen.getByText("WAIT or REQUEST_REVIEW")).toBeTruthy();
+    expect(screen.getByText("REQUEST_REVIEW")).toBeTruthy();
+    expect(screen.queryByText("WAIT or REQUEST_REVIEW")).toBeNull();
     expect(screen.queryByText(/retry payment/i)).toBeNull();
   });
 });

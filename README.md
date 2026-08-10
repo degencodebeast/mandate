@@ -97,7 +97,9 @@ The same unresolved Intent cannot authorize payment again.
 
 ## Economic Safety State
 
-The REST response includes an Economic Safety State and the permitted action.
+The spend REST response includes the outcome, reason, and current action. The
+status REST response includes the stored Economic Safety State and permitted
+actions.
 
 | State | Meaning | Permitted action |
 |---|---|---|
@@ -122,9 +124,6 @@ rejection, or for a separate Intent.
 | Service Circuit Breaker | Repeated failure isolates one service. |
 | Recoverable finalization | A process stop after payment does not erase the economic state. |
 | Idempotent Receipt Anchor | One finalized reference creates at most one Arc record. |
-
-The foundation rules are in
-[`ADR-0032`](docs/adr/0032-foundation-safety-invariants.md).
 
 ## Architecture
 
