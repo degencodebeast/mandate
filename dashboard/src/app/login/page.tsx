@@ -63,6 +63,7 @@ function ConnectButton({ next }: { next: string }) {
         connecting={connecting}
         setConnecting={setConnecting}
         setError={setError}
+        error={error}
         onSignedIn={() => router.replace(next)}
       />
     );
@@ -85,11 +86,13 @@ function PrivyConnectButton({
   connecting,
   setConnecting,
   setError,
+  error,
   onSignedIn,
 }: {
   connecting: boolean;
   setConnecting: (value: boolean) => void;
   setError: (value: string | null) => void;
+  error: string | null;
   onSignedIn: () => void;
 }) {
   const { ready, authenticated, login, getAccessToken } = usePrivy();
@@ -104,19 +107,28 @@ function PrivyConnectButton({
     }
   }, [ready, authenticated, getAccessToken, onSignedIn, setConnecting, setError]);
   return (
-    <button
-      type="button"
-      className="btn btn-primary btn-block"
-      onClick={() => {
-        setConnecting(true);
-        setError(null);
-        login();
-      }}
-      disabled={!ready || connecting}
-    >
-      {!ready || connecting ? <span className="spinner" aria-hidden /> : null}
-      {!ready ? "Loading Privy" : connecting ? "Connecting" : "Connect wallet"}
-    </button>
+    <>
+      <button
+        type="button"
+        className="btn btn-primary btn-block"
+        onClick={() => {
+          setConnecting(true);
+          setError(null);
+          login();
+        }}
+        disabled={!ready || connecting}
+      >
+        {!ready || connecting ? <span className="spinner" aria-hidden /> : null}
+        {!ready
+          ? "Loading Privy"
+          : connecting
+            ? "Connecting"
+            : error
+              ? "Retry connection"
+              : "Connect wallet"}
+      </button>
+      {error ? <div className="notice error" role="alert">{error}</div> : null}
+    </>
   );
 }
 
@@ -158,9 +170,9 @@ function DevConnectButton({
         disabled={connecting}
       >
         {connecting ? <span className="spinner" aria-hidden /> : null}
-        {connecting ? "Connecting" : "Connect wallet"}
+        {connecting ? "Connecting" : error ? "Retry connection" : "Connect wallet"}
       </button>
-      {error ? <div className="notice error">{error}</div> : null}
+      {error ? <div className="notice error" role="alert">{error}</div> : null}
     </>
   );
 }

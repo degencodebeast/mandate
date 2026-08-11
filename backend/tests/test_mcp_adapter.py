@@ -22,6 +22,7 @@ import psycopg
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
+from mcp.types import TextContent
 
 from mandate.api.app import create_app
 from mandate.auth import DeterministicPrivyAdapter
@@ -385,10 +386,14 @@ def test_named_mcp_client_smoke_discovery_auth_invocation_spend_status(
                     "amount": "1.00",
                 },
             )
-            spend = json.loads(spend_result.content[0].text)
+            spend_content = spend_result.content[0]
+            assert isinstance(spend_content, TextContent)
+            spend = json.loads(spend_content.text)
 
             status_result = await session.call_tool("mandate.status", {})
-            status = json.loads(status_result.content[0].text)
+            status_content = status_result.content[0]
+            assert isinstance(status_content, TextContent)
+            status = json.loads(status_content.text)
             return {
                 "tools": tool_names,
                 "spend": spend,

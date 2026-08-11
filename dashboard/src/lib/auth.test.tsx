@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AuthProvider, LiveCounterProvider, decodeSubject, useAuth, useLiveCounter } from "@/lib/auth";
 
 afterEach(() => {
@@ -56,7 +56,7 @@ describe("AuthProvider", () => {
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("guest");
     });
-    screen.getByText("Sign in").click();
+    fireEvent.click(screen.getByText("Sign in"));
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("authenticated");
     });
@@ -68,16 +68,16 @@ describe("AuthProvider", () => {
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("guest");
     });
-    screen.getByText("Sign in").click();
+    fireEvent.click(screen.getByText("Sign in"));
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("authenticated");
     });
-    screen.getByText("Set live").click();
+    fireEvent.click(screen.getByText("Set live"));
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("live");
     });
     expect(screen.getByTestId("live").textContent).toBe("1");
-    screen.getByText("Clear live").click();
+    fireEvent.click(screen.getByText("Clear live"));
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("authenticated");
     });

@@ -9,6 +9,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 def test_readme_leads_judges_to_real_and_injected_proof_without_pending_claims() -> None:
     readme = (_ROOT / "README.md").read_text()
+    compact_readme = " ".join(readme.split())
 
     assert readme.index("## 60-second judge path") < readme.index("## How Mandate works")
     assert "7def6214-d8d1-4562-9d0a-b50bcff80b72" in readme
@@ -25,6 +26,8 @@ def test_readme_leads_judges_to_real_and_injected_proof_without_pending_claims()
     assert "Streamable HTTP" in readme
     assert "mandate.spend" in readme
     assert "mandate.status" in readme
+    assert "against the deployed endpoint" not in readme
+    assert "against the application in integration tests" in compact_readme
 
     local_links = re.findall(r"\[[^\]]+\]\((?!https?://)([^)#]+)(?:#[^)]+)?\)", readme)
     assert all((_ROOT / target).exists() for target in local_links)
@@ -67,3 +70,19 @@ def test_pitch_and_video_script_keep_the_truthful_submission_boundary() -> None:
     assert "ERC-8004" not in video_script
     assert "mandate.spend" in video_script
     assert "mandate.status" in video_script
+
+
+def test_submission_artifact_has_the_complete_truthful_judge_path() -> None:
+    submission = (_ROOT / "evidence" / "submission.html").read_text()
+
+    assert "Financial fault tolerance for autonomous agents" in submission
+    assert "One Intent. No blind retries." in submission
+    assert "https://mandate-nine.vercel.app" in submission
+    assert "https://github.com/degencodebeast/mandate" in submission
+    assert "7def6214-d8d1-4562-9d0a-b50bcff80b72" in submission
+    assert "0xc29eecd907ee53038e1c35c8d974b735f8f996b259f1025bbd77d3cf691c01fd" in submission
+    assert "REST is the stable interface" in submission
+    assert "MCP is verified in integration tests" in submission
+    assert "MCP is deployed" not in submission
+    assert "ERC-8004" not in submission
+    assert "automatic retry" not in submission.lower()

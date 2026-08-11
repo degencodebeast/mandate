@@ -22,8 +22,9 @@ contract ReceiptRegistry {
     /// @notice Tracks the finalized (authorityId, mandateId, purposeHash) triples
     /// that already have a Receipt. One finalized Intent can create at most one
     /// Receipt Anchor (ticket 10e).
-    mapping(string authorityId => mapping(string mandateId => mapping(string purposeHash => bool)))
-        private recorded;
+    mapping(
+        string authorityId => mapping(string mandateId => mapping(string purposeHash => bool))
+    ) private recorded;
 
     /// @notice Emitted once per recorded receipt with every receipt field.
     /// @param authorityId The User authority that owns the Mandate.

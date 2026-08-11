@@ -153,8 +153,8 @@ decision.
 
 Mandate exposes the same application services through a real Streamable HTTP
 MCP endpoint at `/mcp`. The official MCP Python SDK client passed discovery,
-authorization, invocation, spend, and status tests against the deployed
-endpoint. The endpoint exposes exactly two tools:
+authorization, invocation, spend, and status against the application in
+integration tests. The endpoint exposes exactly two tools:
 
 - `mandate.spend` — gate one Payment Authorization for the credential's Mandate.
 - `mandate.status` — return the Economic Safety State for the credential's Mandate.

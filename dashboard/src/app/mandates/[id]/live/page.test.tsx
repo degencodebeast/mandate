@@ -112,4 +112,26 @@ describe("LivePage submission surface", () => {
     view.unmount();
     vi.useRealTimers();
   });
+
+  it("loads the stored economic state again after a page refresh", async () => {
+    const getMandateStatus = vi.fn(async () => status());
+    mockedUseMandateClient.mockReturnValue({
+      getMandateStatus,
+      listReceipts: async () => ({ receipts: [] }),
+    } as never);
+
+    let first!: ReturnType<typeof render>;
+    await act(async () => {
+      first = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+    await waitFor(() => expect(screen.getByText("UNKNOWN")).toBeTruthy());
+    first.unmount();
+
+    await act(async () => {
+      render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+    await waitFor(() => expect(screen.getByText("UNKNOWN")).toBeTruthy());
+    expect(screen.getByText("intent-1")).toBeTruthy();
+    expect(getMandateStatus).toHaveBeenCalledTimes(2);
+  });
 });
