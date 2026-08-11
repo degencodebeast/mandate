@@ -335,8 +335,8 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
     assert result.switch_choice is not None
     assert result.switch_choice.action == "switch_service"
     assert result.switch_choice.may_authorize is True
-    assert result.decision.action == "wait"
-    assert result.decision.may_authorize is False
+    assert result.decision.action == "continue"
+    assert result.decision.may_authorize is True
     assert result.intent_id == "intent-b"
     assert result.payment_reference == "gateway-ref-b"
     assert result.receipt_anchor == "0xreceipt-anchor-b"
@@ -431,3 +431,132 @@ def test_switch_scene_stops_when_service_b_result_is_unknown() -> None:
     assert decision.action in ("wait", "request_review")
     assert decision.may_authorize is False
     assert decision.intent_id == "intent-b"
+
+
+class NonFinalResolveBackend(ScriptedSceneBackend):
+    """A switch backend whose resolve stays accepted (not final)."""
+
+    def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
+        self.resolve_calls.append((task_id, purpose))
+        return SpendResponse(
+            outcome="accepted",
+            reason="payment accepted; awaiting official finalization",
+            action="wait",
+            intent=_intent(
+                intent_id="intent-b",
+                service_url=SERVICE_B,
+                status="settling",
+                spend_outcome="accepted",
+                economic_safety_action="wait",
+                payment_reference="gateway-ref-b",
+                purpose_hash="purpose-b",
+            ),
+            spent_total="1.00",
+            receipt=None,
+        )
+
+
+class MissingAnchorBackend(ScriptedSceneBackend):
+    """A switch backend whose resolve settles but has no Receipt Anchor."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.receipt_anchor_b = None
+
+
+def test_switch_scene_stops_when_resolve_is_not_final() -> None:
+    backend = NonFinalResolveBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        scene.run()
+
+    assert "final" in str(raised.value)
+
+
+def test_switch_scene_polls_until_final_resolve() -> None:
+    class EventuallyFinalBackend(ScriptedSceneBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolve_calls_count = 0
+
+        def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
+            self.resolve_calls.append((task_id, purpose))
+            self.resolve_calls_count += 1
+            if self.resolve_calls_count == 1:
+                return SpendResponse(
+                    outcome="unknown",
+                    reason="unknown outcome; wait or request review; no new authorization",
+                    action="request_review",
+                    intent=_intent(
+                        intent_id="intent-b",
+                        service_url=SERVICE_B,
+                        status="settling",
+                        spend_outcome="unknown",
+                        economic_safety_action="request_review",
+                        payment_reference="gateway-ref-b",
+                        purpose_hash="purpose-b",
+                    ),
+                    spent_total="1.00",
+                    receipt=None,
+                )
+            return self._settled_response("intent-b", purpose, SERVICE_B, self.receipt_anchor_b)
+
+    backend = EventuallyFinalBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=3,
+        resolve_interval_seconds=0,
+    )
+
+    result = scene.run()
+
+    assert backend.resolve_calls_count == 2
+    assert result.decision.action == "continue"
+    assert result.receipt_anchor == "0xreceipt-anchor-b"
+
+
+def test_switch_scene_stops_when_resolve_has_no_receipt_anchor() -> None:
+    backend = MissingAnchorBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        scene.run()
+
+    assert "Receipt Anchor" in str(raised.value)

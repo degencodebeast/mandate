@@ -28,6 +28,7 @@ from typing import Protocol
 
 from agno_demo.agent import (
     Agent,
+    run_agent_result_decision,
     run_agent_spend,
     run_agent_switch_choice,
 )
@@ -188,6 +189,8 @@ class SwitchScene:
         service_a_url: str,
         service_b_url: str,
         amount: str,
+        resolve_attempts: int = 12,
+        resolve_interval_seconds: float = 5.0,
     ) -> None:
         self._agent = agent
         self._status_client = status_client
@@ -198,6 +201,8 @@ class SwitchScene:
         self._service_a = service_a_url
         self._service_b = service_b_url
         self._amount = amount
+        self._resolve_attempts = resolve_attempts
+        self._resolve_interval_seconds = resolve_interval_seconds
 
     def run(self) -> SceneResult:
         """Choose Service B, pay once, and resolve.
@@ -220,7 +225,7 @@ class SwitchScene:
                 "The Agent did not select SWITCH_SERVICE before authorization; the scene must stop."
             )
 
-        decision, spend_result = run_agent_spend(
+        _decision, spend_result = run_agent_spend(
             agent=self._agent,
             task_id=self._task,
             purpose=self._purpose,
@@ -234,11 +239,12 @@ class SwitchScene:
                 f"resolve a blocked or unknown Intent."
             )
 
-        resolved = self._spend_client.resolve(
-            mandate_id=self._mandate_id,
-            task_id=self._task,
-            purpose=self._purpose,
+        resolved = self._resolve_until_final(spend_result=spend_result)
+        _validate_final_resolve(
+            spend_result=spend_result,
+            resolved=resolved,
         )
+        final_decision = run_agent_result_decision(agent=self._agent, response=resolved)
         final_status = self._status_client.status(mandate_id=self._mandate_id)
         ui_intent_id = _intent_id_from_status(
             final_status, purpose_hash=resolved.intent.purpose_hash
@@ -246,14 +252,99 @@ class SwitchScene:
         return SceneResult(
             scene="switch",
             intent_id=resolved.intent.id,
-            agent_intent_id=decision.intent_id or resolved.intent.id,
+            agent_intent_id=final_decision.intent_id or resolved.intent.id,
             backend_intent_id=resolved.intent.id,
             ui_intent_id=ui_intent_id,
-            decision=decision,
+            decision=final_decision,
             payment_reference=resolved.intent.payment_reference,
             receipt_anchor=resolved.intent.receipt_anchor,
             service_url=resolved.intent.service_url,
             switch_choice=switch_choice,
+        )
+
+    def _resolve_until_final(self, *, spend_result: SpendResponse) -> SpendResponse:
+        """Resolve finalization until the payment state is final.
+
+        A newly accepted Gateway transfer can still be ``received`` or
+        ``batched`` on the first status lookup, so the first resolve may not be
+        final. The scene re-resolves the same stored Payment Reference up to
+        ``resolve_attempts`` times, waiting ``resolve_interval_seconds`` between
+        attempts. Re-resolving never issues a new Payment Authorization
+        (ticket 10e). When the state is still not final after the attempt
+        budget, the scene stops safely rather than reporting proof that did not
+        occur.
+        """
+        import time
+
+        resolved = self._spend_client.resolve(
+            mandate_id=self._mandate_id,
+            task_id=self._task,
+            purpose=self._purpose,
+        )
+        for _ in range(self._resolve_attempts - 1):
+            if _is_final_resolve(spend_result=spend_result, resolved=resolved):
+                return resolved
+            time.sleep(self._resolve_interval_seconds)
+            resolved = self._spend_client.resolve(
+                mandate_id=self._mandate_id,
+                task_id=self._task,
+                purpose=self._purpose,
+            )
+        return resolved
+
+
+def _is_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -> bool:
+    """True when the resolve response is a genuinely final, proven state.
+
+    Scene B completes only when the resolved Spend Result is settled/permitted,
+    the same Payment Reference is present, and one nonempty Receipt Anchor is
+    present. A resolve that is still accepted or unknown (a newly accepted
+    Gateway transfer can still be received or batched on the first status
+    lookup) or that has no Receipt Anchor is not a completed paid action.
+    """
+    if resolved.outcome not in ("permitted",) or resolved.intent.status != "settled":
+        return False
+    spend_reference = spend_result.intent.payment_reference
+    resolved_reference = resolved.intent.payment_reference
+    if not spend_reference or not resolved_reference:
+        return False
+    if resolved_reference != spend_reference:
+        return False
+    anchor = resolved.receipt.receipt_anchor if resolved.receipt else None
+    return bool(anchor)
+
+
+def _validate_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -> None:
+    """Require the resolve response to be a genuinely final, proven state.
+
+    Scene B completes only when the resolved Spend Result is settled/permitted,
+    the same Payment Reference is present, and one nonempty Receipt Anchor is
+    present. A resolve that is still accepted or unknown (a newly accepted
+    Gateway transfer can still be received or batched on the first status
+    lookup) or that has no Receipt Anchor is not a completed paid action, so
+    the scene must stop or wait safely instead of reporting proof that did not
+    occur.
+    """
+    if _is_final_resolve(spend_result=spend_result, resolved=resolved):
+        return
+    if resolved.outcome not in ("permitted",) or resolved.intent.status != "settled":
+        raise RuntimeError(
+            f"Finalization is not final (outcome={resolved.outcome}, "
+            f"status={resolved.intent.status}); the scene must stop and wait "
+            f"for the payment state to become final."
+        )
+    spend_reference = spend_result.intent.payment_reference
+    resolved_reference = resolved.intent.payment_reference
+    if not spend_reference or not resolved_reference:
+        raise RuntimeError("The Payment Reference is missing; the scene must stop.")
+    if resolved_reference != spend_reference:
+        raise RuntimeError(
+            "The resolved Payment Reference differs from the spent reference; the scene must stop."
+        )
+    anchor = resolved.receipt.receipt_anchor if resolved.receipt else None
+    if not anchor:
+        raise RuntimeError(
+            "The finalized Payment Reference has no Receipt Anchor; the scene must stop."
         )
 
 

@@ -40,13 +40,52 @@ async function main() {
   }
 
   const client = createPublicClient({ transport: http(rpcUrl) });
-  const logs = await client.getLogs({
-    address: registry,
-    event: parseAbiItem(
-      "event ReceiptRecorded(string authorityId, string mandateId, string taskId, string purposeHash, string serviceUrl, string amount, string paymentReference, string legacyReference, uint256 timestamp)",
-    ),
-    fromBlock: 0n,
-  });
+
+  const latest = await client.getBlockNumber();
+
+  async function findDeploymentBlock() {
+    let low = 0n;
+    let high = latest;
+    while (low < high) {
+      const mid = (low + high) / 2n;
+      const code = await client.getCode({ address: registry, blockNumber: mid });
+      if ((code || "").length > 0) {
+        high = mid;
+      } else {
+        low = mid + 1n;
+      }
+    }
+    return low;
+  }
+
+  async function queryRange(from, to) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await client.getLogs({
+          address: registry,
+          event: parseAbiItem(
+            "event ReceiptRecorded(string authorityId, string mandateId, string taskId, string purposeHash, string serviceUrl, string amount, string paymentReference, string legacyReference, uint256 timestamp)",
+          ),
+          fromBlock: from,
+          toBlock: to,
+        });
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 3000 * (attempt + 1)));
+      }
+    }
+  }
+
+  const deploymentBlock = await findDeploymentBlock();
+
+  const step = 10000n;
+  const logs = [];
+  for (let from = deploymentBlock; from <= latest; from += step) {
+    const to = from + step - 1n < latest ? from + step - 1n : latest;
+    const chunk = await queryRange(from, to);
+    logs.push(...chunk);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
 
   const receipts = logs
     .filter(

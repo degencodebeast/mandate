@@ -27,7 +27,7 @@ from agno.models.base import Model
 from agno.models.response import ModelResponse
 from agno.tools import Function
 
-from agno_demo.decisions import ACTION_SWITCH_SERVICE, AgentDecision
+from agno_demo.decisions import ACTION_SWITCH_SERVICE, AgentDecision, decide
 from agno_demo.models import SpendResponse, StatusDocument
 
 _SPEND_PARAMETERS: dict[str, Any] = {
@@ -228,6 +228,27 @@ def run_agent_spend(
     return decision, response
 
 
+def run_agent_result_decision(
+    *,
+    agent: Agent,
+    response: SpendResponse,
+) -> AgentDecision:
+    """Run one real Agent execution that maps an already-obtained Spend Result.
+
+    The Agent receives the final Spend Result (for example the settled resolve
+    response) and its model applies the full Spend Result mapping. A settled or
+    permitted result maps to CONTINUE; an UNKNOWN or blocked result maps to
+    WAIT/REQUEST_REVIEW or REDUCE_SCOPE with ``may_authorize=False``.
+    """
+    decision, _ = _run_plan_with_results(
+        agent,
+        [],
+        lambda _results: decide(response),
+        input_document=_spend_response_document(response),
+    )
+    return decision
+
+
 def run_agent_status(*, agent: Agent) -> StatusDocument:
     """Run one real Agent execution that calls ``mandate.status``.
 
@@ -287,6 +308,7 @@ def _run_plan_with_results(
     agent: Agent,
     tool_plan: list[ToolPlanItem],
     decide_fn: DecisionFn,
+    input_document: dict[str, Any] | None = None,
 ) -> tuple[AgentDecision, list[dict[str, Any]]]:
     model = agent.model
     if not isinstance(model, DecisionModel):
@@ -295,7 +317,12 @@ def _run_plan_with_results(
             "only model that can drive the mandate.spend / mandate.status tool plan."
         )
     model.set_plan(tool_plan, decide_fn)
-    output = agent.run("Perform the mandated economic action and decide the next action.")
+    prompt = (
+        json.dumps(input_document)
+        if input_document is not None
+        else "Perform the mandated economic action and decide the next action."
+    )
+    output = agent.run(prompt)
     content = getattr(output, "content", None)
     if isinstance(content, AgentDecision):
         results = _tool_results(getattr(output, "messages", []) or [])

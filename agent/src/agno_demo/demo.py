@@ -105,6 +105,10 @@ def run_demo(
         amount=amount,
         inject_response_loss=inject_response_loss,
     )
+    freeze_result = freeze.run()
+    _validate_breaker_open_after_freeze(
+        client=client, mandate_id=mandate_id, service_a_url=service_a
+    )
     switch = SwitchScene(
         agent=agent,
         status_client=client,
@@ -117,9 +121,39 @@ def run_demo(
         amount=amount,
     )
     return [
-        _report_from_result(freeze.run()),
+        _report_from_result(freeze_result),
         _report_from_result(switch.run()),
     ]
+
+
+def _validate_breaker_open_after_freeze(
+    *,
+    client: DemoClient,
+    mandate_id: str,
+    service_a_url: str,
+) -> None:
+    """Require the exact Service A breaker to be OPEN before Scene B.
+
+    Scene A's injected response loss must have tripped Service A's Circuit
+    Breaker (production ``record_failure`` at the configured threshold). The
+    isolated real demo therefore needs the backend started with
+    ``CIRCUIT_BREAKER_FAILURE_THRESHOLD=1`` so the single injected loss opens
+    the breaker. When the breaker is still CLOSED the runner stops with the
+    required setup instead of failing later at the switch choice.
+    """
+    status = client.status(mandate_id=mandate_id)
+    service_a_breaker = next(
+        (state for state in status.breaker_state if state.service_url == service_a_url),
+        None,
+    )
+    if service_a_breaker is None or service_a_breaker.state != "open":
+        state = "no row" if service_a_breaker is None else service_a_breaker.state
+        raise RuntimeError(
+            f"Service A Circuit Breaker is not open (state={state}) after Scene A. "
+            "The injected response loss did not trip the breaker. Start the Mandate "
+            "backend with CIRCUIT_BREAKER_FAILURE_THRESHOLD=1 for the isolated demo "
+            "so one injected loss opens the Service A breaker before Scene B."
+        )
 
 
 def _report_from_result(result: SceneResult) -> dict[str, object]:
