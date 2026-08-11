@@ -1,0 +1,23 @@
+# The backend image uses a strict allow-list. Local secrets and unrelated
+# workspace files cannot enter the Docker build context.
+*
+
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+
+!docker/
+!docker/package.json
+!docker/package-lock.json
+
+!src/
+!src/**
+
+!migrations/
+!migrations/**
+
+!scripts/
+!scripts/package.json
+!scripts/package-lock.json
+!scripts/read-receipts.mjs

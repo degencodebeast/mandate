@@ -1,0 +1,10 @@
+{
+  "name": "mandate-circle-cli-runtime",
+  "private": true,
+  "dependencies": {
+    "@circle-fin/cli": "0.0.6"
+  },
+  "overrides": {
+    "ws": "8.21.0"
+  }
+}
