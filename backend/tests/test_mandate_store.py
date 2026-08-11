@@ -8,8 +8,11 @@ seams covered by their own tests; this tests the persistence layer.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import psycopg
@@ -30,6 +33,7 @@ def store() -> Iterator[PostgresMandateStore]:
     apply_migrations(_DATABASE_URL)
     yield PostgresMandateStore(_DATABASE_URL)
     with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM intents")
         connection.execute("DELETE FROM mandates")
 
 
@@ -155,6 +159,74 @@ def test_reserve_claims_authority_within_budget(store: PostgresMandateStore) -> 
 
     assert reserved.reserved_total == "0.75"
     assert reserved.spent_total == "0"
+
+
+def test_reserve_rejects_expired_authority(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-expired",
+        parameters=MandateParameters(
+            budget="1.00",
+            per_call_cap="1.00",
+            allowed_services=[],
+            expiry=datetime.now(UTC) - timedelta(minutes=1),
+        ),
+    )
+
+    with pytest.raises(ReservationDeniedError, match="expired"):
+        store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    unchanged = store.get_mandate(user_id=mandate.user_id, mandate_id=mandate.id)
+    assert unchanged.reserved_total == "0"
+
+
+def test_reserve_rechecks_expiry_after_waiting_for_the_mandate_lock(
+    store: PostgresMandateStore,
+) -> None:
+    expiry = datetime.now(UTC) + timedelta(seconds=1)
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-lock-expiry",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=expiry
+        ),
+    )
+    started = threading.Event()
+
+    def reserve() -> None:
+        started.set()
+        store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    with psycopg.connect(_DATABASE_URL) as blocker:
+        blocker.execute("SELECT id FROM mandates WHERE id = %s FOR UPDATE", (mandate.id,))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(reserve)
+            assert started.wait(timeout=5)
+            time.sleep(1.2)
+            blocker.commit()
+            with pytest.raises(ReservationDeniedError, match="expired"):
+                future.result(timeout=10)
+
+    unchanged = store.get_mandate(user_id=mandate.user_id, mandate_id=mandate.id)
+    assert unchanged.reserved_total == "0"
+
+
+def test_reserve_rejects_inactive_authority(store: PostgresMandateStore) -> None:
+    mandate = store.create_mandate(
+        user_id="did:privy:test-user-inactive",
+        parameters=MandateParameters(
+            budget="1.00", per_call_cap="1.00", allowed_services=[], expiry=None
+        ),
+    )
+    with psycopg.connect(_DATABASE_URL) as connection:
+        connection.execute(
+            "UPDATE mandates SET status = 'expired' WHERE id = %s",
+            (mandate.id,),
+        )
+
+    with pytest.raises(ReservationDeniedError, match="not active"):
+        store.reserve(mandate_id=mandate.id, amount="0.75")
+
+    unchanged = store.get_mandate(user_id=mandate.user_id, mandate_id=mandate.id)
+    assert unchanged.reserved_total == "0"
 
 
 def test_reserve_rejects_amount_over_remaining_authority(store: PostgresMandateStore) -> None:

@@ -126,6 +126,28 @@ def test_get_or_create_state_creates_a_closed_row(store: PostgresBreakerStateSto
     assert state.trial_allowed is False
 
 
+def test_concurrent_first_use_returns_one_closed_state(
+    store: PostgresBreakerStateStore,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    service_url = "https://new-service.example.com"
+    barrier = threading.Barrier(8)
+
+    def read_state() -> BreakerState:
+        barrier.wait(timeout=10)
+        return store.get_or_create_state(service_url=service_url)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(read_state) for _ in range(8)]
+        states = [future.result(timeout=20) for future in futures]
+
+    assert len(states) == 8
+    assert all(state.service_url == service_url for state in states)
+    assert all(state.state == "closed" for state in states)
+    assert store.list_states_for_services([service_url]) == [states[0]]
+
+
 def test_get_or_create_state_returns_the_existing_row(
     store: PostgresBreakerStateStore,
 ) -> None:

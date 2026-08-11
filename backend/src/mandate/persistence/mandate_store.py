@@ -28,6 +28,10 @@ class ReservationDeniedError(RuntimeError):
     cannot exceed the Mandate authority (ADR-0032).
     """
 
+    def __init__(self, message: str, *, rule: str) -> None:
+        super().__init__(message)
+        self.rule = rule
+
 
 class MandateStore(Protocol):
     """The persistence seam for mandate lifecycle."""
@@ -183,21 +187,46 @@ class PostgresMandateStore:
         (ADR-0032, CONTEXT.md Budget Reservation).
         """
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
-            row = connection.execute(
-                """
-                UPDATE mandates
-                SET reserved_total = reserved_total + %s
-                WHERE id = %s
-                  AND spent_total + reserved_total + %s <= budget
-                RETURNING id, user_id, agent_identity, budget, per_call_cap,
-                          allowed_services, expiry, status, spent_total,
-                          reserved_total, fees_total, wallet_address,
-                          circle_wallet_id, created_at
-                """,
-                (amount, mandate_id, amount),
+            denial = None
+            locked = connection.execute(
+                "SELECT id FROM mandates WHERE id = %s FOR UPDATE",
+                (mandate_id,),
             ).fetchone()
+            row = None
+            if locked is not None:
+                row = connection.execute(
+                    """
+                    UPDATE mandates
+                    SET reserved_total = reserved_total + %s
+                    WHERE id = %s
+                      AND status = 'active'
+                      AND (expiry IS NULL OR expiry > clock_timestamp())
+                      AND spent_total + reserved_total + %s <= budget
+                    RETURNING id, user_id, agent_identity, budget, per_call_cap,
+                              allowed_services, expiry, status, spent_total,
+                              reserved_total, fees_total, wallet_address,
+                              circle_wallet_id, created_at
+                    """,
+                    (amount, mandate_id, amount),
+                ).fetchone()
+            if locked is not None and row is None:
+                denial = connection.execute(
+                    """
+                    SELECT status,
+                           expiry IS NOT NULL AND expiry <= clock_timestamp() AS expired
+                    FROM mandates
+                    WHERE id = %s
+                    """,
+                    (mandate_id,),
+                ).fetchone()
         if row is None:
-            raise ReservationDeniedError("The mandate authority cannot cover the reservation.")
+            if denial is not None and denial["status"] != "active":
+                raise ReservationDeniedError("The mandate is not active.", rule="mandate_inactive")
+            if denial is not None and denial["expired"]:
+                raise ReservationDeniedError("The mandate has expired.", rule="mandate_expired")
+            raise ReservationDeniedError(
+                "The mandate budget does not cover the amount.", rule="budget_exceeded"
+            )
         return self._from_row(row)
 
     def release_reservation(self, *, mandate_id: uuid.UUID, amount: str) -> Mandate:

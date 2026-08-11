@@ -1,6 +1,6 @@
 # Ticket 13 verification
 
-Verified at `2026-08-11T11:50:21Z`.
+Verified at `2026-08-11T12:48:06Z`.
 
 Exact review base: `f07845122666b8ef82ff7fa43f366ee0d50d44ee`.
 
@@ -21,7 +21,7 @@ Exact review base: `f07845122666b8ef82ff7fa43f366ee0d50d44ee`.
 
 ## Complete checks
 
-- Backend: 360 passed.
+- Backend: 365 passed.
 - Backend Ruff check: passed.
 - Backend Ruff format check: passed.
 - Backend mypy: passed for 61 source files.
@@ -30,10 +30,27 @@ Exact review base: `f07845122666b8ef82ff7fa43f366ee0d50d44ee`.
 - Agent mypy: passed for 24 source files.
 - Services: 42 passed.
 - Services type check and build: passed.
-- Dashboard: 53 passed.
+- Dashboard: 54 passed.
 - Dashboard type check, lint, and production build: passed.
 - Receipt Registry: 8 passed.
 - Receipt Registry format check: passed.
+
+## Independent gate correction
+
+The first independent gate reviewed `ce9474c0c17881c8a1d613f7befc98e1a1c8bc5e`
+and failed it. The controller corrected each code finding with one RED and GREEN
+TDD cycle.
+
+- Expired authority: RED permitted a Budget Reservation. GREEN rejects it.
+- Inactive authority: RED permitted a Budget Reservation. GREEN rejects it.
+- REST expiry race: RED returned `blocked: budget_exceeded`. GREEN returns
+  `blocked: mandate_expired` before Payment Authorization.
+- Lock-wait expiry: RED admitted authority after a row-lock wait crossed the
+  expiry. GREEN locks the Mandate row before the final expiry check.
+- Circuit Breaker first use: RED raised a PostgreSQL unique-key error under
+  eight concurrent calls. GREEN returns one closed state to every caller.
+- Privy failure: RED stayed at `Connecting` with no alert. GREEN uses the Privy
+  `useLogin` error callback, shows an alert, and permits Retry.
 
 ## Dependency and secret checks
 

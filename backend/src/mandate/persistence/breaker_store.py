@@ -134,23 +134,18 @@ class PostgresBreakerStateStore:
         """Return the row for the service, creating a CLOSED row when absent."""
         with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
             row = connection.execute(
-                _SELECT_FROM_BREAKER + "WHERE service_url = %s",
-                (service_url,),
+                """
+                INSERT INTO breaker_state (
+                    id, service_url, failure_count, state, last_failure_at,
+                    trial_allowed, trial_owner, trial_started_at, trial_epoch
+                ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
+                ON CONFLICT (service_url) DO UPDATE
+                SET service_url = EXCLUDED.service_url
+                RETURNING service_url, failure_count, state, last_failure_at,
+                          trial_allowed, trial_owner, trial_started_at, trial_epoch
+                """,
+                (uuid.uuid4(), service_url),
             ).fetchone()
-            if row is None:
-                connection.execute(
-                    """
-                    INSERT INTO breaker_state (
-                        id, service_url, failure_count, state, last_failure_at,
-                        trial_allowed, trial_owner, trial_started_at, trial_epoch
-                    ) VALUES (%s, %s, 0, 'closed', NULL, false, NULL, NULL, 0)
-                    """,
-                    (uuid.uuid4(), service_url),
-                )
-                row = connection.execute(
-                    _SELECT_FROM_BREAKER + "WHERE service_url = %s",
-                    (service_url,),
-                ).fetchone()
         if row is None:
             raise RuntimeError("breaker_state insert did not persist the row")
         return self._from_row(row)

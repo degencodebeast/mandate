@@ -76,7 +76,7 @@ class FailingReceiptRecorder:
 class Components:
     """The app and its injectable adapters, shared across tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, now: Any = None) -> None:
         self.store = PostgresMandateStore(_DATABASE_URL)
         self.payments = RecordingPaymentExecutor()
         self.receipts = ScriptedReceiptRecorder()
@@ -88,6 +88,7 @@ class Components:
             payment_executor=self.payments,
             receipt_recorder=self.receipts,
             transfer_status_inspector=self.inspector,
+            now=now,
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
@@ -270,6 +271,23 @@ def test_spend_on_expired_mandate_blocks(components: Components) -> None:
     assert response.json()["outcome"] == "blocked: mandate_expired"
     assert response.json()["intent"]["status"] == "blocked"
     assert components.payments.calls == []
+
+
+def test_spend_expiry_at_atomic_admission_blocks_before_authorization(
+    components: Components,
+) -> None:
+    expiry = datetime.now(UTC) - timedelta(minutes=1)
+    stale_policy_time = expiry - timedelta(minutes=1)
+    racing = Components(now=lambda: stale_policy_time)
+    mandate = _create_mandate(racing.store, expiry=expiry)
+
+    response = _spend(racing, mandate.id)
+
+    assert response.json()["outcome"] == "blocked: mandate_expired"
+    assert response.json()["intent"]["status"] == "blocked"
+    assert racing.payments.calls == []
+    status = racing.client.get(f"/api/v1/mandates/{mandate.id}/status").json()
+    assert status["mandate"]["reserved_total"] == "0"
 
 
 def test_spend_on_inactive_mandate_blocks(components: Components) -> None:

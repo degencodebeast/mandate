@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, useEffect } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { useAuth } from "@/lib/auth";
 import { LoginHero } from "@/components/LoginHero";
 
@@ -95,7 +95,13 @@ function PrivyConnectButton({
   error: string | null;
   onSignedIn: () => void;
 }) {
-  const { ready, authenticated, login, getAccessToken } = usePrivy();
+  const { ready, authenticated, getAccessToken } = usePrivy();
+  const { login } = useLogin({
+    onError: () => {
+      setError("Privy sign-in failed. Try again.");
+      setConnecting(false);
+    },
+  });
   useEffect(() => {
     if (ready && authenticated) {
       getAccessToken()

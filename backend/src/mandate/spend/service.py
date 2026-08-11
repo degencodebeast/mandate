@@ -265,7 +265,9 @@ class MandateSpendService:
             return routed
         try:
             self._mandate_store.reserve(mandate_id=mandate.id, amount=amount)
-        except ReservationDeniedError:
+        except ReservationDeniedError as error:
+            outcome = f"blocked: {error.rule}"
+            reason = str(error)
             blocked, routed = self._transition_or_route(
                 settling,
                 mandate,
@@ -274,8 +276,8 @@ class MandateSpendService:
                 task_id=task_id,
                 intent_hash=intent_hash,
                 spend_result=DurableSpendResult(
-                    outcome="blocked: budget_exceeded",
-                    reason="The mandate budget does not cover the amount.",
+                    outcome=outcome,
+                    reason=reason,
                     action=ACTION_NONE,
                 ),
             )
@@ -284,8 +286,8 @@ class MandateSpendService:
             return self._blocked_response(
                 blocked,
                 mandate,
-                outcome="blocked: budget_exceeded",
-                reason="The mandate budget does not cover the amount.",
+                outcome=outcome,
+                reason=reason,
                 action=ACTION_NONE,
             )
         try:
