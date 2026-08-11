@@ -176,6 +176,28 @@ def test_viem_reader_uses_scripted_runner() -> None:
     assert receipts[0].tx_hash == "0xsettled"
 
 
+def test_viem_reader_passes_the_known_registry_deployment_block() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: Sequence[str]) -> str:
+        calls.append(list(command))
+        return "[]"
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        deployment_block=56_177_338,
+        runner=runner,
+    )
+
+    reader.list_receipts(user_id="did:privy:user", mandate_id="mandate-1")
+
+    command = calls[0]
+    index = command.index("--from-block")
+    assert command[index + 1] == "56177338"
+
+
 def test_scripted_reader_finds_receipt_for_one_intent() -> None:
     receipt = ArcReceipt(
         user_id="did:erc8004:agent",

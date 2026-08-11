@@ -29,6 +29,15 @@ def test_inject_response_loss_service_url_reads_from_configuration() -> None:
     assert settings.inject_response_loss_service_url == "https://service-a.example.com"
 
 
+def test_receipt_registry_deployment_block_defaults_to_none() -> None:
+    assert ApiSettings().receipt_registry_deployment_block is None
+
+
+def test_receipt_registry_deployment_block_rejects_negative_values() -> None:
+    with pytest.raises(ValidationError):
+        ApiSettings(receipt_registry_deployment_block=-1)
+
+
 def test_circuit_breaker_threshold_defaults_to_three() -> None:
     settings = ApiSettings()
 

@@ -1,8 +1,9 @@
 """Scene orchestration behavior tests.
 
-Scene A (freeze) proves: the Agent calls ``mandate.spend`` exactly once for
+Scene A (freeze) proves: the Agent calls ``mandate.spend`` twice for
 Intent A on Service A, the injected response loss produces an UNKNOWN outcome,
-the Agent chooses WAIT or REQUEST_REVIEW, no second authorization happens, and
+both calls return the same Intent, the Agent chooses WAIT or REQUEST_REVIEW,
+no second authorization happens, and
 Service B receives no payment for Intent A.
 
 Scene B (switch) proves: the scene enforces the exact Service A breaker row
@@ -12,10 +13,12 @@ completes, and one Receipt Anchor records the finalized Payment Reference.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from agno_demo.agent import build_agent
-from agno_demo.decisions import ServiceABreakerClosedError
+from agno_demo.decisions import AgentDecision, ServiceABreakerClosedError
 from agno_demo.models import (
     BreakerState,
     SpendIntent,
@@ -191,6 +194,7 @@ class ScriptedSceneBackend:
                 payment_reference="gateway-ref-b",
                 receipt_anchor=anchor,
                 purpose_hash="purpose-b",
+                payment_state="completed",
             ),
             spent_total="1.00",
             receipt=SpendReceipt(
@@ -216,6 +220,7 @@ def _intent(
     payment_reference: str | None = None,
     receipt_anchor: str | None = None,
     purpose_hash: str = "purpose-hash",
+    payment_state: str | None = None,
 ) -> SpendIntent:
     return SpendIntent(
         id=intent_id,
@@ -233,13 +238,13 @@ def _intent(
         retry_count=0,
         payment_reference=payment_reference,
         reference_type="gateway-x402-transfer-uuid" if payment_reference else None,
-        payment_state="accepted" if payment_reference else None,
+        payment_state=payment_state or ("accepted" if payment_reference else None),
         batch_tx_hash=None,
         receipt_anchor=receipt_anchor,
     )
 
 
-def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
+def test_freeze_scene_replays_same_intent_without_new_authorization() -> None:
     backend = ScriptedSceneBackend()
     backend.breaker_state = "closed"
     agent = build_agent(client=backend, mandate_id="mandate-1")
@@ -262,8 +267,11 @@ def test_freeze_scene_chooses_wait_or_request_review_and_never_repays() -> None:
     assert result.decision.may_authorize is False
     assert result.agent_intent_id == "intent-a"
     assert result.injected_response_loss is True
-    assert len(backend.spend_calls) == 1
-    assert backend.spend_calls[0] == ("intent-a", "buy a research report", SERVICE_A)
+    assert backend.spend_calls == [
+        ("intent-a", "buy a research report", SERVICE_A),
+        ("intent-a", "buy a research report", SERVICE_A),
+    ]
+    assert result.spend_calls == tuple(backend.spend_calls)
     assert not any(service == SERVICE_B for (_, _, service) in backend.spend_calls)
 
 
@@ -339,11 +347,85 @@ def test_switch_scene_selects_service_b_before_authorization() -> None:
     assert result.decision.may_authorize is True
     assert result.intent_id == "intent-b"
     assert result.payment_reference == "gateway-ref-b"
+    assert result.payment_state == "completed"
     assert result.receipt_anchor == "0xreceipt-anchor-b"
     assert result.payment_reference != result.receipt_anchor
     assert not any(service == SERVICE_A for (_, _, service) in backend.spend_calls)
     assert backend.spend_calls == [("intent-b", "buy market data", SERVICE_B)]
+    assert result.spend_calls == tuple(backend.spend_calls)
     assert backend.resolve_calls == [("intent-b", "buy market data")]
+
+
+def test_switch_scene_rejects_a_final_agent_decision_without_an_intent_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = ScriptedSceneBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+    )
+    monkeypatch.setattr(
+        "agno_demo.scenes.run_agent_result_decision",
+        lambda **_kwargs: AgentDecision(
+            action="continue",
+            intent_id=None,
+            may_authorize=True,
+            reason="final result omitted the Intent ID",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="final Agent decision has no Intent ID"):
+        scene.run()
+
+
+def test_switch_scene_restarts_from_an_already_settled_intent() -> None:
+    class AlreadySettledBackend(ScriptedSceneBackend):
+        def _intent_b_spend(
+            self,
+            purpose: str,
+            service_url: str,
+            amount: str,
+        ) -> SpendResponse:
+            settled = self._settled_response(
+                "intent-b", purpose, service_url, self.receipt_anchor_b
+            )
+            return replace(
+                settled,
+                outcome="blocked: duplicate_intent",
+                reason="duplicate intent: already settled",
+            )
+
+    backend = AlreadySettledBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+    )
+
+    result = scene.run()
+
+    assert result.decision.action == "continue"
+    assert result.payment_state == "completed"
+    assert result.payment_reference == "gateway-ref-b"
+    assert result.receipt_anchor == "0xreceipt-anchor-b"
+    assert backend.resolve_calls == []
 
 
 def test_switch_scene_stops_when_service_b_is_policy_denied() -> None:
@@ -485,6 +567,119 @@ def test_switch_scene_stops_when_resolve_is_not_final() -> None:
         scene.run()
 
     assert "final" in str(raised.value)
+
+
+def test_switch_scene_stops_when_official_payment_state_is_not_completed() -> None:
+    class AcceptedStateBackend(ScriptedSceneBackend):
+        def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
+            response = super().resolve(
+                mandate_id=mandate_id,
+                task_id=task_id,
+                purpose=purpose,
+            )
+            return SpendResponse(
+                outcome=response.outcome,
+                reason=response.reason,
+                action=response.action,
+                intent=replace(response.intent, payment_state="accepted"),
+                spent_total=response.spent_total,
+                receipt=response.receipt,
+            )
+
+    backend = AcceptedStateBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError, match="payment state"):
+        scene.run()
+
+
+def test_switch_scene_stops_when_receipt_reference_does_not_bind_to_intent() -> None:
+    class MismatchedReceiptBackend(ScriptedSceneBackend):
+        def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
+            response = super().resolve(
+                mandate_id=mandate_id,
+                task_id=task_id,
+                purpose=purpose,
+            )
+            assert response.receipt is not None
+            return SpendResponse(
+                outcome=response.outcome,
+                reason=response.reason,
+                action=response.action,
+                intent=response.intent,
+                spent_total=response.spent_total,
+                receipt=replace(response.receipt, payment_reference="different-reference"),
+            )
+
+    backend = MismatchedReceiptBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError, match="Receipt Payment Reference"):
+        scene.run()
+
+
+def test_switch_scene_stops_when_receipt_anchor_does_not_bind_to_intent() -> None:
+    class MismatchedAnchorBackend(ScriptedSceneBackend):
+        def resolve(self, *, mandate_id: str, task_id: str, purpose: str) -> SpendResponse:
+            response = super().resolve(
+                mandate_id=mandate_id,
+                task_id=task_id,
+                purpose=purpose,
+            )
+            assert response.receipt is not None
+            return SpendResponse(
+                outcome=response.outcome,
+                reason=response.reason,
+                action=response.action,
+                intent=response.intent,
+                spent_total=response.spent_total,
+                receipt=replace(response.receipt, receipt_anchor="different-anchor"),
+            )
+
+    backend = MismatchedAnchorBackend()
+    backend.breaker_state = "open"
+    agent = build_agent(client=backend, mandate_id="mandate-1")
+    scene = SwitchScene(
+        agent=agent,
+        status_client=backend,
+        spend_client=backend,
+        mandate_id="mandate-1",
+        intent_b_task="intent-b",
+        intent_b_purpose="buy market data",
+        service_a_url=SERVICE_A,
+        service_b_url=SERVICE_B,
+        amount="1.00",
+        resolve_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError, match="Receipt Anchor differs"):
+        scene.run()
 
 
 def test_switch_scene_polls_until_final_resolve() -> None:

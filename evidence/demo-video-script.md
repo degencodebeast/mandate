@@ -1,10 +1,8 @@
 # Mandate demo video script (recording support, ticket 10c)
 
-Interface: **MCP** (Streamable HTTP) with the official **mcp Python SDK**
-client (`mcp.ClientSession` + `streamable_http_client`) for agent spend and
-status. The Agno agent uses the `mandate.spend` and `mandate.status` MCP tools.
-It has no direct payment tool. REST remains the fallback; finalization uses the
-REST resolve endpoint because the MCP adapter exposes spend and status only.
+Interface: **REST**. The Agno agent uses `mandate.spend` and `mandate.status`
+tool functions over the stable REST interface. It has no direct payment tool.
+Finalization also uses REST. This matches the recorded real testnet run.
 
 Target length: 3 minutes. The section timings are the recording plan.
 
@@ -27,8 +25,8 @@ Show the naive agent paying per retry: five attempts, five charges, duplicates.
 The User creates a Mandate. The Mandate sets the total authority, per-payment
 cap, approved service, and expiry. The agent cannot create its own authority.
 
-The Agno agent connects through MCP. It has two tools: `mandate.spend` and
-`mandate.status`. It has no direct payment tool.
+The Agno agent connects through REST. It has two tool functions:
+`mandate.spend` and `mandate.status`. It has no direct payment tool.
 
 Mandate records the Intent and reserves budget atomically before it permits one
 Payment Authorization.

@@ -559,6 +559,7 @@ def _receipt_reader_from_settings(settings: ApiSettings) -> ReceiptReader | None
         registry_address=settings.receipt_registry_address,
         rpc_url=settings.arc_rpc_url,
         script=settings.receipt_reader_script,
+        deployment_block=settings.receipt_registry_deployment_block,
     )
 
 

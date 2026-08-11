@@ -42,11 +42,14 @@ from __future__ import annotations
 
 import argparse
 import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol
 
 from agno.models.base import Model
 
 from agno_demo.agent import build_agent
+from agno_demo.evidence import write_submission_evidence
 from agno_demo.models import SpendResponse, StatusDocument
 from agno_demo.providers import build_model
 from agno_demo.report import build_scene_report, render_demo_report
@@ -85,6 +88,8 @@ def run_demo(
     amount: str,
     inject_response_loss: bool = False,
     model: Model | None = None,
+    resolve_attempts: int = 120,
+    resolve_interval_seconds: float = 5.0,
 ) -> list[dict[str, object]]:
     """Run both scenes and return the report documents.
 
@@ -119,6 +124,8 @@ def run_demo(
         service_a_url=service_a,
         service_b_url=service_b,
         amount=amount,
+        resolve_attempts=resolve_attempts,
+        resolve_interval_seconds=resolve_interval_seconds,
     )
     return [
         _report_from_result(freeze_result),
@@ -163,7 +170,7 @@ def _report_from_result(result: SceneResult) -> dict[str, object]:
         agent_intent_id=result.agent_intent_id,
         backend_intent_id=result.backend_intent_id,
         ui_intent_id=result.ui_intent_id,
-        ui_source="status API (rendered by the dashboard)",
+        ui_source="Mandate status API",
         decision_action=result.decision.action,
         may_authorize=result.decision.may_authorize,
         payment_reference=result.payment_reference,
@@ -172,6 +179,8 @@ def _report_from_result(result: SceneResult) -> dict[str, object]:
         reason=result.decision.reason,
         injected_response_loss=result.injected_response_loss,
         switch_choice_action=result.switch_choice.action if result.switch_choice else None,
+        spend_attempt_count=len(result.spend_calls),
+        payment_state=result.payment_state,
     )
 
 
@@ -220,6 +229,26 @@ def main() -> None:
     parser.add_argument("--service-a", default="https://service-a.example.com")
     parser.add_argument("--service-b", default="https://service-b.example.com")
     parser.add_argument("--amount", default="1.00")
+    parser.add_argument(
+        "--resolve-attempts",
+        type=int,
+        default=120,
+        help="Maximum official status reads for the same stored Payment Reference.",
+    )
+    parser.add_argument(
+        "--resolve-interval-seconds",
+        type=float,
+        default=5.0,
+        help="Wait between official status reads. This never sends a new payment.",
+    )
+    parser.add_argument(
+        "--evidence-file",
+        default=os.environ.get("MANDATE_DEMO_EVIDENCE_FILE", ""),
+        help=(
+            "Write validated real-network fields to this file. Scripted fixture "
+            "references and non-final payment states are rejected."
+        ),
+    )
     args = parser.parse_args()
 
     client = _build_client(args)
@@ -236,7 +265,16 @@ def main() -> None:
         amount=args.amount,
         inject_response_loss=args.inject_response_loss,
         model=model,
+        resolve_attempts=args.resolve_attempts,
+        resolve_interval_seconds=args.resolve_interval_seconds,
     )
+    if args.evidence_file:
+        write_submission_evidence(
+            Path(args.evidence_file),
+            reports=reports,
+            interface="MCP with REST fallback" if args.mcp_endpoint else "REST",
+            timestamp=datetime.now(UTC).isoformat(),
+        )
     print("\n".join(render_demo_report(reports)))
 
 

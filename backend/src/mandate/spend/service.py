@@ -656,7 +656,12 @@ class MandateSpendService:
             action = intent.economic_safety_action
             if action not in (ACTION_WAIT, ACTION_REQUEST_REVIEW):
                 action = ACTION_REQUEST_REVIEW
-            return self._unknown_outcome_response(intent, mandate, action=action)
+            return self._unknown_outcome_response(
+                intent,
+                mandate,
+                action=action,
+                injected_response_loss=intent.spend_reason == REASON_INJECTED_LOSS,
+            )
         if intent.status == "settling" and intent.payment_reference is not None:
             return self._accepted_response(intent, mandate)
         if intent.status in ("pending", "settling"):
@@ -665,7 +670,12 @@ class MandateSpendService:
             action = intent.economic_safety_action
             if action not in (ACTION_WAIT, ACTION_REQUEST_REVIEW):
                 action = ACTION_WAIT
-            return self._unknown_outcome_response(intent, mandate, action=action)
+            return self._unknown_outcome_response(
+                intent,
+                mandate,
+                action=action,
+                injected_response_loss=intent.spend_reason == REASON_INJECTED_LOSS,
+            )
         return self._duplicate_response(intent, mandate)
 
     def _finalize(

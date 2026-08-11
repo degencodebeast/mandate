@@ -26,6 +26,8 @@ def build_scene_report(
     reason: str | None,
     injected_response_loss: bool = False,
     switch_choice_action: str | None = None,
+    spend_attempt_count: int = 1,
+    payment_state: str | None = None,
 ) -> dict[str, Any]:
     """Build one scene report document.
 
@@ -40,6 +42,9 @@ def build_scene_report(
     ``switch_choice_action`` records the pre-authorization switch choice
     (Scene B) as separate evidence, distinct from the post-spend decision.
     """
+    intent_ids = (agent_intent_id, backend_intent_id, ui_intent_id)
+    if any(not intent_id for intent_id in intent_ids) or len(set(intent_ids)) != 1:
+        raise ValueError("Agent, backend, and UI must show the same nonempty Intent ID.")
     return {
         "scene": scene,
         "agent_intent_id": agent_intent_id,
@@ -54,6 +59,8 @@ def build_scene_report(
         "reason": reason,
         "injected_response_loss": injected_response_loss,
         "switch_choice_action": switch_choice_action,
+        "spend_attempt_count": spend_attempt_count,
+        "payment_state": payment_state,
     }
 
 
@@ -63,17 +70,23 @@ def render_demo_report(reports: list[dict[str, Any]]) -> list[str]:
     for report in reports:
         lines.append(f"=== SCENE {report['scene'].upper()} ===")
         lines.append(
-            "Intent (agent/backend/UI): "
+            "Intent (Agent/Spend Result/dashboard input): "
             f"{report['agent_intent_id'] or '-'} / "
             f"{report['backend_intent_id'] or '-'} / "
             f"{report['ui_intent_id'] or '-'}"
         )
-        lines.append(f"UI source: {report.get('ui_source', 'status API')}")
+        lines.append(
+            "Dashboard input source: "
+            f"{report.get('ui_source', 'status API')} (not dashboard render proof)"
+        )
         lines.append(f"Decision: {report['decision_action']}")
         lines.append(f"Authorize: {'yes' if report['may_authorize'] else 'no'}")
         lines.append(f"Payment Reference: {report['payment_reference'] or '-'}")
         lines.append(f"Receipt Anchor: {report['receipt_anchor'] or '-'}")
         lines.append(f"Service: {report['service_url']}")
+        lines.append(f"Mandate spend calls: {report.get('spend_attempt_count', 1)}")
+        if report.get("payment_state"):
+            lines.append(f"Official payment state: {report['payment_state']}")
         if report.get("switch_choice_action"):
             lines.append(
                 f"Switch choice (pre-authorization): {report['switch_choice_action'].upper()}"

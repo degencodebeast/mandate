@@ -158,23 +158,42 @@ export function PaymentLog({ intents }: { intents: IntentRecord[] }) {
     <div className="card" style={{ padding: 0 }}>
       <div className="log-row log-head">
         <span>Time</span>
-        <span>Service</span>
+        <span>Intent / Service</span>
         <span>Payment Reference</span>
         <span>Batch Tx</span>
+        <span>Receipt Anchor</span>
         <span style={{ textAlign: "right" }}>Amount</span>
         <span style={{ textAlign: "right" }}>State</span>
       </div>
       {intents.map((intent) => (
         <div key={intent.id} className="log-row">
           <span className="ts">{formatTimestamp(intent.created_at)}</span>
-          <span className="svc">{intent.service_url.replace(/^https?:\/\//, "").slice(0, 32) || "—"}</span>
+          <span className="svc">
+            <span className="intent-id">{intent.id}</span>
+            <span>{intent.service_url.replace(/^https?:\/\//, "").slice(0, 32) || "—"}</span>
+          </span>
           <span className="hash">{intent.payment_reference ?? "—"}</span>
           <span className="batch">{intent.batch_tx_hash ?? "—"}</span>
+          <span className="anchor">
+            {intent.receipt_anchor ? (
+              <a
+                href={`https://testnet.arcscan.app/tx/${intent.receipt_anchor}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {formatTxHash(intent.receipt_anchor)} ↗
+              </a>
+            ) : (
+              "—"
+            )}
+          </span>
           <span className="amt">{formatMoney(intent.amount)}</span>
           <span className="state">
             <span className="badge" data-state={intent.status}>
               <span className="dot" />
-              {intent.status}
+              {intent.status.toUpperCase() === "UNKNOWN" && intent.injected_response_loss
+                ? "UNKNOWN (INJECTED)"
+                : intent.status}
             </span>
           </span>
         </div>

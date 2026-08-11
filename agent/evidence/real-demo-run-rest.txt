@@ -1,0 +1,35 @@
+# Ticket 10c real network run
+
+Timestamp: 2026-08-11T02:09:57.898800+00:00
+Interface: REST
+Mandate created by the User before the Agent starts.
+No direct payment tool is available to the Agent.
+
+=== SCENE FREEZE ===
+Intent (Agent/Spend Result/dashboard input): bffb31bd-ceed-41ad-ba28-1017e527c6c0 / bffb31bd-ceed-41ad-ba28-1017e527c6c0 / bffb31bd-ceed-41ad-ba28-1017e527c6c0
+Dashboard input source: Mandate status API (not dashboard render proof)
+Decision: request_review
+Authorize: no
+Payment Reference: -
+Receipt Anchor: -
+Service: http://localhost:4033/search
+Mandate spend calls: 2
+Injected condition: response loss after the real economic action
+Reason: unknown outcome; wait or request review; no new authorization
+
+=== SCENE SWITCH ===
+Intent (Agent/Spend Result/dashboard input): 763912df-caa9-4ceb-abca-a17d524ae174 / 763912df-caa9-4ceb-abca-a17d524ae174 / 763912df-caa9-4ceb-abca-a17d524ae174
+Dashboard input source: Mandate status API (not dashboard render proof)
+Decision: continue
+Authorize: yes
+Payment Reference: 2cab7a7d-4d27-4f23-86d3-f4b52e742323
+Receipt Anchor: 0x184148cca032e67b07f481f8fde05f23fdc98d67e56f846aed0afcf35ad27bf9
+Service: http://localhost:4034/search
+Mandate spend calls: 1
+Official payment state: completed
+Switch choice (pre-authorization): SWITCH_SERVICE
+Reason: intent settled; the agent may continue
+
+One Intent. No blind retries.
+
+Arc explorer: https://testnet.arcscan.app/tx/0x184148cca032e67b07f481f8fde05f23fdc98d67e56f846aed0afcf35ad27bf9

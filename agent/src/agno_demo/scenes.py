@@ -2,9 +2,10 @@
 
 Scene A (freeze) proves that an UNKNOWN Intent is never paid twice and never
 routes to a second service. The Agent calls ``mandate.spend`` as a real tool
-once for Intent A on Service A; the injected response loss produces an UNKNOWN
-outcome; the Agent chooses WAIT or REQUEST_REVIEW and issues no second
-authorization. Service B receives no payment for Intent A. The
+twice for Intent A on Service A. The second call must return the same frozen
+Intent. The injected response loss produces an UNKNOWN outcome; the Agent
+chooses WAIT or REQUEST_REVIEW and issues no second authorization. Service B
+receives no payment for Intent A. The
 injected-response-loss label is applied only when the demo is configured to
 inject the loss and the Spend Result is actually UNKNOWN.
 
@@ -57,7 +58,7 @@ class SceneResult:
 
     The Intent identifier is recorded separately from each surface that
     produces it: the agent view (the Agent decision), the backend view (the
-    Spend Result), and the UI view (the status document the dashboard renders).
+    Spend Result), and the dashboard input (the status document the dashboard renders).
     Recording three distinct sources prevents a single aliased value from
     reporting proof that did not occur (ticket 10c submission proof).
 
@@ -76,6 +77,7 @@ class SceneResult:
     payment_reference: str | None
     receipt_anchor: str | None
     service_url: str | None
+    payment_state: str | None = None
     spend_calls: tuple[tuple[str, str, str], ...] = field(default_factory=tuple)
     injected_response_loss: bool = False
     switch_choice: AgentDecision | None = None
@@ -130,10 +132,12 @@ class FreezeScene:
         self._inject_response_loss = inject_response_loss
 
     def run(self) -> SceneResult:
-        """Have the Agent spend once for Intent A and stop on the UNKNOWN outcome.
+        """Have the Agent call the same Intent twice and stop on UNKNOWN.
 
-        The Agent calls ``mandate.spend`` once for Intent A on Service A. The
-        decision comes from the Agent run. The injected-response-loss label is
+        The Agent calls ``mandate.spend`` twice for Intent A on Service A. Only
+        the first call can reach Payment Authorization. The second call must
+        return the same frozen Intent. The decisions come from the Agent runs.
+        The injected-response-loss label is
         applied only when the demo is configured to inject the loss AND the
         service confirms it lost the response (``injected_response_loss`` on
         the Spend Result) AND the outcome is UNKNOWN; otherwise the
@@ -158,6 +162,24 @@ class FreezeScene:
                 "confirm it lost the response; the scene must not claim an injection."
             )
         injected = verified_injection
+        spend_calls = [(self._task, self._purpose, self._service_a)]
+        if response.outcome == "unknown":
+            replay_decision, replay_response = run_agent_spend(
+                agent=self._agent,
+                task_id=self._task,
+                purpose=self._purpose,
+                service_url=self._service_a,
+                amount=self._amount,
+            )
+            spend_calls.append((self._task, self._purpose, self._service_a))
+            _validate_freeze_replay(
+                first_decision=decision,
+                first_response=response,
+                replay_decision=replay_decision,
+                replay_response=replay_response,
+            )
+            decision = replay_decision
+            response = replay_response
         status = self._status_client.status(mandate_id=self._mandate_id)
         ui_intent_id = _intent_id_from_status(status, purpose_hash=response.intent.purpose_hash)
         return SceneResult(
@@ -171,6 +193,7 @@ class FreezeScene:
             receipt_anchor=response.intent.receipt_anchor,
             injected_response_loss=injected,
             service_url=self._service_a,
+            spend_calls=tuple(spend_calls),
         )
 
 
@@ -232,19 +255,24 @@ class SwitchScene:
             service_url=self._service_b,
             amount=self._amount,
         )
-        if spend_result.outcome != "accepted":
+        if spend_result.outcome == "accepted":
+            resolved = self._resolve_until_final(spend_result=spend_result)
+        elif spend_result.intent.status == "settled":
+            resolved = spend_result
+        else:
             raise RuntimeError(
                 f"Service B did not complete a paid action (outcome="
                 f"{spend_result.outcome}); the scene must stop and must not "
                 f"resolve a blocked or unknown Intent."
             )
 
-        resolved = self._resolve_until_final(spend_result=spend_result)
         _validate_final_resolve(
             spend_result=spend_result,
             resolved=resolved,
         )
         final_decision = run_agent_result_decision(agent=self._agent, response=resolved)
+        if not final_decision.intent_id:
+            raise RuntimeError("The final Agent decision has no Intent ID; the scene must stop.")
         final_status = self._status_client.status(mandate_id=self._mandate_id)
         ui_intent_id = _intent_id_from_status(
             final_status, purpose_hash=resolved.intent.purpose_hash
@@ -252,13 +280,15 @@ class SwitchScene:
         return SceneResult(
             scene="switch",
             intent_id=resolved.intent.id,
-            agent_intent_id=final_decision.intent_id or resolved.intent.id,
+            agent_intent_id=final_decision.intent_id,
             backend_intent_id=resolved.intent.id,
             ui_intent_id=ui_intent_id,
             decision=final_decision,
             payment_reference=resolved.intent.payment_reference,
             receipt_anchor=resolved.intent.receipt_anchor,
             service_url=resolved.intent.service_url,
+            payment_state=resolved.intent.payment_state,
+            spend_calls=((self._task, self._purpose, self._service_b),),
             switch_choice=switch_choice,
         )
 
@@ -293,6 +323,34 @@ class SwitchScene:
         return resolved
 
 
+def _validate_freeze_replay(
+    *,
+    first_decision: AgentDecision,
+    first_response: SpendResponse,
+    replay_decision: AgentDecision,
+    replay_response: SpendResponse,
+) -> None:
+    """Require one later call to stay on the same frozen Intent."""
+    intent_ids = (
+        first_decision.intent_id,
+        first_response.intent.id,
+        replay_decision.intent_id,
+        replay_response.intent.id,
+    )
+    if any(not intent_id for intent_id in intent_ids) or len(set(intent_ids)) != 1:
+        raise RuntimeError(
+            "The repeated spend did not return the same nonempty Intent ID; the scene must stop."
+        )
+    if first_response.outcome != "unknown" or replay_response.outcome != "unknown":
+        raise RuntimeError(
+            "The repeated spend did not preserve the UNKNOWN outcome; the scene must stop."
+        )
+    if first_decision.may_authorize or replay_decision.may_authorize:
+        raise RuntimeError(
+            "The Agent permitted authorization for an UNKNOWN Intent; the scene must stop."
+        )
+
+
 def _is_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -> bool:
     """True when the resolve response is a genuinely final, proven state.
 
@@ -302,7 +360,12 @@ def _is_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -
     Gateway transfer can still be received or batched on the first status
     lookup) or that has no Receipt Anchor is not a completed paid action.
     """
-    if resolved.outcome not in ("permitted",) or resolved.intent.status != "settled":
+    if (
+        resolved.outcome not in {"permitted", "blocked: duplicate_intent"}
+        or resolved.intent.status != "settled"
+    ):
+        return False
+    if resolved.intent.payment_state != "completed":
         return False
     spend_reference = spend_result.intent.payment_reference
     resolved_reference = resolved.intent.payment_reference
@@ -310,8 +373,11 @@ def _is_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -
         return False
     if resolved_reference != spend_reference:
         return False
-    anchor = resolved.receipt.receipt_anchor if resolved.receipt else None
-    return bool(anchor)
+    receipt = resolved.receipt
+    if receipt is None or receipt.payment_reference != resolved_reference:
+        return False
+    intent_anchor = resolved.intent.receipt_anchor
+    return bool(intent_anchor and receipt.receipt_anchor == intent_anchor)
 
 
 def _validate_final_resolve(*, spend_result: SpendResponse, resolved: SpendResponse) -> None:
@@ -327,11 +393,19 @@ def _validate_final_resolve(*, spend_result: SpendResponse, resolved: SpendRespo
     """
     if _is_final_resolve(spend_result=spend_result, resolved=resolved):
         return
-    if resolved.outcome not in ("permitted",) or resolved.intent.status != "settled":
+    if (
+        resolved.outcome not in {"permitted", "blocked: duplicate_intent"}
+        or resolved.intent.status != "settled"
+    ):
         raise RuntimeError(
             f"Finalization is not final (outcome={resolved.outcome}, "
             f"status={resolved.intent.status}); the scene must stop and wait "
             f"for the payment state to become final."
+        )
+    if resolved.intent.payment_state != "completed":
+        raise RuntimeError(
+            f"The official payment state is not completed "
+            f"(payment_state={resolved.intent.payment_state}); the scene must stop."
         )
     spend_reference = spend_result.intent.payment_reference
     resolved_reference = resolved.intent.payment_reference
@@ -341,10 +415,22 @@ def _validate_final_resolve(*, spend_result: SpendResponse, resolved: SpendRespo
         raise RuntimeError(
             "The resolved Payment Reference differs from the spent reference; the scene must stop."
         )
-    anchor = resolved.receipt.receipt_anchor if resolved.receipt else None
+    receipt = resolved.receipt
+    if receipt is None:
+        raise RuntimeError("The finalized payment has no Receipt; the scene must stop.")
+    if receipt.payment_reference != resolved_reference:
+        raise RuntimeError(
+            "The Receipt Payment Reference differs from the Intent Payment Reference; "
+            "the scene must stop."
+        )
+    anchor = receipt.receipt_anchor
     if not anchor:
         raise RuntimeError(
             "The finalized Payment Reference has no Receipt Anchor; the scene must stop."
+        )
+    if anchor != resolved.intent.receipt_anchor:
+        raise RuntimeError(
+            "The Receipt Anchor differs from the Intent Receipt Anchor; the scene must stop."
         )
 
 
