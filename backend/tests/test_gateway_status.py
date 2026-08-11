@@ -120,3 +120,37 @@ def test_inspector_document_without_id_is_unknown() -> None:
 
     with pytest.raises(TransferLookupUnknownError):
         inspector.lookup_transfer("x")
+
+
+def test_inspector_sends_a_user_agent_on_the_real_http_path() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured: dict[str, str] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            captured["user_agent"] = self.headers.get("User-Agent", "")
+            body = b'{"id": "x", "status": "completed"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        inspector = GatewayTransferStatusInspector(base_url=f"http://127.0.0.1:{port}")
+        status = inspector.lookup_transfer("x")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert status.payment_state == "completed"
+    assert captured["user_agent"].startswith("mandate-service")

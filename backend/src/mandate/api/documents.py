@@ -11,7 +11,7 @@ from mandate.persistence.breaker_store import BreakerState
 from mandate.persistence.intent_store import Intent
 from mandate.persistence.mandate_store import Mandate
 from mandate.receipt_reader import ArcReceipt
-from mandate.spend.service import SpendResponse
+from mandate.spend.service import REASON_INJECTED_LOSS, SpendResponse
 from mandate.status import MandateStatus
 
 
@@ -24,6 +24,7 @@ def spend_document(response: SpendResponse) -> dict[str, object]:
         "action": response.action,
         "intent": intent_document(intent),
         "spent_total": response.spent_total,
+        "injected_response_loss": response.injected_response_loss,
     }
     if response.receipt is None:
         document["receipt"] = None
@@ -43,7 +44,14 @@ def spend_document(response: SpendResponse) -> dict[str, object]:
 
 
 def intent_document(intent: Intent) -> dict[str, object]:
-    """Render one intent as the shared safe JSON document."""
+    """Render one intent as the shared safe JSON document.
+
+    ``injected_response_loss`` is the durable fact stored on the Intent: the
+    service writes the exact ``REASON_INJECTED_LOSS`` reason when the application
+    deliberately lost the response after the real economic action, so the status
+    document and the dashboard can distinguish an injected loss from a genuine
+    fault (ticket 10c, spec User Story 35).
+    """
     economic_safety_state = (intent.spend_outcome or intent.status).upper()
     return {
         "id": str(intent.id),
@@ -64,6 +72,7 @@ def intent_document(intent: Intent) -> dict[str, object]:
         "payment_state": intent.payment_state,
         "batch_tx_hash": intent.batch_tx_hash,
         "receipt_anchor": intent.receipt_anchor,
+        "injected_response_loss": intent.spend_reason == REASON_INJECTED_LOSS,
     }
 
 

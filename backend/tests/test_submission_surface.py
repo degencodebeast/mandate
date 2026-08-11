@@ -65,4 +65,5 @@ def test_pitch_and_video_script_keep_the_truthful_submission_boundary() -> None:
     assert "Payment Reference" in video_script
     assert "Receipt Anchor" in video_script
     assert "ERC-8004" not in video_script
-    assert "MCP" not in video_script
+    assert "mandate.spend" in video_script
+    assert "mandate.status" in video_script

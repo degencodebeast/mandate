@@ -78,6 +78,9 @@ ACTION_SWITCH_SERVICE = "switch_service"
 ACTION_NONE = "none"
 
 REASON_UNKNOWN_FROZEN = "unknown outcome; wait or request review; no new authorization"
+REASON_INJECTED_LOSS = (
+    "injected response loss after the real economic action; wait or request review"
+)
 REASON_ALREADY_SETTLED = "duplicate intent: already settled"
 REASON_ACCEPTED = "payment accepted; awaiting official finalization"
 REASON_IN_PROGRESS = "Mandate is evaluating this Intent."
@@ -121,6 +124,11 @@ class SpendResponse:
     ``action`` is the next permitted Economic Safety Action (CONTEXT.md). For
     an UNKNOWN intent it is ``wait`` or ``request_review`` and never a new
     Payment Authorization.
+
+    ``injected_response_loss`` is True exactly when the application deliberately
+    lost the response after the real economic action (the demo's Service A
+    failure control, ticket 10c). It is always False for a genuine network
+    fault, so the marker never labels a real failure as an injected condition.
     """
 
     outcome: str
@@ -129,6 +137,7 @@ class SpendResponse:
     receipt: SpendReceipt | None
     spent_total: str
     action: str
+    injected_response_loss: bool = False
 
 
 def purpose_hash(task_id: str, purpose: str) -> str:
@@ -284,9 +293,12 @@ class MandateSpendService:
                 service_url=service_url,
                 amount=amount,
             )
-        except PaymentUnknownError:
+        except PaymentUnknownError as error:
             self._breaker.record_failure(
                 service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
+            )
+            stored_reason = (
+                REASON_INJECTED_LOSS if error.injected_response_loss else REASON_UNKNOWN_FROZEN
             )
             unknown, routed = self._transition_or_route(
                 settling,
@@ -297,13 +309,18 @@ class MandateSpendService:
                 intent_hash=intent_hash,
                 spend_result=DurableSpendResult(
                     outcome=OUTCOME_UNKNOWN,
-                    reason=REASON_UNKNOWN_FROZEN,
+                    reason=stored_reason,
                     action=ACTION_REQUEST_REVIEW,
                 ),
             )
             if routed is not None:
                 return routed
-            return self._unknown_outcome_response(unknown, mandate, action=ACTION_REQUEST_REVIEW)
+            return self._unknown_outcome_response(
+                unknown,
+                mandate,
+                action=ACTION_REQUEST_REVIEW,
+                injected_response_loss=error.injected_response_loss,
+            )
         except PaymentExecutionError as error:
             self._breaker.record_failure(
                 service_url=service_url, owner=str(settling.id), trial_epoch=trial_epoch
@@ -900,11 +917,14 @@ class MandateSpendService:
         mandate: Mandate,
         *,
         action: str,
+        injected_response_loss: bool = False,
     ) -> SpendResponse:
         """Return the frozen response for an UNKNOWN intent.
 
         The only permitted actions are WAIT and REQUEST_REVIEW (CONTEXT.md). No
-        new Payment Authorization is issued for this intent.
+        new Payment Authorization is issued for this intent. The
+        ``injected_response_loss`` marker is carried only when the application
+        deliberately lost the response (ticket 10c).
         """
         return self._recorded_response(
             outcome=OUTCOME_UNKNOWN,
@@ -913,6 +933,7 @@ class MandateSpendService:
             receipt=None,
             spent_total=mandate.spent_total,
             action=action,
+            injected_response_loss=injected_response_loss,
         )
 
     def _duplicate_response(self, intent: Intent, mandate: Mandate) -> SpendResponse:
@@ -958,6 +979,7 @@ class MandateSpendService:
         receipt: SpendReceipt | None,
         spent_total: str,
         action: str,
+        injected_response_loss: bool = False,
     ) -> SpendResponse:
         """Return a Spend Result that its owning state change already stored."""
         return SpendResponse(
@@ -967,4 +989,5 @@ class MandateSpendService:
             receipt=receipt,
             spent_total=spent_total,
             action=action,
+            injected_response_loss=injected_response_loss,
         )

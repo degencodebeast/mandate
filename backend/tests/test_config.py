@@ -17,6 +17,18 @@ def test_inactive_fee_and_mcp_settings_are_not_in_the_api_runtime() -> None:
     assert not hasattr(settings, "mandate_mcp_api_key")
 
 
+def test_inject_response_loss_service_url_defaults_to_none() -> None:
+    settings = ApiSettings()
+
+    assert settings.inject_response_loss_service_url is None
+
+
+def test_inject_response_loss_service_url_reads_from_configuration() -> None:
+    settings = ApiSettings(inject_response_loss_service_url="https://service-a.example.com")
+
+    assert settings.inject_response_loss_service_url == "https://service-a.example.com"
+
+
 def test_circuit_breaker_threshold_defaults_to_three() -> None:
     settings = ApiSettings()
 

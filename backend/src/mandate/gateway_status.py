@@ -84,7 +84,11 @@ class GatewayTransferStatusInspector:
             else:
                 # The URL is a fixed literal built from the configured base URL
                 # and the exact reference; no user input reaches a URL query.
-                with urllib.request.urlopen(url, timeout=self._timeout_seconds) as response:  # noqa: S310
+                request = urllib.request.Request(  # noqa: S310
+                    url,
+                    headers={"User-Agent": "mandate-service/0.1"},
+                )
+                with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310
                     output = response.read().decode("utf-8")
         except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as error:
             raise TransferLookupUnknownError(

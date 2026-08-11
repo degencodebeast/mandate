@@ -1,0 +1,48 @@
+[project]
+name = "agno-demo"
+version = "0.1.0"
+description = "Mandate Agno demo: an agent that reacts to Mandate's structured economic state via REST."
+requires-python = ">=3.13"
+dependencies = [
+    "agno>=2.8.7",
+    "httpx>=0.28.0",
+    "httpx2>=2.9.1",
+    "mcp>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "ruff>=0.15.0",
+    "mypy>=1.19.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agno_demo"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "S", "PTH"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests"]

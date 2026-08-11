@@ -1,0 +1,117 @@
+# Mandate Agno demo run (deterministic, REST fallback)
+
+Timestamp: 2026-08-10T22:24:04.170814+00:00
+Interface: REST (scripted transport; no network).
+Agent model: DecisionModel (deterministic).
+Mandate created by the User before the agent starts.
+Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).
+Injected condition: response loss after the real economic action
+Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).
+Real testnet paid action and Receipt Anchor: evidence/ticket-11-real-gateway-payment.md.
+
+=== SCENE FREEZE ===
+Intent (agent/backend/UI): fe827880-2b5d-4dfc-bfbc-5b401e9b5c04 / fe827880-2b5d-4dfc-bfbc-5b401e9b5c04 / fe827880-2b5d-4dfc-bfbc-5b401e9b5c04
+UI source: status API (rendered by the dashboard)
+Decision: request_review
+Authorize: no
+Payment Reference: -
+Receipt Anchor: -
+Service: https://service-a.example.com
+Injected condition: response loss after the real economic action
+Reason: unknown outcome; wait or request review; no new authorization
+
+=== SCENE SWITCH ===
+Intent (agent/backend/UI): 590f8c7f-16a9-4b6a-8ad2-f08e9133aa5b / 590f8c7f-16a9-4b6a-8ad2-f08e9133aa5b / 590f8c7f-16a9-4b6a-8ad2-f08e9133aa5b
+UI source: status API (rendered by the dashboard)
+Decision: wait
+Authorize: no
+Payment Reference: gateway-x402-ref-b
+Receipt Anchor: 0xreceipt-anchor-b
+Service: https://service-b.example.com
+Switch choice (pre-authorization): SWITCH_SERVICE
+Reason: payment accepted; awaiting official finalization
+
+One Intent. No blind retries.
+
+=== SCRIPTED BACKEND SPEND CALLS ===
+[
+  [
+    "intent-a",
+    "buy a research report",
+    "https://service-a.example.com"
+  ],
+  [
+    "intent-b",
+    "buy market data",
+    "https://service-b.example.com"
+  ]
+]
+
+=== BACKEND STATUS DOCUMENT ===
+{
+  "mandate": {
+    "id": "mandate-demo",
+    "user_id": "did:privy:demo-user",
+    "budget": "10.00",
+    "per_call_cap": "1.00",
+    "allowed_services": [
+      "https://service-a.example.com",
+      "https://service-b.example.com"
+    ],
+    "expiry": null,
+    "status": "active",
+    "spent_total": "1.00",
+    "reserved_total": "0",
+    "operator_wallet": "0xoperator",
+    "created_at": "2026-08-10T12:00:00Z"
+  },
+  "spent_total": "1.00",
+  "remaining_budget": "9.00",
+  "recent_intents": [
+    {
+      "id": "fe827880-2b5d-4dfc-bfbc-5b401e9b5c04",
+      "mandate_id": "mandate-demo",
+      "purpose_hash": "fd75d99e48175f428b4ffb82350edfb0",
+      "service_url": "https://service-a.example.com",
+      "amount": "1.00",
+      "status": "unknown",
+      "economic_safety_state": "UNKNOWN",
+      "spend_outcome": "unknown",
+      "reason": null,
+      "economic_safety_action": "request_review",
+      "created_at": "2026-08-10T12:00:00Z",
+      "settled_at": null,
+      "retry_count": 0,
+      "payment_reference": null,
+      "receipt_anchor": null
+    },
+    {
+      "id": "590f8c7f-16a9-4b6a-8ad2-f08e9133aa5b",
+      "mandate_id": "mandate-demo",
+      "purpose_hash": "1241d8f2a5eb5d64a5b8234ec697b5cb",
+      "service_url": "https://service-b.example.com",
+      "amount": "1.00",
+      "status": "settled",
+      "economic_safety_state": "PERMITTED",
+      "spend_outcome": "permitted",
+      "reason": null,
+      "economic_safety_action": "none",
+      "created_at": "2026-08-10T12:00:00Z",
+      "settled_at": "2026-08-10T12:00:00Z",
+      "retry_count": 0,
+      "payment_reference": "gateway-x402-ref-b",
+      "receipt_anchor": "0xreceipt-anchor-b"
+    }
+  ],
+  "breaker_state": [
+    {
+      "service_url": "https://service-a.example.com",
+      "state": "open",
+      "failure_count": 3,
+      "last_failure_at": "2026-08-10T11:00:00Z",
+      "trial_allowed": false,
+      "trial_owner": null,
+      "trial_started_at": null
+    }
+  ]
+}

@@ -20,6 +20,15 @@ function economicSafetyCopy(intent: IntentRecord | undefined): EconomicSafetyCop
   const state = (intent.spend_outcome ?? intent.economic_safety_state).toUpperCase();
   const stateKind = state.split(":", 1)[0].toLowerCase();
   const action = intent.economic_safety_action?.toUpperCase() ?? "NO RECORDED ACTION";
+  if (stateKind === "unknown" && intent.injected_response_loss) {
+    return {
+      state: `${state} (INJECTED)`,
+      meaning:
+        "The demo deliberately lost the response after the real economic action. " +
+        "Value may have moved. Mandate freezes new authorization for this Intent.",
+      action,
+    };
+  }
   switch (stateKind) {
     case "settled":
     case "permitted":

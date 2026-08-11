@@ -494,6 +494,7 @@ def _spend_service_from_settings(
         wallet_address=settings.service_wallet_address,
         chain=settings.circle_chain,
         timeout_seconds=settings.payment_timeout_seconds,
+        inject_response_loss_service_url=settings.inject_response_loss_service_url,
     )
     receipt_recorder = ArcReceiptRecorder(
         registry_address=settings.receipt_registry_address,

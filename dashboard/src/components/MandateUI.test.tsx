@@ -24,6 +24,7 @@ function unknownIntent(): IntentRecord {
     payment_state: "unknown",
     batch_tx_hash: null,
     receipt_anchor: null,
+    injected_response_loss: false,
   };
 }
 
@@ -37,6 +38,16 @@ describe("EconomicSafetyCard", () => {
     expect(screen.getByText("REQUEST_REVIEW")).toBeTruthy();
     expect(screen.queryByText("WAIT or REQUEST_REVIEW")).toBeNull();
     expect(screen.queryByText(/retry payment/i)).toBeNull();
+    expect(screen.queryByText(/INJECTED/i)).toBeNull();
+  });
+
+  it("labels an injected response loss distinctly from a genuine fault", () => {
+    render(
+      <EconomicSafetyCard intent={{ ...unknownIntent(), injected_response_loss: true }} />,
+    );
+
+    expect(screen.getByText("UNKNOWN (INJECTED)")).toBeTruthy();
+    expect(screen.getByText(/deliberately lost the response/i)).toBeTruthy();
   });
 
   it("uses the stored Spend Outcome when the lifecycle is still SETTLING", () => {
