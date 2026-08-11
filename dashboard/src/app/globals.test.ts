@@ -1,0 +1,23 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const css = readFileSync("src/app/globals.css", "utf8");
+
+function declarations(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+  expect(match, `missing CSS rule for ${selector}`).not.toBeNull();
+  return match?.[1] ?? "";
+}
+
+describe("payment proof visibility", () => {
+  it("lets the complete Intent ID wrap without a clipping ancestor", () => {
+    const serviceCell = declarations(".log-row .svc");
+    const intentId = declarations(".log-row .intent-id");
+
+    expect(serviceCell).toMatch(/white-space:\s*normal/);
+    expect(serviceCell).toMatch(/overflow:\s*visible/);
+    expect(intentId).toMatch(/white-space:\s*normal/);
+    expect(intentId).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});

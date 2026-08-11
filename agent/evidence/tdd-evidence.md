@@ -413,3 +413,26 @@ GREEN: 4 passed. New tests:
 `test_scripted_backend_failure_threshold_holds_multiple_failures`.
 
 Agent suite: 54 passed. Backend suite: 354 passed. Dashboard: 48 passed + build.
+
+## Controller gate correction — complete Intent ID visibility
+
+The dashboard no longer clips Intent IDs inside the service cell. The service
+cell permits wrapping and visible overflow. The Intent ID permits wrapping at
+any character.
+
+RED (dashboard): the CSS regression test found the clipping rule.
+
+```
+expected '... white-space: nowrap; overflow: hidden ...'
+to match /white-space:\s*normal/
+```
+
+Command: `npm test -- --run src/app/globals.test.ts`
+
+GREEN: 1 focused test passed. The full dashboard suite passed with 51 tests.
+Typecheck, lint, and the production build also passed.
+
+The browser proof command checks each full UUID. It fails when an Intent ID
+overflows its own box or crosses a clipping ancestor. It then captures the
+dashboard proof image. The corrected run reported both complete UUIDs as
+visible and replaced `agent/evidence/real-demo-dashboard.png`.

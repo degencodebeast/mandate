@@ -481,8 +481,8 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 }
 .log-row:hover { background: var(--surface-2); }
 .log-row .ts { color: var(--ink-3); }
-.log-row .svc { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; flex-direction: column; gap: 2px; }
-.log-row .intent-id { color: var(--ink); overflow-wrap: anywhere; }
+.log-row .svc { color: var(--ink-2); white-space: normal; overflow: visible; text-overflow: clip; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.log-row .intent-id { color: var(--ink); white-space: normal; overflow-wrap: anywhere; }
 .log-row .hash { color: var(--amber); }
 .log-row .hash, .log-row .batch, .log-row .anchor { overflow-wrap: anywhere; }
 .log-row .batch { color: var(--ink-3); }
