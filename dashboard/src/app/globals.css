@@ -469,7 +469,7 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 /* Intent history */
 .log-row {
   display: grid;
-  grid-template-columns: 90px 1fr 1.2fr 1fr 100px 80px;
+  grid-template-columns: 90px 1fr 1.2fr 1fr 1fr 100px 110px;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
@@ -481,10 +481,12 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 }
 .log-row:hover { background: var(--surface-2); }
 .log-row .ts { color: var(--ink-3); }
-.log-row .svc { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-row .svc { color: var(--ink-2); white-space: normal; overflow: visible; text-overflow: clip; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.log-row .intent-id { color: var(--ink); white-space: normal; overflow-wrap: anywhere; }
 .log-row .hash { color: var(--amber); }
-.log-row .hash, .log-row .batch { overflow-wrap: anywhere; }
+.log-row .hash, .log-row .batch, .log-row .anchor { overflow-wrap: anywhere; }
 .log-row .batch { color: var(--ink-3); }
+.log-row .anchor { color: var(--amber); }
 .log-row .amt { color: var(--ink); text-align: right; }
 .log-row .state { text-align: right; }
 .log-row.log-head {
@@ -498,7 +500,7 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 }
 @media (max-width: 720px) {
   .log-row { grid-template-columns: 1fr 1fr; gap: var(--space-2); }
-  .log-row .ts, .log-row .hash, .log-row .batch, .log-row .state { display: none; }
+  .log-row .ts, .log-row .hash, .log-row .batch, .log-row .anchor, .log-row .state { display: none; }
 }
 
 /* Receipt row */

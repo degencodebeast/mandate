@@ -78,11 +78,38 @@ describe("LivePage submission surface", () => {
     expect(screen.getByText("Demo Operator Wallet")).toBeTruthy();
     expect(screen.getByText("0xoperator")).toBeTruthy();
     expect(screen.getAllByText("Payment Reference").length).toBeGreaterThan(0);
+    expect(screen.getByText("intent-1")).toBeTruthy();
     expect(screen.getByText("Intent history")).toBeTruthy();
     expect(screen.queryByText("Tx (latest)")).toBeNull();
     expect(screen.queryByText("Payment log")).toBeNull();
     expect(screen.queryByText(/ERC-8004/i)).toBeNull();
     expect(screen.queryByText(/fees/i)).toBeNull();
     unmount();
+  });
+
+  it("does not start overlapping Arc receipt reads", async () => {
+    vi.useFakeTimers();
+    const listReceipts = vi.fn(
+      () => new Promise<{ receipts: [] }>(() => undefined),
+    );
+    mockedUseMandateClient.mockReturnValue({
+      getMandateStatus: async () => status(),
+      listReceipts,
+    } as never);
+
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+    expect(listReceipts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+      await Promise.resolve();
+    });
+    expect(listReceipts).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    vi.useRealTimers();
   });
 });

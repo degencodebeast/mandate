@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -81,6 +81,12 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
         owners=frozenset({Service.API}),
         secret=False,
         description="Address of the Receipt Registry contract on Arc testnet.",
+    ),
+    ConfigurationVariable(
+        name="RECEIPT_REGISTRY_DEPLOYMENT_BLOCK",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="First Arc block that can contain Receipt Registry events.",
     ),
     ConfigurationVariable(
         name="SERVICE_WALLET_ADDRESS",
@@ -186,6 +192,7 @@ class ApiSettings(BaseSettings):
     privy_app_id: str | None = None
     privy_verification_key: SecretStr | None = None
     receipt_registry_address: str | None = None
+    receipt_registry_deployment_block: int | None = Field(default=None, ge=0)
     service_wallet_address: str | None = None
     circle_chain: str = "ARC-TESTNET"
     payment_timeout_seconds: float = 30.0

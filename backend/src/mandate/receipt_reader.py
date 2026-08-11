@@ -76,31 +76,33 @@ class ViemReceiptReader:
         registry_address: str,
         rpc_url: str,
         script: str,
+        deployment_block: int | None = None,
         runner: ReceiptReaderRunner | None = None,
     ) -> None:
         self._registry_address = registry_address
         self._rpc_url = rpc_url
         self._script = script
+        self._deployment_block = deployment_block
         self._runner = runner
 
     def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
         """Run the viem script and parse the receipts for the Mandate."""
         try:
-            output = run_cli(
-                [
-                    "node",
-                    self._script,
-                    "--registry",
-                    self._registry_address,
-                    "--rpc-url",
-                    self._rpc_url,
-                    "--authority-id",
-                    user_id,
-                    "--mandate-id",
-                    mandate_id,
-                ],
-                self._runner,
-            )
+            command = [
+                "node",
+                self._script,
+                "--registry",
+                self._registry_address,
+                "--rpc-url",
+                self._rpc_url,
+                "--authority-id",
+                user_id,
+                "--mandate-id",
+                mandate_id,
+            ]
+            if self._deployment_block is not None:
+                command.extend(["--from-block", str(self._deployment_block)])
+            output = run_cli(command, self._runner)
         except subprocess.CalledProcessError as error:
             raise ReceiptReadError("The receipt reader script failed.") from error
         return _parse_receipts(output)

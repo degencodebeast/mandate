@@ -31,7 +31,9 @@ class _IntentState:
     spend_outcome: str
     economic_safety_action: str
     payment_reference: str | None = None
+    payment_state: str | None = None
     receipt_anchor: str | None = None
+    injected_response_loss: bool = False
 
 
 @dataclass
@@ -88,6 +90,21 @@ class ScriptedMandateBackend:
         amount = str(payload["amount"])
         self.spend_calls.append((task_id, purpose, service_url))
 
+        existing = self.intents.get(task_id)
+        if existing is not None and existing.status == "unknown":
+            return _spend_document(
+                outcome="unknown",
+                reason=(
+                    "injected response loss after the real economic action; wait or request review"
+                    if existing.injected_response_loss
+                    else "unknown outcome; wait or request review; no new authorization"
+                ),
+                action="request_review",
+                state=existing,
+                spent_total="0",
+                injected_response_loss=existing.injected_response_loss,
+            )
+
         should_inject = (
             self.inject_response_loss_service_url is not None
             and service_url == self.inject_response_loss_service_url
@@ -119,6 +136,7 @@ class ScriptedMandateBackend:
                 status="unknown",
                 spend_outcome="unknown",
                 economic_safety_action="request_review",
+                injected_response_loss=True,
             )
             self.intents[task_id] = state
             return _spend_document(
@@ -167,6 +185,7 @@ class ScriptedMandateBackend:
                 spend_outcome="accepted",
                 economic_safety_action="wait",
                 payment_reference="gateway-x402-ref-a",
+                payment_state="accepted",
             )
             self.intents[task_id] = state
             return _spend_document(
@@ -189,6 +208,7 @@ class ScriptedMandateBackend:
             spend_outcome="accepted",
             economic_safety_action="wait",
             payment_reference="gateway-x402-ref-b",
+            payment_state="accepted",
         )
         self.intents[task_id] = state
         return _spend_document(
@@ -207,6 +227,7 @@ class ScriptedMandateBackend:
         state.status = "settled"
         state.spend_outcome = "permitted"
         state.economic_safety_action = "none"
+        state.payment_state = "completed"
         state.receipt_anchor = "0xreceipt-anchor-b"
         return 200, _spend_document(
             outcome="permitted",
@@ -264,7 +285,9 @@ def _intent_document(state: _IntentState) -> JsonObject:
         "settled_at": "2026-08-10T12:00:00Z" if state.status == "settled" else None,
         "retry_count": 0,
         "payment_reference": state.payment_reference,
+        "payment_state": state.payment_state,
         "receipt_anchor": state.receipt_anchor,
+        "injected_response_loss": state.injected_response_loss,
     }
 
 

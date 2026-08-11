@@ -195,17 +195,16 @@ Result:
 49 passed
 ```
 
-## Run evidence
+## Scripted fixture output
 
-- `evidence/demo-run-mcp.txt` — both scenes through the MCP path with REST
-  fallback.
-- `evidence/demo-run-rest.txt` — both scenes through the pure REST fallback.
+- `python -m agno_demo.run_demo` can create `evidence/fixture-run-mcp.txt`
+  and `evidence/fixture-run-rest.txt` for local behavior checks.
 
-Both record the same Intent identifier in the agent, backend, and UI views,
-name the UI source, and keep Payment Reference separate from Receipt Anchor.
-Both runs route decisions through the deterministic Agent model, invoke
-`mandate.spend` / `mandate.status` as real tools, and label the injected
-response loss.
+These files use a scripted backend. They move no value. They are not submission
+proof. A real ticket 10c run must use `python -m agno_demo.demo` against the
+Mandate Service and must capture the same Intent ID, the exact Payment
+Reference, the official `completed` payment state, and the matching Receipt
+Anchor.
 
 ## Correction round 3 — TDD evidence for the three gate findings
 
@@ -400,8 +399,8 @@ Scene A now starts with Service A's breaker CLOSED. The injected response loss
 records a failure; when the failure count reaches `breaker_failure_threshold`
 the breaker transitions to OPEN before Scene B, matching the production policy
 (`policy.breaker_closed` blocks authorization while OPEN). The switch scene then
-reads the open breaker. The evidence references the real testnet paid action and
-Receipt Anchor in `evidence/ticket-11-real-gateway-payment.md`.
+reads the open breaker. Scripted fixture output does not reuse ticket 11
+evidence and does not claim a ticket 10c real action.
 
 RED (agent): the evidence started with the breaker open.
 
@@ -414,3 +413,26 @@ GREEN: 4 passed. New tests:
 `test_scripted_backend_failure_threshold_holds_multiple_failures`.
 
 Agent suite: 54 passed. Backend suite: 354 passed. Dashboard: 48 passed + build.
+
+## Controller gate correction — complete Intent ID visibility
+
+The dashboard no longer clips Intent IDs inside the service cell. The service
+cell permits wrapping and visible overflow. The Intent ID permits wrapping at
+any character.
+
+RED (dashboard): the CSS regression test found the clipping rule.
+
+```
+expected '... white-space: nowrap; overflow: hidden ...'
+to match /white-space:\s*normal/
+```
+
+Command: `npm test -- --run src/app/globals.test.ts`
+
+GREEN: 1 focused test passed. The full dashboard suite passed with 51 tests.
+Typecheck, lint, and the production build also passed.
+
+The browser proof command checks each full UUID. It fails when an Intent ID
+overflows its own box or crosses a clipping ancestor. It then captures the
+dashboard proof image. The corrected run reported both complete UUIDs as
+visible and replaced `agent/evidence/real-demo-dashboard.png`.

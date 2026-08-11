@@ -33,9 +33,14 @@ async function main() {
     "rpc-url": rpcUrl,
     "authority-id": authorityId,
     "mandate-id": mandateId,
+    "from-block": fromBlock,
   } = parseArgs(process.argv);
   if (!registry || !rpcUrl || !authorityId || !mandateId) {
     console.error("missing --registry, --rpc-url, --authority-id, or --mandate-id");
+    process.exit(1);
+  }
+  if (fromBlock !== undefined && !/^\d+$/.test(fromBlock)) {
+    console.error("--from-block must be a non-negative decimal block number");
     process.exit(1);
   }
 
@@ -76,7 +81,7 @@ async function main() {
     }
   }
 
-  const deploymentBlock = await findDeploymentBlock();
+  const deploymentBlock = fromBlock === undefined ? await findDeploymentBlock() : BigInt(fromBlock);
 
   const step = 10000n;
   const logs = [];

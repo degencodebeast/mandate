@@ -438,6 +438,23 @@ def test_spend_injected_response_loss_marks_the_unknown_document(
     assert document["receipt"] is None
 
 
+def test_later_same_intent_call_keeps_durable_injected_loss_marker(
+    components: Components,
+) -> None:
+    mandate = _create_mandate(components.store)
+    components.payments.unknown = PaymentUnknownError(
+        "The application deliberately lost the response after the real economic action.",
+        injected_response_loss=True,
+    )
+    first = _spend(components, mandate.id)
+
+    second = _spend(components, mandate.id)
+
+    assert first.json()["injected_response_loss"] is True
+    assert second.json()["outcome"] == "unknown"
+    assert second.json()["injected_response_loss"] is True
+
+
 def test_spend_genuine_unknown_has_no_injected_marker(components: Components) -> None:
     mandate = _create_mandate(components.store)
     components.payments.unknown = PaymentUnknownError("The payment call timed out.")

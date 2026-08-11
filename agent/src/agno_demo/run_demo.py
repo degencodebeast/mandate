@@ -1,12 +1,12 @@
-"""Deterministic demo runner for reproducible run evidence.
+"""Deterministic fixture runner for local behavior checks.
 
 Runs both scenes through the MCP client path (ticket 12a passed) with the
-scripted Mandate backend, and also captures a pure-REST run for the fallback
-evidence (ADR-0033, ADR-0024). Each interface uses a fresh scripted backend so
+scripted Mandate backend, and also captures a pure-REST fixture for the fallback
+path (ADR-0033, ADR-0024). Each interface uses a fresh scripted backend so
 the payment-adapter call count is not shared between runs. No network, no
-Circle CLI, no Receipt Registry. The evidence records the same Intent
-identifier in the agent, backend, and UI views, and keeps Payment Reference and
-Receipt Anchor separate.
+Circle CLI, no Receipt Registry. This output is not submission proof. It records the same Intent
+identifier in the agent, backend, and dashboard-input views, and keeps Payment
+Reference and Receipt Anchor separate.
 """
 
 from __future__ import annotations
@@ -52,16 +52,16 @@ def _mcp_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str,
         inject_response_loss=True,
     )
     lines = [
-        "# Mandate Agno demo run (deterministic, scripted MCP)",
+        "# FIXTURE ONLY — Mandate Agno scripted MCP run",
         "",
         f"Timestamp: {now}",
         "Interface: MCP (Streamable HTTP adapter) with REST fallback.",
         "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
         "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
-        "Injected condition: response loss after the real economic action",
-        "Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).",
-        "Real testnet paid action and Receipt Anchor: evidence/ticket-11-real-gateway-payment.md.",
+        "Network: disabled. No value moved.",
+        "Injected condition: scripted response loss.",
+        "This file is not real testnet evidence and is not submission proof.",
         "",
         *render_demo_report(reports),
     ]
@@ -90,16 +90,16 @@ def _rest_run(now: str) -> tuple[list[str], list[tuple[str, str, str]], dict[str
         inject_response_loss=True,
     )
     lines = [
-        "# Mandate Agno demo run (deterministic, REST fallback)",
+        "# FIXTURE ONLY — Mandate Agno scripted REST run",
         "",
         f"Timestamp: {now}",
         "Interface: REST (scripted transport; no network).",
         "Agent model: DecisionModel (deterministic).",
         "Mandate created by the User before the agent starts.",
         "Agent invokes mandate.spend and mandate.status as real tools (no direct payment tool).",
-        "Injected condition: response loss after the real economic action",
-        "Backend control: INJECT_RESPONSE_LOSS_SERVICE_URL=service-a (exact, one-shot).",
-        "Real testnet paid action and Receipt Anchor: evidence/ticket-11-real-gateway-payment.md.",
+        "Network: disabled. No value moved.",
+        "Injected condition: scripted response loss.",
+        "This file is not real testnet evidence and is not submission proof.",
         "",
         *render_demo_report(reports),
     ]
@@ -112,7 +112,7 @@ def _write_evidence(
     spend_calls: list[tuple[str, str, str]],
     status: dict[str, object],
 ) -> None:
-    """Write one interface's evidence file with its own spend-call record."""
+    """Write one interface's fixture file with its own spend-call record."""
     text = "\n".join(lines) + "\n"
     print(text)
     with path.open("w", encoding="utf-8") as handle:
@@ -125,14 +125,14 @@ def _write_evidence(
 
 
 def main() -> None:
-    """Run the deterministic demo and write the evidence files."""
+    """Run the deterministic fixture and write clearly labeled fixture files."""
     now = datetime.now(UTC).isoformat()
 
     mcp_lines, mcp_calls, mcp_status = _mcp_run(now)
-    _write_evidence(EVIDENCE_DIR / "demo-run-mcp.txt", mcp_lines, mcp_calls, mcp_status)
+    _write_evidence(EVIDENCE_DIR / "fixture-run-mcp.txt", mcp_lines, mcp_calls, mcp_status)
 
     rest_lines, rest_calls, rest_status = _rest_run(now)
-    _write_evidence(EVIDENCE_DIR / "demo-run-rest.txt", rest_lines, rest_calls, rest_status)
+    _write_evidence(EVIDENCE_DIR / "fixture-run-rest.txt", rest_lines, rest_calls, rest_status)
 
     print("=== MCP SPEND CALLS ===")
     print(json.dumps(mcp_calls, indent=2))

@@ -26,6 +26,7 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
   const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  const receiptLoadRef = useRef(false);
   const mountedRef = useRef(true);
 
   const load = useCallback(async () => {
@@ -52,6 +53,8 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
   }, [client, mandateId]);
 
   const loadReceipts = useCallback(async () => {
+    if (receiptLoadRef.current) return;
+    receiptLoadRef.current = true;
     try {
       const nextReceipts = await client.listReceipts(mandateId);
       if (!mountedRef.current) return;
@@ -62,6 +65,8 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
       setReceiptError(
         err instanceof ApiError ? err.message : "Could not read on-Arc receipts.",
       );
+    } finally {
+      receiptLoadRef.current = false;
     }
   }, [client, mandateId]);
 

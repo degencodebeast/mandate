@@ -94,6 +94,8 @@ def test_spend_tool_calls_rest_and_returns_the_structured_result() -> None:
     assert document["action"] == "request_review"
     assert document["intent"]["id"] == "intent-a"
     assert document["intent"]["economic_safety_state"] == "UNKNOWN"
+    assert "receipt" in document
+    assert document["receipt"] is None
     assert transport.requests[0]["method"] == "POST"
     assert transport.requests[0]["url"].endswith("/spend")
 

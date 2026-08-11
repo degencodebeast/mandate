@@ -68,6 +68,14 @@ describe("EconomicSafetyCard", () => {
   });
 });
 
+describe("PaymentLog", () => {
+  it("labels the exact UNKNOWN Intent whose response loss was injected", () => {
+    render(<PaymentLog intents={[{ ...unknownIntent(), injected_response_loss: true }]} />);
+
+    expect(screen.getByText("UNKNOWN (INJECTED)")).toBeTruthy();
+  });
+});
+
 describe("BreakerList", () => {
   it("shows a readable service name, failure count, and state reason", () => {
     render(
@@ -103,6 +111,7 @@ describe("PaymentLog", () => {
             status: "settled",
             payment_reference: "gateway-reference-1",
             batch_tx_hash: "0xbatch-1",
+            receipt_anchor: "0xanchor-1",
           },
         ]}
       />,
@@ -110,7 +119,11 @@ describe("PaymentLog", () => {
 
     expect(screen.getByText("Payment Reference")).toBeTruthy();
     expect(screen.getByText("Batch Tx")).toBeTruthy();
+    expect(screen.getByText("Receipt Anchor")).toBeTruthy();
     expect(screen.getByText(/gateway-reference-1/)).toBeTruthy();
     expect(screen.getByText(/0xbatch-1/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /0xanchor-1/i }).getAttribute("href")).toBe(
+      "https://testnet.arcscan.app/tx/0xanchor-1",
+    );
   });
 });

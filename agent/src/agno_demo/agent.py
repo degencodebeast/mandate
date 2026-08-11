@@ -454,7 +454,23 @@ def _spend_response_document(response: SpendResponse) -> dict[str, object]:
         "action": response.action,
         "intent": _intent_document(response.intent),
         "spent_total": response.spent_total,
+        "receipt": _receipt_document(response.receipt),
         "injected_response_loss": response.injected_response_loss,
+    }
+
+
+def _receipt_document(receipt: Any) -> dict[str, object] | None:
+    if receipt is None:
+        return None
+    return {
+        "task_id": receipt.task_id,
+        "purpose_hash": receipt.purpose_hash,
+        "service_url": receipt.service_url,
+        "amount": receipt.amount,
+        "payment_reference": receipt.payment_reference,
+        "recorded_at": receipt.recorded_at,
+        "intent_state": receipt.intent_state,
+        "receipt_anchor": receipt.receipt_anchor,
     }
 
 
