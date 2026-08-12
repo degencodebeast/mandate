@@ -30,3 +30,16 @@ describe("REST command visibility", () => {
     expect(command).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });
+
+describe("public landing interaction contracts", () => {
+  it("keeps actions large, focus visible, proof values wrappable, and mobile content visible", () => {
+    expect(declarations(".landing-action")).toMatch(/min-height:\s*44px/);
+    expect(declarations(".landing-action:focus-visible")).toMatch(
+      /outline:\s*2px solid var\(--amber\)/,
+    );
+    expect(declarations(".proof-value")).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(css).toMatch(
+      /@media \(max-width:\s*720px\)[\s\S]*\.landing-proof-grid[\s\S]*grid-template-columns:\s*1fr/,
+    );
+  });
+});

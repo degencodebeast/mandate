@@ -13,16 +13,19 @@ const NAV = [
 export function Shell({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
   const pathname = usePathname();
+  const isLandingRoute = pathname === "/";
   const isAuthRoute = pathname === "/" || pathname === "/login";
   const showNav = !isAuthRoute && auth.status === "authenticated";
 
   return (
     <>
-      <AuthorityBanner
-        state={auth.status === "loading" ? "guest" : auth.status}
-        userId={auth.userId}
-        onSignOut={auth.signOut}
-      />
+      {isLandingRoute ? null : (
+        <AuthorityBanner
+          state={auth.status === "loading" ? "guest" : auth.status}
+          userId={auth.userId}
+          onSignOut={auth.signOut}
+        />
+      )}
       {showNav ? (
         <nav className="nav">
           <Link href="/mandates" className="nav-brand">
