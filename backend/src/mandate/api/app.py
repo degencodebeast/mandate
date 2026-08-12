@@ -27,6 +27,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -204,9 +205,27 @@ def create_app(
             credential_store=active_mcp_credentials,
         )
     )
+    dashboard_origins_raw = (
+        active_settings.dashboard_origins
+        or "http://localhost:3000,http://localhost:3010,http://localhost:3011,http://localhost:3012"
+    )
+    dashboard_origins = [
+        origin.strip() for origin in dashboard_origins_raw.split(",") if origin.strip()
+    ]
+    mcp_allowed_hosts = [
+        host.strip() for host in active_settings.mcp_allowed_hosts.split(",") if host.strip()
+    ]
     mcp_subapp = None
     if active_mcp_credentials is not None:
-        mcp_subapp = active_mcp.streamable_http_app(json_response=True, streamable_http_path="/")
+        mcp_subapp = active_mcp.streamable_http_app(
+            json_response=True,
+            streamable_http_path="/",
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=mcp_allowed_hosts,
+                allowed_origins=dashboard_origins,
+            ),
+        )
 
     @contextlib.asynccontextmanager
     async def app_lifespan(_app: FastAPI):  # noqa: ANN202 - async generator helper
@@ -230,13 +249,6 @@ def create_app(
 
     from fastapi.middleware.cors import CORSMiddleware
 
-    dashboard_origins_raw = (
-        active_settings.dashboard_origins
-        or "http://localhost:3000,http://localhost:3010,http://localhost:3011,http://localhost:3012"
-    )
-    dashboard_origins = [
-        origin.strip() for origin in dashboard_origins_raw.split(",") if origin.strip()
-    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=dashboard_origins,

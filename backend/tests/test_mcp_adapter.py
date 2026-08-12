@@ -45,6 +45,7 @@ _TEST_SIGNING_KEY = "test-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 _TEST_APP_ID = "test-app-id"
 _TEST_USER = "did:privy:mcp-user"
 _SERVICE_URL = "https://service-a.example.com"
+_PUBLIC_MCP_HOST = "api-mandate.169.58.46.139.sslip.io"
 
 
 class RecordingPaymentExecutor:
@@ -79,7 +80,10 @@ class Components:
         )
         verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
         app = create_app(
-            settings=ApiSettings(database_url=_DATABASE_URL),
+            settings=ApiSettings(
+                database_url=_DATABASE_URL,
+                mcp_allowed_hosts=(f"{_PUBLIC_MCP_HOST},127.0.0.1:*,localhost:*,[::1]:*"),
+            ),
             identity_verifier=verifier,
             mandate_store=self.store,
             spend_service=spend_service,
@@ -94,7 +98,14 @@ class Components:
         self.port = self._start_server(app)
 
     def _start_server(self, app: Any) -> int:
-        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+        config = uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=0,
+            log_level="error",
+            proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1",
+        )
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
@@ -193,6 +204,47 @@ def test_mcp_discovery_exposes_only_mandate_tools(components: Components) -> Non
     names = _run(check())
 
     assert names == ["mandate.spend", "mandate.status"]
+
+
+def test_mcp_discovery_accepts_the_configured_public_host(components: Components) -> None:
+    mandate = _create_mandate(components.store)
+    credential = _mint_credential(components, mandate.id)
+
+    async def check() -> list[str]:
+        import httpx2
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        http_client = httpx2.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "Host": _PUBLIC_MCP_HOST,
+            },
+            follow_redirects=True,
+        )
+        streams = streamable_http_client(f"{components.mcp_url}/", http_client=http_client)
+        async with http_client, streams as (read, write), ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            return sorted(tool.name for tool in tools.tools)
+
+    assert _run(check()) == ["mandate.spend", "mandate.status"]
+
+
+def test_mcp_redirect_keeps_https_behind_the_trusted_proxy(components: Components) -> None:
+    import httpx2
+
+    response = httpx2.get(
+        components.mcp_url,
+        headers={
+            "Host": _PUBLIC_MCP_HOST,
+            "X-Forwarded-Proto": "https",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"https://{_PUBLIC_MCP_HOST}/mcp/"
 
 
 def test_mcp_invocation_returns_rest_parity_for_spend_and_status(

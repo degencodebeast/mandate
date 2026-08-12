@@ -24,6 +24,8 @@ def start_server(settings: ApiSettings) -> None:
         factory=True,
         host="0.0.0.0",  # noqa: S104 - the container port must accept web traffic
         port=settings.port,
+        proxy_headers=True,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
     )
 
 

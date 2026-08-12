@@ -139,6 +139,18 @@ CONFIGURATION_OWNERSHIP: tuple[ConfigurationVariable, ...] = (
             "injected_response_loss marker (ticket 10c)."
         ),
     ),
+    ConfigurationVariable(
+        name="MCP_ALLOWED_HOSTS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Comma-separated Host allowlist for the public MCP endpoint.",
+    ),
+    ConfigurationVariable(
+        name="FORWARDED_ALLOW_IPS",
+        owners=frozenset({Service.API}),
+        secret=False,
+        description="Reverse-proxy addresses whose forwarded headers Uvicorn may trust.",
+    ),
 )
 
 
@@ -204,6 +216,8 @@ class ApiSettings(BaseSettings):
     receipt_reader_script: str | None = None
     dashboard_origins: str | None = None
     inject_response_loss_service_url: str | None = None
+    mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
+    forwarded_allow_ips: str = "127.0.0.1"
 
     @field_validator(
         "payment_timeout_seconds",
