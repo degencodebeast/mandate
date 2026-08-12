@@ -16,6 +16,7 @@ exposes spend and status only (ADR-0033, ticket 12a).
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol
 
 from agno_demo.models import SpendResponse, StatusDocument
@@ -31,7 +32,9 @@ class McpSession(Protocol):
 class SessionFactory(Protocol):
     """An async context manager factory yielding one MCP session."""
 
-    def __call__(self, endpoint: str, credential: str) -> AsyncIterator[McpSession]: ...
+    def __call__(
+        self, endpoint: str, credential: str
+    ) -> AbstractAsyncContextManager[McpSession]: ...
 
 
 class McpToolError(RuntimeError):
@@ -129,7 +132,7 @@ def _call_spend(
     import asyncio
 
     async def run() -> SpendResponse:
-        async for session in factory(endpoint, credential):
+        async with factory(endpoint, credential) as session:
             result = await session.call_tool(
                 "mandate.spend",
                 {
@@ -140,7 +143,6 @@ def _call_spend(
                 },
             )
             return SpendResponse.from_json(_tool_text(result))
-        raise ConnectionError("The MCP session ended before the spend call.")
 
     return asyncio.run(run())
 
@@ -153,10 +155,9 @@ def _call_status(
     import asyncio
 
     async def run() -> StatusDocument:
-        async for session in factory(endpoint, credential):
+        async with factory(endpoint, credential) as session:
             result = await session.call_tool("mandate.status", {})
             return StatusDocument.from_json(_tool_text(result))
-        raise ConnectionError("The MCP session ended before the status call.")
 
     return asyncio.run(run())
 
@@ -199,6 +200,7 @@ def _transport_errors() -> tuple[type[BaseException], ...]:
     return (httpx2.HTTPError, ConnectionError)
 
 
+@asynccontextmanager
 async def _real_session_factory(endpoint: str, credential: str) -> AsyncIterator[McpSession]:
     """Yield a real MCP client session over Streamable HTTP."""
     from mcp import ClientSession

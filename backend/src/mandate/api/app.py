@@ -542,10 +542,14 @@ def _spend_service_from_settings(
         timeout_seconds=settings.payment_timeout_seconds,
         inject_response_loss_service_url=settings.inject_response_loss_service_url,
     )
+    receipt_reader = _receipt_reader_from_settings(settings)
+    if receipt_reader is None:
+        return None
     receipt_recorder = ArcReceiptRecorder(
         registry_address=settings.receipt_registry_address,
         wallet_address=settings.service_wallet_address,
         chain=settings.circle_chain,
+        receipt_reader=receipt_reader,
     )
     breaker = (
         CircuitBreaker(
@@ -558,9 +562,6 @@ def _spend_service_from_settings(
         if breaker_store is not None
         else None
     )
-    receipt_reader = _receipt_reader_from_settings(settings)
-    if receipt_reader is None:
-        return None
     return MandateSpendService(
         mandate_store=store,
         intent_store=intent_store,

@@ -111,3 +111,26 @@ def test_run_demo_stops_with_setup_error_when_breaker_still_closed() -> None:
     message = str(raised.value)
     assert "Circuit Breaker" in message
     assert "CIRCUIT_BREAKER_FAILURE_THRESHOLD" in message
+
+
+def test_run_demo_freeze_only_never_starts_service_b() -> None:
+    backend = ScriptedMandateBackend(breaker_failure_threshold=3)
+    backend.inject_response_loss_service_url = backend.service_a
+    client = BreakerStatusRecorder(backend)
+
+    reports = run_demo(
+        client=client,
+        mandate_id=backend.mandate_id,
+        task_a="intent-a",
+        purpose_a="buy a research report",
+        task_b="intent-b",
+        purpose_b="buy market data",
+        service_a=backend.service_a,
+        service_b=backend.service_b,
+        amount="1.00",
+        inject_response_loss=True,
+        freeze_only=True,
+    )
+
+    assert [report["scene"] for report in reports] == ["freeze"]
+    assert "intent-b" not in backend.intents

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -357,6 +358,7 @@ class ScriptedMcpSessionFactory:
     def __init__(self, backend: ScriptedMandateBackend) -> None:
         self._backend = backend
 
+    @asynccontextmanager
     async def __call__(self, endpoint: str, credential: str) -> AsyncIterator[ScriptedMcpSession]:
         yield ScriptedMcpSession(self._backend)
 

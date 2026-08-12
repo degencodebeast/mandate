@@ -10,6 +10,7 @@ required (ADR-0024).
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -22,6 +23,7 @@ from mandate.receipt_reader import (
     ScriptedReceiptReader,
     ViemReceiptReader,
     _parse_receipts,
+    _safe_script_error,
 )
 
 
@@ -175,6 +177,51 @@ def test_viem_reader_uses_scripted_runner() -> None:
     assert "--mandate-id" in command
     assert "mandate-1" in command
     assert receipts[0].tx_hash == "0xsettled"
+
+
+def test_viem_reader_logs_the_script_rpc_error(caplog: pytest.LogCaptureFixture) -> None:
+    def fail(_command: Sequence[str]) -> str:
+        raise subprocess.CalledProcessError(
+            1,
+            [
+                "node",
+                "read-receipts.mjs",
+                "--rpc-url",
+                "https://arc-mainnet.g.alchemy.com/v2/path-secret",
+            ],
+            stderr="Arc RPC timed out while reading logs",
+        )
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://secret.example.com/v2/private",
+        script="read-receipts.mjs",
+        runner=fail,
+    )
+
+    with caplog.at_level("ERROR"), pytest.raises(ReceiptReadError):
+        reader.list_receipts(user_id="did:erc8004:agent", mandate_id="mandate-1")
+
+    assert "Arc RPC timed out while reading logs" in caplog.text
+    assert "path-secret" not in caplog.text
+    assert "/v2/private" not in caplog.text
+
+
+def test_script_error_redacts_an_rpc_secret_from_the_failed_command() -> None:
+    error = subprocess.CalledProcessError(
+        1,
+        [
+            "node",
+            "read-receipts.mjs",
+            "--rpc-url",
+            "https://arc-mainnet.g.alchemy.com/v2/path-secret",
+        ],
+    )
+
+    detail = _safe_script_error(error)
+
+    assert "path-secret" not in detail
+    assert "[REDACTED RPC URL]" in detail
 
 
 def test_viem_reader_passes_the_known_registry_deployment_block() -> None:

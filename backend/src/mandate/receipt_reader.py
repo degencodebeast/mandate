@@ -16,6 +16,8 @@ Adapters:
 from __future__ import annotations
 
 import json
+import logging
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ from typing import Any, Protocol
 from mandate.cli import run_cli
 
 ReceiptReaderRunner = Callable[[Sequence[str]], str]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class ReceiptExpectation:
     amount: str
     payment_reference: str
     receipt_anchor: str
+    task_id: str | None = None
 
 
 class ReceiptReader(Protocol):
@@ -147,6 +151,7 @@ class ViemReceiptReader:
                     command.extend(["--from-block", str(self._deployment_block)])
             output = run_cli(command, self._runner)
         except subprocess.CalledProcessError as error:
+            logger.error("Receipt reader script failed: %s", _safe_script_error(error))
             raise ReceiptReadError("The receipt reader script failed.") from error
         receipts = _parse_receipts(output)
         if expected_receipts is None:
@@ -196,6 +201,15 @@ class ReceiptReadError(RuntimeError):
     """The on-chain receipt read did not return a usable list."""
 
 
+def _safe_script_error(error: subprocess.CalledProcessError) -> str:
+    """Return useful script stderr without URL query credentials."""
+    detail = error.stderr or error.stdout or str(error)
+    if isinstance(detail, bytes):
+        detail = detail.decode(errors="replace")
+    redacted = re.sub(r"https?://[^\s]+", "[REDACTED RPC URL]", str(detail))
+    return redacted.strip()[:4000] or "no script error text"
+
+
 def _verify_stored_receipts(
     receipts: Sequence[ArcReceipt],
     expected_receipts: Sequence[ReceiptExpectation],
@@ -218,6 +232,7 @@ def _verify_stored_receipts(
         actual_fields = (
             receipt.user_id,
             receipt.mandate_id,
+            receipt.task_id if expected.task_id is not None else None,
             receipt.purpose_hash,
             receipt.service_url,
             receipt.amount,
@@ -226,6 +241,7 @@ def _verify_stored_receipts(
         expected_fields = (
             expected.user_id,
             expected.mandate_id,
+            expected.task_id,
             expected.purpose_hash,
             expected.service_url,
             expected.amount,

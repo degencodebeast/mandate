@@ -8,7 +8,9 @@ MCP session so the client logic is deterministic (ADR-0024).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -68,9 +70,27 @@ class ScriptedSessionFactory:
         self._session = session
         self.sessions: list[ScriptedMcpSession] = []
 
+    @asynccontextmanager
     async def __call__(self, endpoint: str, credential: str) -> AsyncIterator[ScriptedMcpSession]:
         self.sessions.append(self._session)
         yield self._session
+
+
+class TaskBoundSessionFactory:
+    """Require entry, use, and exit in one asyncio task."""
+
+    def __init__(self, session: ScriptedMcpSession) -> None:
+        self._session = session
+        self.enter_task: asyncio.Task[object] | None = None
+        self.exit_task: asyncio.Task[object] | None = None
+
+    @asynccontextmanager
+    async def __call__(self, endpoint: str, credential: str) -> AsyncIterator[ScriptedMcpSession]:
+        self.enter_task = asyncio.current_task()
+        try:
+            yield self._session
+        finally:
+            self.exit_task = asyncio.current_task()
 
 
 def _spend_document() -> dict[str, Any]:
@@ -152,6 +172,27 @@ def test_mcp_spend_calls_the_mandate_spend_tool() -> None:
     assert response.outcome == "accepted"
     assert response.intent.id == "intent-b"
     assert response.intent.payment_reference == "gateway-ref-b"
+
+
+def test_mcp_session_enters_and_exits_in_the_same_asyncio_task() -> None:
+    session = ScriptedMcpSession(_spend_document(), _status_document())
+    factory = TaskBoundSessionFactory(session)
+    client = McpMandateClient(
+        endpoint=_MCP_URL,
+        credential=_CREDENTIAL,
+        session_factory=factory,
+    )
+
+    response = client.spend(
+        mandate_id="mandate-1",
+        task_id="intent-b",
+        purpose="buy market data",
+        service_url="https://service-b.example.com",
+        amount="1.00",
+    )
+
+    assert response.outcome == "accepted"
+    assert factory.enter_task is factory.exit_task
 
 
 def test_mcp_status_calls_the_mandate_status_tool() -> None:

@@ -53,7 +53,7 @@ async function main() {
     process.exit(1);
   }
 
-  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 5000 }) });
+  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 30000 }) });
 
   if (transactionHashes) {
     const hashes = transactionHashes.split(",").filter(Boolean);
@@ -65,7 +65,7 @@ async function main() {
     }
 
     async function readExactReceipt(hash) {
-      const transactionReceipt = await client.getTransactionReceipt({ hash });
+      const transactionReceipt = await client.waitForTransactionReceipt({ hash });
       if (transactionReceipt.status !== "success") {
         throw new Error(`Receipt Anchor ${hash} is not a successful transaction`);
       }
@@ -140,7 +140,7 @@ async function main() {
 
   const deploymentBlock = fromBlock === undefined ? await findDeploymentBlock() : BigInt(fromBlock);
 
-  const step = 10000n;
+  const step = 1000n;
   const logs = [];
   for (let from = deploymentBlock; from <= latest; from += step) {
     const to = from + step - 1n < latest ? from + step - 1n : latest;

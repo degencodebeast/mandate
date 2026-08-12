@@ -774,20 +774,13 @@ class MandateSpendService:
         task_id: str,
         purpose_hash: str,
     ) -> str:
-        """Return the Receipt Anchor without a second write when possible.
+        """Write a Receipt, or recover its Anchor after a rejected duplicate.
 
-        Recovery (ticket 10e) may find a Receipt that a crashed finalizer
-        already wrote to Arc but whose anchor was never stored locally. In that
-        case the anchor is read back from Arc and no second Receipt is
-        written. Only when no Receipt exists is ``record_receipt`` called.
+        The normal path writes first. This keeps a historical Arc scan out of
+        every new finalization. If a previous write reached Arc but its result
+        was lost before local storage, the duplicate write fails. Only that
+        failure starts recovery through the Receipt Reader.
         """
-        existing = self._existing_receipt_anchor(
-            mandate=mandate,
-            purpose_hash=purpose_hash,
-            payment_reference=current.payment_reference,
-        )
-        if existing is not None:
-            return existing
         try:
             return self._receipt_recorder.record_receipt(
                 user_id=mandate.agent_identity,

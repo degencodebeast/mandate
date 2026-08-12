@@ -24,6 +24,7 @@ from mandate.payments import (
     ScriptedPaymentExecutor,
     _extract_payment_result,
 )
+from mandate.receipt_reader import ReceiptReadError, ViemReceiptReader
 from mandate.receipts import ArcReceiptRecorder, ReceiptWriteError, ScriptedReceiptRecorder
 
 
@@ -310,6 +311,101 @@ def test_arc_receipt_recorder_builds_record_command() -> None:
     assert "0xfeepaid" in command
     assert "--contract" in command and "0xregistry" in command
     assert "--chain" in command and "ARC-TESTNET" in command
+
+
+def test_arc_receipt_recorder_verifies_the_exact_anchor_transaction() -> None:
+    anchor = "0x" + "ab" * 32
+    verification_commands: list[list[str]] = []
+
+    def read_anchor(command: Sequence[str]) -> str:
+        verification_commands.append(list(command))
+        return json.dumps(
+            [
+                {
+                    "authorityId": "did:erc8004:agent",
+                    "mandateId": "mandate-1",
+                    "taskId": "task-1",
+                    "purposeHash": "hash-1",
+                    "serviceUrl": "https://service-a.example.com",
+                    "amount": "0.50",
+                    "paymentReference": "gateway-reference-1",
+                    "timestamp": 1783600000,
+                    "transactionHash": anchor,
+                }
+            ]
+        )
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=read_anchor,
+    )
+    recorder = ArcReceiptRecorder(
+        registry_address="0xregistry",
+        wallet_address="0xwallet",
+        chain="ARC-TESTNET",
+        runner=lambda _command: json.dumps({"txHash": anchor}),
+        receipt_reader=reader,
+    )
+
+    result = recorder.record_receipt(
+        user_id="did:erc8004:agent",
+        mandate_id="mandate-1",
+        task_id="task-1",
+        purpose_hash="hash-1",
+        service_url="https://service-a.example.com",
+        amount="0.50",
+        tx_hash="gateway-reference-1",
+        fee_tx_hash="",
+    )
+
+    assert result == anchor
+    command = verification_commands[0]
+    assert command[command.index("--transaction-hashes") + 1] == anchor
+
+
+def test_arc_receipt_recorder_rejects_an_anchor_with_a_different_task() -> None:
+    anchor = "0x" + "ab" * 32
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: json.dumps(
+            [
+                {
+                    "authorityId": "did:erc8004:agent",
+                    "mandateId": "mandate-1",
+                    "taskId": "different-task",
+                    "purposeHash": "hash-1",
+                    "serviceUrl": "https://service-a.example.com",
+                    "amount": "0.50",
+                    "paymentReference": "gateway-reference-1",
+                    "timestamp": 1783600000,
+                    "transactionHash": anchor,
+                }
+            ]
+        ),
+    )
+    recorder = ArcReceiptRecorder(
+        registry_address="0xregistry",
+        wallet_address="0xwallet",
+        runner=lambda _command: json.dumps({"txHash": anchor}),
+        receipt_reader=reader,
+    )
+
+    with pytest.raises(ReceiptReadError, match="does not match its stored Intent"):
+        recorder.record_receipt(
+            user_id="did:erc8004:agent",
+            mandate_id="mandate-1",
+            task_id="task-1",
+            purpose_hash="hash-1",
+            service_url="https://service-a.example.com",
+            amount="0.50",
+            tx_hash="gateway-reference-1",
+            fee_tx_hash="",
+        )
 
 
 def test_scripted_receipt_recorder_remembers_records() -> None:

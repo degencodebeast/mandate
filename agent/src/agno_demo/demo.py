@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -90,6 +91,8 @@ def run_demo(
     model: Model | None = None,
     resolve_attempts: int = 120,
     resolve_interval_seconds: float = 5.0,
+    freeze_only: bool = False,
+    on_scene_complete: Callable[[dict[str, object]], None] | None = None,
 ) -> list[dict[str, object]]:
     """Run both scenes and return the report documents.
 
@@ -111,6 +114,11 @@ def run_demo(
         inject_response_loss=inject_response_loss,
     )
     freeze_result = freeze.run()
+    freeze_report = _report_from_result(freeze_result)
+    if on_scene_complete is not None:
+        on_scene_complete(freeze_report)
+    if freeze_only:
+        return [freeze_report]
     _validate_breaker_open_after_freeze(
         client=client, mandate_id=mandate_id, service_a_url=service_a
     )
@@ -127,10 +135,10 @@ def run_demo(
         resolve_attempts=resolve_attempts,
         resolve_interval_seconds=resolve_interval_seconds,
     )
-    return [
-        _report_from_result(freeze_result),
-        _report_from_result(switch.run()),
-    ]
+    switch_report = _report_from_result(switch.run())
+    if on_scene_complete is not None:
+        on_scene_complete(switch_report)
+    return [freeze_report, switch_report]
 
 
 def _validate_breaker_open_after_freeze(
@@ -198,7 +206,7 @@ def _build_client(args: argparse.Namespace) -> DemoClient:
     )
 
 
-def main() -> None:
+def main() -> int:
     """Entry point for the demo CLI."""
     parser = argparse.ArgumentParser(description="Run the Mandate Agno demo.")
     parser.add_argument(
@@ -221,6 +229,11 @@ def main() -> None:
             "backend with INJECT_RESPONSE_LOSS_SERVICE_URL=<service-a> so the Spend Result carries "
             "the injected_response_loss marker; the scene verifies that marker."
         ),
+    )
+    parser.add_argument(
+        "--freeze-only",
+        action="store_true",
+        help="Run only the same-Intent UNKNOWN proof. Never start Service B.",
     )
     parser.add_argument("--task-a", default="intent-a")
     parser.add_argument("--purpose-a", default="buy a research report")
@@ -251,32 +264,52 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    client = _build_client(args)
-    model = build_model(provider="decision")
-    reports = run_demo(
-        client=client,
-        mandate_id=args.mandate_id,
-        task_a=args.task_a,
-        purpose_a=args.purpose_a,
-        task_b=args.task_b,
-        purpose_b=args.purpose_b,
-        service_a=args.service_a,
-        service_b=args.service_b,
-        amount=args.amount,
-        inject_response_loss=args.inject_response_loss,
-        model=model,
-        resolve_attempts=args.resolve_attempts,
-        resolve_interval_seconds=args.resolve_interval_seconds,
-    )
-    if args.evidence_file:
-        write_submission_evidence(
-            Path(args.evidence_file),
-            reports=reports,
-            interface="MCP with REST fallback" if args.mcp_endpoint else "REST",
-            timestamp=datetime.now(UTC).isoformat(),
+    import sys
+
+    def report_scene(report: dict[str, object]) -> None:
+        scene_lines = render_demo_report([report])
+        if scene_lines and scene_lines[-1] == "One Intent. No blind retries.":
+            scene_lines.pop()
+        print("\n".join(scene_lines), flush=True)
+
+    try:
+        client = _build_client(args)
+        model = build_model(provider="decision")
+        print("STEP: Run the same-Intent UNKNOWN proof.", flush=True)
+        reports = run_demo(
+            client=client,
+            mandate_id=args.mandate_id,
+            task_a=args.task_a,
+            purpose_a=args.purpose_a,
+            task_b=args.task_b,
+            purpose_b=args.purpose_b,
+            service_a=args.service_a,
+            service_b=args.service_b,
+            amount=args.amount,
+            inject_response_loss=args.inject_response_loss,
+            model=model,
+            resolve_attempts=args.resolve_attempts,
+            resolve_interval_seconds=args.resolve_interval_seconds,
+            freeze_only=args.freeze_only,
+            on_scene_complete=report_scene,
         )
-    print("\n".join(render_demo_report(reports)))
+        if args.evidence_file:
+            write_submission_evidence(
+                Path(args.evidence_file),
+                reports=reports,
+                interface="MCP with REST fallback" if args.mcp_endpoint else "REST",
+                timestamp=datetime.now(UTC).isoformat(),
+            )
+        print("One Intent. No blind retries.")
+        if args.freeze_only:
+            print("SUCCESS: The same-Intent UNKNOWN proof passed.")
+        else:
+            print("SUCCESS: The complete Mandate demo passed.")
+        return 0
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr, flush=True)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

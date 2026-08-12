@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 from mandate.cli import run_cli
+from mandate.receipt_reader import ReceiptExpectation, ReceiptReader
 
 
 class ReceiptRecorder(Protocol):
@@ -61,11 +62,13 @@ class ArcReceiptRecorder:
         wallet_address: str,
         chain: str = "ARC-TESTNET",
         runner: Callable[[Sequence[str]], str] | None = None,
+        receipt_reader: ReceiptReader | None = None,
     ) -> None:
         self._registry_address = registry_address
         self._wallet_address = wallet_address
         self._chain = chain
         self._runner = runner
+        self._receipt_reader = receipt_reader
 
     def record_receipt(
         self,
@@ -116,7 +119,25 @@ class ArcReceiptRecorder:
             )
         except subprocess.CalledProcessError as error:
             raise ReceiptWriteError("The receipt write failed.") from error
-        return _extract_receipt_anchor(output)
+        anchor = _extract_receipt_anchor(output)
+        if self._receipt_reader is not None:
+            self._receipt_reader.list_receipts(
+                user_id=user_id,
+                mandate_id=mandate_id,
+                expected_receipts=[
+                    ReceiptExpectation(
+                        user_id=user_id,
+                        mandate_id=mandate_id,
+                        purpose_hash=purpose_hash,
+                        service_url=service_url,
+                        amount=amount,
+                        payment_reference=tx_hash,
+                        receipt_anchor=anchor,
+                        task_id=task_id,
+                    )
+                ],
+            )
+        return anchor
 
 
 class ScriptedReceiptRecorder:

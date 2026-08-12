@@ -280,6 +280,27 @@ def test_interruption_after_value_acceptance_recovers_exactly_once(
     assert status["mandate"]["reserved_total"] == "0.00"
 
 
+def test_new_receipt_write_does_not_scan_arc(client: TestClient) -> None:
+    """A healthy Receipt write must not depend on the historical reader."""
+    store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(store)
+    receipts = ScriptedReceiptRecorder()
+    active_client = _build_client(
+        payments=RecordingPaymentExecutor(),
+        receipts=receipts,
+        store=store,
+        reader=FailingReceiptReader(),
+        inspector=ScriptedTransferStatusInspector("completed"),
+    )
+    _spend(active_client, mandate.id)
+
+    response = _finalize(active_client, mandate.id)
+
+    assert response.status_code == 200
+    assert response.json()["receipt"]["receipt_anchor"] == "0xreceipt-anchor"
+    assert len(receipts.recorded) == 1
+
+
 def test_interruption_after_proof_recovers_without_second_receipt(client: TestClient) -> None:
     store = PostgresMandateStore(_DATABASE_URL)
     mandate = _create_mandate(store)
@@ -716,9 +737,20 @@ def test_finalize_receipt_read_failure_is_explicit_502(client: TestClient) -> No
     )
     store.reserve(mandate_id=mandate.id, amount="1.00")
 
+    receipts = ScriptedReceiptRecorder()
+    receipts.record_receipt(
+        user_id="did:erc8004:finalize-agent",
+        mandate_id=str(mandate.id),
+        task_id="task-1",
+        purpose_hash=intent_hash,
+        service_url=_SERVICE_URL,
+        amount="1.00",
+        tx_hash="0xsettled",
+        fee_tx_hash="",
+    )
     client = _build_client(
         payments=ForbiddenPaymentExecutor(),
-        receipts=ScriptedReceiptRecorder(),
+        receipts=receipts,
         store=store,
         reader=FailingReceiptReader(),
         inspector=ScriptedTransferStatusInspector("completed"),
