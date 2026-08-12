@@ -11,6 +11,13 @@ function declarations(selector: string): string {
 }
 
 describe("payment proof visibility", () => {
+  it("stacks Intent history above Circuit Breakers at every viewport width", () => {
+    const proofGrid = declarations(".live-proof-grid");
+
+    expect(proofGrid).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    expect(proofGrid).not.toMatch(/1\.4fr/);
+  });
+
   it("lets the complete Intent ID wrap without a clipping ancestor", () => {
     const serviceCell = declarations(".log-row .svc");
     const intentId = declarations(".log-row .intent-id");
