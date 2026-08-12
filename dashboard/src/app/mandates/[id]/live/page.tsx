@@ -152,6 +152,7 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
       <div className="grid-3" style={{ marginBottom: "var(--space-6)" }}>
         <BudgetMeter
           spent={status.spent_total}
+          reserved={status.mandate.reserved_total}
           budget={status.mandate.budget}
           remaining={status.remaining_budget}
         />
@@ -217,7 +218,7 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
         </div>
       </section>
 
-      <div className="grid-2">
+      <div className="live-proof-grid">
         <div className="stack-4">
           <h3>Intent history</h3>
           <PaymentLog intents={status.recent_intents} />

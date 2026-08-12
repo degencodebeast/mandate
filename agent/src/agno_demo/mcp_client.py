@@ -201,15 +201,22 @@ def _transport_errors() -> tuple[type[BaseException], ...]:
 
 async def _real_session_factory(endpoint: str, credential: str) -> AsyncIterator[McpSession]:
     """Yield a real MCP client session over Streamable HTTP."""
-    import httpx2
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
-    http_client = httpx2.AsyncClient(
-        headers={"Authorization": f"Bearer {credential}"},
-        follow_redirects=True,
-    )
+    http_client = _mcp_http_client(credential)
     streams = streamable_http_client(endpoint, http_client=http_client)
     async with http_client, streams as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         yield session
+
+
+def _mcp_http_client(credential: str) -> Any:
+    """Create the HTTP client with the MCP transport timeout profile."""
+    import httpx2
+
+    return httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {credential}"},
+        timeout=httpx2.Timeout(30.0, read=300.0),
+        follow_redirects=True,
+    )

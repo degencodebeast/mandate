@@ -1,6 +1,6 @@
 "use client";
 
-import { formatDateTime, formatMoney, formatPercent, formatTimestamp, formatTxHash, meterState } from "@/lib/format";
+import { formatDateTime, formatMoney, formatMoneyShort, formatPercent, formatTimestamp, formatTxHash, meterState } from "@/lib/format";
 import type { BreakerStateRecord, IntentRecord, ReceiptRecord } from "@/lib/api";
 
 interface EconomicSafetyCopy {
@@ -111,32 +111,49 @@ export function EconomicSafetyCard({ intent }: { intent: IntentRecord | undefine
 
 export function BudgetMeter({
   spent,
+  reserved,
   budget,
   remaining,
 }: {
   spent: string;
+  reserved: string;
   budget: string;
   remaining: string;
 }) {
-  const state = meterState(spent, budget);
-  const percent = formatPercent(spent, budget);
+  const precision = Math.min(
+    6,
+    Math.max(spent.split(".")[1]?.length ?? 0, reserved.split(".")[1]?.length ?? 0),
+  );
+  const committed = (Number(spent) + Number(reserved)).toFixed(precision);
+  const state = meterState(committed, budget);
+  const percent = formatPercent(committed, budget);
   return (
     <div className="meter" data-state={state}>
       <div className="meter-label">Budget authority</div>
       <div className="meter-readout">
-        <span className="meter-spent">{formatMoney(spent)}</span>
+        <span className="meter-spent">{formatMoney(committed)}</span>
         <span className="meter-of">of</span>
         <span className="meter-total">{formatMoney(budget)}</span>
+      </div>
+      <div className="meter-breakdown">
+        <span>
+          <strong>{formatMoneyShort(spent)}</strong>
+          <span>Finalized spend</span>
+        </span>
+        <span>
+          <strong>{formatMoneyShort(reserved)}</strong>
+          <span>Budget Reservation</span>
+        </span>
       </div>
       <div className="meter-bar">
         <div className="meter-fill" style={{ width: `${percent}%` }} />
       </div>
       <div className="meter-foot">
         <span>
-          <strong>{formatMoney(remaining)}</strong> remaining
+          <strong>{formatMoneyShort(remaining)}</strong> remaining
         </span>
         <span>
-          <strong>{percent.toFixed(0)}%</strong> used
+          <strong>{percent.toFixed(0)}%</strong> reserved or spent
         </span>
       </div>
     </div>

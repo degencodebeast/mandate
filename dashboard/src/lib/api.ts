@@ -24,6 +24,7 @@ export interface MandateSummary {
   expiry: string | null;
   status: string;
   spent_total: string;
+  reserved_total: string;
   operator_wallet: string | null;
   created_at: string;
 }

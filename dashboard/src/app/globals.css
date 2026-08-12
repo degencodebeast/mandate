@@ -138,6 +138,14 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
+.live-proof-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.6fr);
+  gap: var(--space-4);
+}
+@media (max-width: 1180px) {
+  .live-proof-grid { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 720px) {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
 }
@@ -384,9 +392,27 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
 }
-.meter .meter-spent { font-size: 72px; color: var(--ink); line-height: 1; }
+.meter .meter-spent { font-size: clamp(48px, 5vw, 72px); color: var(--ink); line-height: 1; }
 .meter .meter-of { font-size: 18px; color: var(--ink-3); }
 .meter .meter-total { font-size: 36px; color: var(--ink-2); }
+.meter .meter-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.meter .meter-breakdown > span {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.meter .meter-breakdown strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
 .meter .meter-bar {
   position: relative;
   height: 4px;
@@ -403,12 +429,13 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 .meter[data-state="critical"] .meter-fill { background: var(--red); }
 .meter[data-state="exceeded"] .meter-fill { background: var(--red); animation: pulse 1.2s var(--ease-in-out) infinite; }
 .meter .meter-foot {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3);
   font-size: 12px;
   color: var(--ink-3);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+.meter .meter-foot span:last-child { text-align: right; }
 .meter .meter-foot strong { color: var(--ink); font-weight: 600; }
 
 /* Divider */

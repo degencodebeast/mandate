@@ -23,6 +23,23 @@ _BASE = "http://localhost:8000"
 _TOKEN = "demo-bearer-token"
 
 
+def test_real_mcp_http_client_allows_a_long_payment_response() -> None:
+    import asyncio
+
+    from agno_demo import mcp_client
+
+    make_client = getattr(mcp_client, "_mcp_http_client", None)
+    assert make_client is not None, "The real MCP transport must define its timeout."
+
+    client = make_client(_CREDENTIAL)
+    try:
+        assert client.timeout.connect == 30.0
+        assert client.timeout.read == 300.0
+        assert client.headers["Authorization"] == f"Bearer {_CREDENTIAL}"
+    finally:
+        asyncio.run(client.aclose())
+
+
 class ScriptedMcpSession:
     """A scripted MCP session that records calls and returns scripted results."""
 

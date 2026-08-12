@@ -42,6 +42,7 @@ describe("MandatesPage submission surface", () => {
         expiry: null,
         status: "active",
         spent_total: "0",
+        reserved_total: "0",
         operator_wallet: "0xoperator",
         created_at: "2026-08-10T09:00:00Z",
         spend_endpoint: "/api/v1/mandates/m-1/spend",

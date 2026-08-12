@@ -22,6 +22,7 @@ function status(): MandateStatus {
       expiry: null,
       status: "active",
       spent_total: "0.05",
+      reserved_total: "0",
       operator_wallet: "0xoperator",
       created_at: "2026-08-10T09:00:00Z",
     },

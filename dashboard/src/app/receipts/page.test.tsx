@@ -21,6 +21,7 @@ function mandate(id: string): MandateSummary {
     expiry: null,
     status: "active",
     spent_total: "0",
+    reserved_total: "0",
     operator_wallet: "0xwallet",
     created_at: "2026-08-08T12:00:00Z",
   };

@@ -1,7 +1,7 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { BreakerList, EconomicSafetyCard, PaymentLog } from "@/components/MandateUI";
+import { BreakerList, BudgetMeter, EconomicSafetyCard, PaymentLog } from "@/components/MandateUI";
 import type { IntentRecord } from "@/lib/api";
 
 function unknownIntent(): IntentRecord {
@@ -27,6 +27,21 @@ function unknownIntent(): IntentRecord {
     injected_response_loss: false,
   };
 }
+
+describe("BudgetMeter", () => {
+  it("shows finalized spend and the Budget Reservation as separate values", () => {
+    render(
+      <BudgetMeter spent="0" reserved="0.01" budget="0.02" remaining="0.01" />,
+    );
+
+    expect(screen.getByText("Finalized spend")).toBeTruthy();
+    expect(screen.getByText("Budget Reservation")).toBeTruthy();
+    expect(screen.getByText("$0.00")).toBeTruthy();
+    const meterText = screen.getByText("Budget authority").parentElement?.textContent;
+    expect(meterText).toContain("50% reserved or spent");
+    expect(meterText).not.toContain("0% used");
+  });
+});
 
 describe("EconomicSafetyCard", () => {
   it("explains UNKNOWN and permits only WAIT or REQUEST_REVIEW", () => {
