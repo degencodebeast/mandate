@@ -308,6 +308,9 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 .endpoint-copy:active { transform: scale(0.96); }
 .endpoint-copy code { min-width: 0; overflow-wrap: anywhere; }
 .endpoint-copy > span { flex: none; color: var(--amber); font-size: 12px; font-weight: 600; }
+.rest-command-copy { align-items: flex-start; }
+.rest-command-copy code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rest-command-copy > span { padding-top: 2px; }
 
 /* State badges — always carry a text label, never color alone (CONTEXT.md) */
 .badge {

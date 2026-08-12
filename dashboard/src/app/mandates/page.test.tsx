@@ -55,16 +55,15 @@ describe("MandatesPage submission surface", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Issue mandate" }).closest("form")!);
 
     await waitFor(() => expect(screen.getByText("Mandate issued.")).toBeTruthy());
-    expect(screen.getByLabelText("REST spend endpoint")).toHaveProperty(
-      "value",
+    expect(screen.queryByLabelText("REST spend endpoint")).toBeNull();
+    expect(screen.queryByLabelText("REST status endpoint")).toBeNull();
+    expect(screen.getByText("POST · Spend · Bearer token required")).toBeTruthy();
+    expect(screen.getByText("GET · Status · Bearer token required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Spend command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Status command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Spend command" }).textContent).toContain(
       "http://localhost:8000/api/v1/mandates/m-1/spend",
     );
-    expect(screen.getByLabelText("REST status endpoint")).toHaveProperty(
-      "value",
-      "http://localhost:8000/api/v1/mandates/m-1/status",
-    );
-    expect(screen.getByRole("button", { name: "Copy Spend endpoint" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy Status endpoint" })).toBeTruthy();
     expect(screen.queryByText(/MCP/i)).toBeNull();
     expect(screen.queryByText(/ERC-8004/i)).toBeNull();
   });

@@ -6,7 +6,7 @@ import { ApiError, type CreateMandateInput, type MandateSummary } from "@/lib/ap
 import { useMandateClient } from "@/lib/useMandateClient";
 import { formatMoney, formatDate, formatAddress, formatPercent } from "@/lib/format";
 import { resolveMandateApiUrl } from "@/lib/api-url";
-import { EndpointCopy } from "@/components/EndpointCopy";
+import { RestCommandCopy } from "@/components/RestCommandCopy";
 
 export default function MandatesPage() {
   const client = useMandateClient();
@@ -175,7 +175,12 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
   const [expiry, setExpiry] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ spendEndpoint: string; statusEndpoint: string } | null>(null);
+  const [created, setCreated] = useState<{
+    spendEndpoint: string;
+    statusEndpoint: string;
+    serviceUrl: string;
+    amount: string;
+  } | null>(null);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -196,6 +201,8 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
       setCreated({
         spendEndpoint: resolveMandateApiUrl(result.spend_endpoint),
         statusEndpoint: resolveMandateApiUrl(result.status_endpoint),
+        serviceUrl: result.allowed_services[0] ?? "",
+        amount: result.per_call_cap,
       });
       await onCreated(result);
     } catch (err) {
@@ -212,17 +219,14 @@ function CreateForm({ onCreated }: { onCreated: (mandate: MandateSummary) => voi
           <strong>Mandate issued.</strong> Use these stable REST paths from an
           authorized agent session.
         </div>
-        <div className="field">
-          <label htmlFor="spend-endpoint">REST spend endpoint</label>
-          <input id="spend-endpoint" className="input mono" readOnly value={created.spendEndpoint} />
-        </div>
-        <div className="field">
-          <label htmlFor="status-endpoint">REST status endpoint</label>
-          <input id="status-endpoint" className="input mono" readOnly value={created.statusEndpoint} />
-        </div>
-        <div className="stack-2">
-          <EndpointCopy label="Spend" url={created.spendEndpoint} />
-          <EndpointCopy label="Status" url={created.statusEndpoint} />
+        <div className="stack-4">
+          <RestCommandCopy
+            kind="spend"
+            url={created.spendEndpoint}
+            serviceUrl={created.serviceUrl}
+            amount={created.amount}
+          />
+          <RestCommandCopy kind="status" url={created.statusEndpoint} />
         </div>
       </div>
     );

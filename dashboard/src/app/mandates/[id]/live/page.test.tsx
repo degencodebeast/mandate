@@ -72,13 +72,17 @@ describe("LivePage submission surface", () => {
     });
 
     await waitFor(() => expect(screen.getByText("Agent REST access")).toBeTruthy());
-    expect(screen.getByText("http://localhost:8000/api/v1/mandates/mandate-1/spend")).toBeTruthy();
-    expect(screen.getByText("http://localhost:8000/api/v1/mandates/mandate-1/status")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Spend command" }).textContent).toContain(
+      "http://localhost:8000/api/v1/mandates/mandate-1/spend",
+    );
+    expect(screen.getByRole("button", { name: "Copy Status command" }).textContent).toContain(
+      "http://localhost:8000/api/v1/mandates/mandate-1/status",
+    );
     view.unmount();
   });
 
-  it("shows full clickable copy controls without calling the Spend endpoint", async () => {
-    const writeText = vi.fn(async () => undefined);
+  it("copies authenticated REST commands without calling the Spend endpoint", async () => {
+    const writeText = vi.fn(async (_value: string) => undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
@@ -94,17 +98,19 @@ describe("LivePage submission surface", () => {
       view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
     });
 
-    const spendControl = await screen.findByRole("button", { name: "Copy Spend endpoint" });
-    const statusControl = screen.getByRole("button", { name: "Copy Status endpoint" });
+    const spendControl = await screen.findByRole("button", { name: "Copy Spend command" });
+    const statusControl = screen.getByRole("button", { name: "Copy Status command" });
+    expect(screen.getByText("POST · Spend · Bearer token required")).toBeTruthy();
+    expect(screen.getByText("GET · Status · Bearer token required")).toBeTruthy();
     expect(spendControl.textContent).toContain("http://localhost:8000/api/v1/mandates/mandate-1/spend");
     expect(statusControl.textContent).toContain("http://localhost:8000/api/v1/mandates/mandate-1/status");
 
     fireEvent.click(spendControl);
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        "http://localhost:8000/api/v1/mandates/mandate-1/spend",
-      ),
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining("--request POST")),
     );
+    expect(writeText.mock.calls[0][0]).toContain("Authorization: Bearer $PRIVY_ACCESS_TOKEN");
+    expect(writeText.mock.calls[0][0]).toContain('"service_url": "https://search-a.example.com"');
     expect(client.getMandateStatus).toHaveBeenCalledTimes(1);
     view.unmount();
   });

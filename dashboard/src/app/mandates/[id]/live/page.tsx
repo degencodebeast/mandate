@@ -7,7 +7,7 @@ import { useMandateClient } from "@/lib/useMandateClient";
 import { resolveMandateApiUrl } from "@/lib/api-url";
 import { formatAddress, formatDateTime, formatMoney, formatTxHash } from "@/lib/format";
 import { BudgetMeter, BreakerList, EconomicSafetyCard, PaymentLog, ReceiptList } from "@/components/MandateUI";
-import { EndpointCopy } from "@/components/EndpointCopy";
+import { RestCommandCopy } from "@/components/RestCommandCopy";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -194,14 +194,15 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
 
       <section className="card stack-4" style={{ marginBottom: "var(--space-6)" }}>
         <div className="card kicker">Agent REST access</div>
-        <div className="stack-2">
-          <span className="card-meta">POST · Spend</span>
-          <EndpointCopy label="Spend" url={spendEndpoint} />
-        </div>
-        <div className="stack-2">
-          <span className="card-meta">GET · Status</span>
-          <EndpointCopy label="Status" url={statusEndpoint} />
-        </div>
+        {status.mandate.allowed_services[0] ? (
+          <RestCommandCopy
+            kind="spend"
+            url={spendEndpoint}
+            serviceUrl={status.mandate.allowed_services[0]}
+            amount={status.mandate.per_call_cap}
+          />
+        ) : null}
+        <RestCommandCopy kind="status" url={statusEndpoint} />
         <div className="stack-2">
           <span className="card-meta">Allowed services</span>
           {status.mandate.allowed_services.length > 0 ? (

@@ -21,3 +21,12 @@ describe("payment proof visibility", () => {
     expect(intentId).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });
+
+describe("REST command visibility", () => {
+  it("preserves command lines and wraps long values", () => {
+    const command = declarations(".rest-command-copy code");
+
+    expect(command).toMatch(/white-space:\s*pre-wrap/);
+    expect(command).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
