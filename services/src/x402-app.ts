@@ -61,6 +61,8 @@ export function configureX402App(
   failureSimulator: FailureSimulator | null,
   facilitatorClient: FacilitatorClient = resolveFacilitatorClient(config),
 ): Express {
+  app.set("trust proxy", 1);
+
   const scheme = config.realDemo
     ? new GatewayEvmScheme()
     : new ExactEvmScheme().registerMoneyParser(arcUsdcMoneyParser);

@@ -33,6 +33,22 @@ function buildPaymentSignature(accepts: Record<string, unknown>[]): string {
 }
 
 describe("Service B (reliable)", () => {
+  it("advertises the public HTTPS resource behind one trusted proxy", async () => {
+    const app = createX402App(baseConfig, null);
+    const res = await request(app)
+      .get("/search")
+      .set("Host", "mandate-search-a.vercel.app")
+      .set("X-Forwarded-Proto", "https");
+
+    expect(res.status).toBe(402);
+    const paymentRequired = JSON.parse(
+      Buffer.from(res.headers["payment-required"], "base64").toString(),
+    );
+    expect(paymentRequired.resource.url).toBe(
+      "https://mandate-search-a.vercel.app/search",
+    );
+  });
+
   it("returns 402 with a PAYMENT-REQUIRED header before payment", async () => {
     const app = createX402App(baseConfig, null);
     const res = await request(app).get("/search");
