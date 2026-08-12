@@ -420,16 +420,7 @@ def test_viem_reader_returns_stored_receipts_newest_first() -> None:
             [event(oldest_anchor, "oldest", 1), event(newest_anchor, "newest", 2)]
         ),
     )
-    expected = [
-        ReceiptExpectation(
-            user_id="did:privy:user",
-            mandate_id="mandate-1",
-            purpose_hash="newest",
-            service_url="https://service-a.example.com",
-            amount="1.00",
-            payment_reference="reference-newest",
-            receipt_anchor=newest_anchor,
-        ),
+    expected_in_database_settlement_order = [
         ReceiptExpectation(
             user_id="did:privy:user",
             mandate_id="mandate-1",
@@ -439,12 +430,21 @@ def test_viem_reader_returns_stored_receipts_newest_first() -> None:
             payment_reference="reference-oldest",
             receipt_anchor=oldest_anchor,
         ),
+        ReceiptExpectation(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            purpose_hash="newest",
+            service_url="https://service-a.example.com",
+            amount="1.00",
+            payment_reference="reference-newest",
+            receipt_anchor=newest_anchor,
+        ),
     ]
 
     receipts = reader.list_receipts(
         user_id="did:privy:user",
         mandate_id="mandate-1",
-        expected_receipts=expected,
+        expected_receipts=expected_in_database_settlement_order,
     )
 
     assert [receipt.anchor for receipt in receipts] == [newest_anchor, oldest_anchor]

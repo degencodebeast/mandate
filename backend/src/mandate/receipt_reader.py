@@ -235,7 +235,10 @@ def _verify_stored_receipts(
             raise ReceiptReadError("An Arc Receipt does not match its stored Intent.")
     if verified_anchors != expected_by_anchor.keys():
         raise ReceiptReadError("A stored Receipt Anchor has no verified Arc Receipt.")
-    return [receipts_by_anchor[expected.receipt_anchor.lower()] for expected in expected_receipts]
+    verified = [
+        receipts_by_anchor[expected.receipt_anchor.lower()] for expected in expected_receipts
+    ]
+    return sorted(verified, key=lambda receipt: receipt.timestamp, reverse=True)
 
 
 def _parse_receipts(output: str) -> list[ArcReceipt]:
