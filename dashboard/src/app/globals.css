@@ -287,6 +287,28 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
 }
 .card-meta { font-size: 12px; color: var(--ink-3); display: flex; align-items: center; gap: var(--space-2); }
 
+.endpoint-copy {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  text-align: left;
+  transition-property: background-color, border-color, transform;
+  transition-duration: 120ms;
+}
+.endpoint-copy:hover { background: var(--neutral-900); border-color: var(--line-strong); }
+.endpoint-copy:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.endpoint-copy:active { transform: scale(0.96); }
+.endpoint-copy code { min-width: 0; overflow-wrap: anywhere; }
+.endpoint-copy > span { flex: none; color: var(--amber); font-size: 12px; font-weight: 600; }
+
 /* State badges — always carry a text label, never color alone (CONTEXT.md) */
 .badge {
   display: inline-flex; align-items: center; gap: 6px;

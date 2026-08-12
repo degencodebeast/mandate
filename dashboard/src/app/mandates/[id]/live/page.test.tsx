@@ -1,5 +1,5 @@
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LivePage from "@/app/mandates/[id]/live/page";
 import type { MandateStatus } from "@/lib/api";
@@ -72,8 +72,40 @@ describe("LivePage submission surface", () => {
     });
 
     await waitFor(() => expect(screen.getByText("Agent REST access")).toBeTruthy());
-    expect(screen.getByText("/api/v1/mandates/mandate-1/spend")).toBeTruthy();
-    expect(screen.getByText("/api/v1/mandates/mandate-1/status")).toBeTruthy();
+    expect(screen.getByText("http://localhost:8000/api/v1/mandates/mandate-1/spend")).toBeTruthy();
+    expect(screen.getByText("http://localhost:8000/api/v1/mandates/mandate-1/status")).toBeTruthy();
+    view.unmount();
+  });
+
+  it("shows full clickable copy controls without calling the Spend endpoint", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const client = {
+      getMandateStatus: vi.fn(async () => status()),
+      listReceipts: async () => ({ receipts: [] }),
+    };
+    mockedUseMandateClient.mockReturnValue(client as never);
+
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+
+    const spendControl = await screen.findByRole("button", { name: "Copy Spend endpoint" });
+    const statusControl = screen.getByRole("button", { name: "Copy Status endpoint" });
+    expect(spendControl.textContent).toContain("http://localhost:8000/api/v1/mandates/mandate-1/spend");
+    expect(statusControl.textContent).toContain("http://localhost:8000/api/v1/mandates/mandate-1/status");
+
+    fireEvent.click(spendControl);
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        "http://localhost:8000/api/v1/mandates/mandate-1/spend",
+      ),
+    );
+    expect(client.getMandateStatus).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 

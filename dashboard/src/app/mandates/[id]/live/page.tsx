@@ -4,8 +4,10 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ApiError, type MandateStatus, type ReceiptRecord } from "@/lib/api";
 import { useMandateClient } from "@/lib/useMandateClient";
+import { resolveMandateApiUrl } from "@/lib/api-url";
 import { formatAddress, formatDateTime, formatMoney, formatTxHash } from "@/lib/format";
 import { BudgetMeter, BreakerList, EconomicSafetyCard, PaymentLog, ReceiptList } from "@/components/MandateUI";
+import { EndpointCopy } from "@/components/EndpointCopy";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -28,6 +30,8 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
   const pollRef = useRef<number | null>(null);
   const receiptLoadRef = useRef(false);
   const mountedRef = useRef(true);
+  const spendEndpoint = resolveMandateApiUrl(`/api/v1/mandates/${status?.mandate.id ?? mandateId}/spend`);
+  const statusEndpoint = resolveMandateApiUrl(`/api/v1/mandates/${status?.mandate.id ?? mandateId}/status`);
 
   const load = useCallback(async () => {
     try {
@@ -191,16 +195,12 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
       <section className="card stack-4" style={{ marginBottom: "var(--space-6)" }}>
         <div className="card kicker">Agent REST access</div>
         <div className="stack-2">
-          <span className="card-meta">Spend</span>
-          <code className="mono" style={{ overflowWrap: "anywhere" }}>
-            {`/api/v1/mandates/${status.mandate.id}/spend`}
-          </code>
+          <span className="card-meta">POST · Spend</span>
+          <EndpointCopy label="Spend" url={spendEndpoint} />
         </div>
         <div className="stack-2">
-          <span className="card-meta">Status</span>
-          <code className="mono" style={{ overflowWrap: "anywhere" }}>
-            {`/api/v1/mandates/${status.mandate.id}/status`}
-          </code>
+          <span className="card-meta">GET · Status</span>
+          <EndpointCopy label="Status" url={statusEndpoint} />
         </div>
         <div className="stack-2">
           <span className="card-meta">Allowed services</span>

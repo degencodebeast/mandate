@@ -3,9 +3,9 @@
 import { useMemo } from "react";
 import { MandateClient } from "@/lib/api";
 import { useAccessToken } from "@/lib/auth";
+import { resolveMandateApiUrl } from "@/lib/api-url";
 
-const baseUrl =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const baseUrl = resolveMandateApiUrl("/");
 
 let cached: MandateClient | null = null;
 let cachedTokenGetter: (() => Promise<string | null>) | null = null;

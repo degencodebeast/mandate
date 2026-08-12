@@ -57,12 +57,14 @@ describe("MandatesPage submission surface", () => {
     await waitFor(() => expect(screen.getByText("Mandate issued.")).toBeTruthy());
     expect(screen.getByLabelText("REST spend endpoint")).toHaveProperty(
       "value",
-      "/api/v1/mandates/m-1/spend",
+      "http://localhost:8000/api/v1/mandates/m-1/spend",
     );
     expect(screen.getByLabelText("REST status endpoint")).toHaveProperty(
       "value",
-      "/api/v1/mandates/m-1/status",
+      "http://localhost:8000/api/v1/mandates/m-1/status",
     );
+    expect(screen.getByRole("button", { name: "Copy Spend endpoint" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy Status endpoint" })).toBeTruthy();
     expect(screen.queryByText(/MCP/i)).toBeNull();
     expect(screen.queryByText(/ERC-8004/i)).toBeNull();
   });
