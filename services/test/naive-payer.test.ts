@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from "vitest";
 import type { Server } from "node:http";
 import { HttpNaivePayer } from "../src/naive-runner.js";
-import { createX402App } from "../src/app.js";
+import { createX402App } from "../src/x402-app.js";
 import type { ServiceConfig } from "../src/config.js";
 import { FailureSimulator } from "../src/failure.js";
 import { ARC_TESTNET_NETWORK } from "../src/money.js";

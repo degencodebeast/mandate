@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import type { ServiceConfig } from "../src/config.js";
-import { createX402App, resolveFacilitatorClient } from "../src/app.js";
+import { createX402App, resolveFacilitatorClient } from "../src/x402-app.js";
 import { FailureSimulator } from "../src/failure.js";
 import { ARC_USDC_ERC20_ADDRESS, ARC_TESTNET_NETWORK } from "../src/money.js";
 

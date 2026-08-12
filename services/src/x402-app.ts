@@ -40,7 +40,7 @@ export function resolveFacilitatorClient(config: ServiceConfig): FacilitatorClie
 }
 
 /**
- * Build an Express app that serves one protected x402 route.
+ * Build the Express app that serves one protected x402 route.
  *
  * Both services share this factory. The `failureSimulator` is `null` for the
  * reliable service (Service B) and a configured simulator for the flaky one

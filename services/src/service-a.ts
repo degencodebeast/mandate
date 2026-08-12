@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { loadServiceConfig } from "./config.js";
-import { createX402App } from "./app.js";
+import { createX402App } from "./x402-app.js";
 import { FailureSimulator } from "./failure.js";
 
 /**

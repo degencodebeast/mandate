@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { loadServiceConfig } from "./config.js";
-import { createX402App } from "./app.js";
+import { createX402App } from "./x402-app.js";
 
 /**
  * Service B: reliable. Every paid request returns 200 with JSON results.

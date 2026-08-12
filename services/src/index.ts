@@ -1,4 +1,4 @@
-import { createX402App } from "./app.js";
+import { createX402App } from "./x402-app.js";
 import { loadServiceConfig } from "./config.js";
 import { FailureSimulator } from "./failure.js";
 
