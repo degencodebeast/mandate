@@ -114,6 +114,10 @@ class ViemReceiptReader:
         """Read exact stored anchors, or scan only for the recovery path."""
         if expected_receipts is not None and not expected_receipts:
             return []
+        if expected_receipts is not None:
+            stored_anchors = [item.receipt_anchor.lower() for item in expected_receipts]
+            if len(stored_anchors) != len(set(stored_anchors)):
+                raise ReceiptReadError("The Intent data has a duplicate stored Receipt Anchor.")
         try:
             command = [
                 "node",

@@ -474,6 +474,50 @@ def test_viem_reader_does_not_call_arc_when_the_mandate_has_no_stored_anchor() -
     assert calls == []
 
 
+def test_viem_reader_rejects_duplicate_stored_receipt_anchors_before_arc() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: Sequence[str]) -> str:
+        calls.append(list(command))
+        return "[]"
+
+    duplicate_anchor = "0x" + "ab" * 32
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=runner,
+    )
+
+    with pytest.raises(ReceiptReadError, match="duplicate stored Receipt Anchor"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="reference-1",
+                    receipt_anchor=duplicate_anchor,
+                ),
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-2",
+                    service_url="https://service-b.example.com",
+                    amount="1.00",
+                    payment_reference="reference-2",
+                    receipt_anchor=duplicate_anchor,
+                ),
+            ],
+        )
+
+    assert calls == []
+
+
 def test_scripted_reader_finds_receipt_for_one_intent() -> None:
     receipt = ArcReceipt(
         user_id="did:erc8004:agent",
