@@ -303,7 +303,7 @@ code, pre, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-
   transition-property: background-color, border-color, transform;
   transition-duration: 120ms;
 }
-.endpoint-copy:hover { background: var(--neutral-900); border-color: var(--line-strong); }
+.endpoint-copy:hover { background: var(--surface-3); border-color: var(--line-strong); }
 .endpoint-copy:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 .endpoint-copy:active { transform: scale(0.96); }
 .endpoint-copy code { min-width: 0; overflow-wrap: anywhere; }
