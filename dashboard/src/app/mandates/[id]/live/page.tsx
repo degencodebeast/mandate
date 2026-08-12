@@ -188,6 +188,34 @@ function LivePageInner({ mandateId }: { mandateId: string }) {
         </div>
       </div>
 
+      <section className="card stack-4" style={{ marginBottom: "var(--space-6)" }}>
+        <div className="card kicker">Agent REST access</div>
+        <div className="stack-2">
+          <span className="card-meta">Spend</span>
+          <code className="mono" style={{ overflowWrap: "anywhere" }}>
+            {`/api/v1/mandates/${status.mandate.id}/spend`}
+          </code>
+        </div>
+        <div className="stack-2">
+          <span className="card-meta">Status</span>
+          <code className="mono" style={{ overflowWrap: "anywhere" }}>
+            {`/api/v1/mandates/${status.mandate.id}/status`}
+          </code>
+        </div>
+        <div className="stack-2">
+          <span className="card-meta">Allowed services</span>
+          {status.mandate.allowed_services.length > 0 ? (
+            status.mandate.allowed_services.map((serviceUrl) => (
+              <code className="mono" key={serviceUrl} style={{ overflowWrap: "anywhere" }}>
+                {serviceUrl}
+              </code>
+            ))
+          ) : (
+            <span>No services allowed</span>
+          )}
+        </div>
+      </section>
+
       <div className="grid-2">
         <div className="stack-4">
           <h3>Intent history</h3>

@@ -60,6 +60,45 @@ afterEach(() => {
 });
 
 describe("LivePage submission surface", () => {
+  it("shows the stable REST paths after a page refresh", async () => {
+    mockedUseMandateClient.mockReturnValue({
+      getMandateStatus: async () => status(),
+      listReceipts: async () => ({ receipts: [] }),
+    } as never);
+
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+
+    await waitFor(() => expect(screen.getByText("Agent REST access")).toBeTruthy());
+    expect(screen.getByText("/api/v1/mandates/mandate-1/spend")).toBeTruthy();
+    expect(screen.getByText("/api/v1/mandates/mandate-1/status")).toBeTruthy();
+    view.unmount();
+  });
+
+  it("shows every allowed service after a page refresh", async () => {
+    const document = status();
+    document.mandate.allowed_services = [
+      "https://search-a.example.com",
+      "https://search-b.example.com",
+    ];
+    mockedUseMandateClient.mockReturnValue({
+      getMandateStatus: async () => document,
+      listReceipts: async () => ({ receipts: [] }),
+    } as never);
+
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<LivePage params={Promise.resolve({ id: "mandate-1" })} />);
+    });
+
+    await waitFor(() => expect(screen.getByText("Allowed services")).toBeTruthy());
+    expect(screen.getByText("https://search-a.example.com")).toBeTruthy();
+    expect(screen.getByText("https://search-b.example.com")).toBeTruthy();
+    view.unmount();
+  });
+
   it("shows economic safety before amount details and names the operator wallet", async () => {
     mockedUseMandateClient.mockReturnValue({
       getMandateStatus: async () => status(),
