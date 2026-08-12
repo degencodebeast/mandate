@@ -2,35 +2,37 @@
 
 import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import { useEffect } from "react";
-import { useAuth } from "@/lib/auth";
+import { resetAccessTokenProvider, setAccessTokenProvider, useAuth } from "@/lib/auth";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? null;
 
 /**
- * PrivyAuthBridge surfaces the Privy access token to the local AuthProvider.
- * When Privy is configured, the dashboard signs in by listening to
- * `ready` + `authenticated` and copying the access token into the local store.
+ * PrivyAuthBridge keeps Privy as the access-token source. The local provider
+ * stores only the authenticated User identity.
  */
 function PrivyAuthBridge() {
   const auth = useAuth();
   const privy = usePrivy();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const { ready, authenticated, user, getAccessToken } = privy;
+  const userId = user?.id ?? null;
+
+  useEffect(() => {
+    setAccessTokenProvider(() => getAccessToken());
+    return resetAccessTokenProvider;
+  }, [getAccessToken]);
+
   useEffect(() => {
     if (!ready) return;
-    if (authenticated && user?.id) {
-      const subject = user.id.startsWith("did:") ? user.id : `did:privy:${user.id}`;
-      getAccessToken()
-        .then((token) => {
-          if (token) auth.signIn(token, subject);
-        })
-        .catch(() => {
-          /* swallow — the login form will surface the error */
-        });
+    if (authenticated && userId) {
+      const subject = userId.startsWith("did:") ? userId : `did:privy:${userId}`;
+      if (auth.userId !== subject || auth.accessToken !== null) {
+        auth.signIn(null, subject);
+      }
     } else if (!authenticated && auth.status === "authenticated") {
       auth.signOut();
     }
-  }, [ready, authenticated, user, getAccessToken, auth]);
+  }, [ready, authenticated, userId, auth]);
   return null;
 }
 

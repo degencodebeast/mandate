@@ -22,7 +22,7 @@ export interface AuthState {
   status: "loading" | "guest" | "authenticated" | "live";
   accessToken: string | null;
   userId: string | null;
-  signIn: (token: string, userId: string) => void;
+  signIn: (token: string | null, userId: string) => void;
   signOut: () => void;
 }
 
@@ -56,6 +56,18 @@ export function useLiveCounter() {
 }
 
 const STORAGE_KEY = "mandate.dev.token";
+
+type AccessTokenProvider = () => Promise<string | null>;
+
+let accessTokenProvider: AccessTokenProvider | null = null;
+
+export function setAccessTokenProvider(provider: AccessTokenProvider): void {
+  accessTokenProvider = provider;
+}
+
+export function resetAccessTokenProvider(): void {
+  accessTokenProvider = null;
+}
 
 interface StoredToken {
   token: string;
@@ -109,9 +121,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setHydrated(true);
   }, []);
 
-  const signIn = useCallback((token: string, userId: string) => {
+  const signIn = useCallback((token: string | null, userId: string) => {
     setState({ accessToken: token, userId });
-    writeStored({ token, userId });
+    writeStored(token ? { token, userId } : null);
   }, []);
 
   const signOut = useCallback(() => {
@@ -122,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AuthState>(() => {
     let status: AuthState["status"];
     if (!hydrated) status = "loading";
-    else if (!state.accessToken) status = "guest";
+    else if (!state.userId) status = "guest";
     else if (live.liveCount > 0) status = "live";
     else status = "authenticated";
     return {
@@ -147,7 +159,12 @@ export function useAuth(): AuthState {
 
 export function useAccessToken(): () => Promise<string | null> {
   const { accessToken } = useAuth();
-  return useCallback(async () => accessToken, [accessToken]);
+  return useCallback(async () => {
+    if (accessTokenProvider) {
+      return accessTokenProvider();
+    }
+    return accessToken;
+  }, [accessToken]);
 }
 
 export function decodeSubject(token: string): string | null {

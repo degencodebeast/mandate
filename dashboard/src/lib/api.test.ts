@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError, MandateClient } from "@/lib/api";
 
 interface CapturedRequest {
@@ -50,6 +50,29 @@ describe("MandateClient", () => {
       name: "ApiError",
       status: 401,
     });
+  });
+
+  it("gets a new token and retries once after an unauthorized response", async () => {
+    const tokens = ["expired-token", "fresh-token"];
+    const getAccessToken = vi.fn(async () => tokens.shift() ?? null);
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      if (headers.Authorization === "Bearer expired-token") {
+        return new Response(JSON.stringify({ detail: "Unauthorized" }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ mandates: [] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new MandateClient({
+      baseUrl: "https://api.mandate.example",
+      getAccessToken,
+      fetchImpl,
+    });
+
+    await expect(client.listMandates()).resolves.toEqual({ mandates: [] });
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const secondInit = vi.mocked(fetchImpl).mock.calls[1]![1];
+    expect((secondInit?.headers as Record<string, string>).Authorization).toBe("Bearer fresh-token");
   });
 
   it("serializes a mandate create payload as JSON", async () => {

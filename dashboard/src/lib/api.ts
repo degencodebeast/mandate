@@ -145,21 +145,30 @@ export class MandateClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const token = await this.getAccessToken();
-    if (!token) {
+    const firstToken = await this.getAccessToken();
+    if (!firstToken) {
       throw new ApiError(401, "Missing access token. Sign in to continue.", null);
     }
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
+    const send = (token: string) => {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+      };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+      }
+      return this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
     };
-    if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
+    let response = await send(firstToken);
+    if (response.status === 401) {
+      const retryToken = await this.getAccessToken();
+      if (retryToken) {
+        response = await send(retryToken);
+      }
     }
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
     const text = await response.text();
     const parsed = text.length === 0 ? null : safeJsonParse(text);
     if (!response.ok) {
