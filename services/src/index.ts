@@ -1,4 +1,6 @@
-import { createX402App } from "./x402-app.js";
+import express from "express";
+
+import { configureX402App } from "./x402-app.js";
 import { loadServiceConfig } from "./config.js";
 import { FailureSimulator } from "./failure.js";
 
@@ -14,4 +16,7 @@ const failureSimulator = isServiceA
   ? new FailureSimulator(config.failureRate, config.failureMode)
   : null;
 
-export default createX402App(config, failureSimulator);
+const app = express();
+configureX402App(app, config, failureSimulator);
+
+export default app;

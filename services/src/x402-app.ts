@@ -51,6 +51,16 @@ export function createX402App(
   failureSimulator: FailureSimulator | null,
   facilitatorClient: FacilitatorClient = resolveFacilitatorClient(config),
 ): Express {
+  return configureX402App(express(), config, failureSimulator, facilitatorClient);
+}
+
+/** Configure an existing Express app for the Vercel server entry. */
+export function configureX402App(
+  app: Express,
+  config: ServiceConfig,
+  failureSimulator: FailureSimulator | null,
+  facilitatorClient: FacilitatorClient = resolveFacilitatorClient(config),
+): Express {
   const scheme = config.realDemo
     ? new GatewayEvmScheme()
     : new ExactEvmScheme().registerMoneyParser(arcUsdcMoneyParser);
@@ -73,8 +83,6 @@ export function createX402App(
       mimeType: "application/json",
     },
   };
-
-  const app = express();
 
   app.use(
     paymentMiddleware(

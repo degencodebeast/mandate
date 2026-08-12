@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import request from "supertest";
@@ -14,6 +14,13 @@ describe("Vercel entry", () => {
       .sort();
 
     expect(reservedEntries).toEqual(["index.ts"]);
+  });
+
+  it("imports Express in the Vercel server entry", async () => {
+    const entryPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
+    const entrySource = await readFile(entryPath, "utf8");
+
+    expect(entrySource).toMatch(/from ["']express["']/);
   });
 
   it("exports a working Express application", async () => {
