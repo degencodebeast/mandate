@@ -13,7 +13,11 @@
 //
 // Install: `npm install viem` in this directory.
 
-import { createPublicClient, http, parseAbiItem } from "viem";
+import { createPublicClient, decodeEventLog, http, parseAbiItem } from "viem";
+
+const receiptEvent = parseAbiItem(
+  "event ReceiptRecorded(string authorityId, string mandateId, string taskId, string purposeHash, string serviceUrl, string amount, string paymentReference, string legacyReference, uint256 timestamp)",
+);
 
 function parseArgs(argv) {
   const args = {};
@@ -34,9 +38,14 @@ async function main() {
     "authority-id": authorityId,
     "mandate-id": mandateId,
     "from-block": fromBlock,
+    "transaction-hashes": transactionHashes,
   } = parseArgs(process.argv);
-  if (!registry || !rpcUrl || !authorityId || !mandateId) {
-    console.error("missing --registry, --rpc-url, --authority-id, or --mandate-id");
+  if (!registry || !rpcUrl) {
+    console.error("missing --registry or --rpc-url");
+    process.exit(1);
+  }
+  if (!transactionHashes && (!authorityId || !mandateId)) {
+    console.error("missing --transaction-hashes or --authority-id and --mandate-id");
     process.exit(1);
   }
   if (fromBlock !== undefined && !/^\d+$/.test(fromBlock)) {
@@ -44,7 +53,57 @@ async function main() {
     process.exit(1);
   }
 
-  const client = createPublicClient({ transport: http(rpcUrl) });
+  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 5000 }) });
+
+  if (transactionHashes) {
+    const hashes = transactionHashes.split(",").filter(Boolean);
+    if (
+      hashes.length === 0 ||
+      hashes.some((hash) => !/^0x[0-9a-fA-F]{64}$/.test(hash))
+    ) {
+      throw new Error("--transaction-hashes must contain Arc transaction hashes");
+    }
+
+    async function readExactReceipt(hash) {
+      const transactionReceipt = await client.getTransactionReceipt({ hash });
+      if (transactionReceipt.status !== "success") {
+        throw new Error(`Receipt Anchor ${hash} is not a successful transaction`);
+      }
+      for (const log of transactionReceipt.logs) {
+        if (log.address.toLowerCase() !== registry.toLowerCase()) continue;
+        try {
+          const decoded = decodeEventLog({
+            abi: [receiptEvent],
+            data: log.data,
+            topics: log.topics,
+          });
+          if (decoded.eventName !== "ReceiptRecorded") continue;
+          return {
+            authorityId: decoded.args.authorityId,
+            mandateId: decoded.args.mandateId,
+            taskId: decoded.args.taskId,
+            purposeHash: decoded.args.purposeHash,
+            serviceUrl: decoded.args.serviceUrl,
+            amount: decoded.args.amount,
+            paymentReference: decoded.args.paymentReference,
+            timestamp: Number(decoded.args.timestamp ?? 0n),
+            transactionHash: transactionReceipt.transactionHash,
+          };
+        } catch {
+          continue;
+        }
+      }
+      throw new Error(`Receipt Anchor ${hash} has no ReceiptRecorded event`);
+    }
+
+    const receipts = [];
+    const concurrency = 4;
+    for (let index = 0; index < hashes.length; index += concurrency) {
+      receipts.push(...(await Promise.all(hashes.slice(index, index + concurrency).map(readExactReceipt))));
+    }
+    process.stdout.write(JSON.stringify(receipts));
+    return;
+  }
 
   const latest = await client.getBlockNumber();
 
@@ -68,9 +127,7 @@ async function main() {
       try {
         return await client.getLogs({
           address: registry,
-          event: parseAbiItem(
-            "event ReceiptRecorded(string authorityId, string mandateId, string taskId, string purposeHash, string serviceUrl, string amount, string paymentReference, string legacyReference, uint256 timestamp)",
-          ),
+          event: receiptEvent,
           fromBlock: from,
           toBlock: to,
         });

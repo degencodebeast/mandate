@@ -69,7 +69,13 @@ from mandate.persistence.mandate_store import (
     NotFoundError,
     PostgresMandateStore,
 )
-from mandate.receipt_reader import ArcReceipt, ReceiptReader, ReceiptReadError, ViemReceiptReader
+from mandate.receipt_reader import (
+    ArcReceipt,
+    ReceiptExpectation,
+    ReceiptReader,
+    ReceiptReadError,
+    ViemReceiptReader,
+)
 from mandate.receipts import ArcReceiptRecorder, ReceiptWriteError
 from mandate.spend import CircuitBreaker, MandateSpendService, SpendResponse
 from mandate.spend.policy import finite_positive_decimal
@@ -191,6 +197,11 @@ def create_app(
     )
     active_status = status_service or _status_service_from_settings(
         active_settings, active_store, active_breaker
+    )
+    active_intents = (
+        PostgresIntentStore(active_settings.database_url)
+        if active_settings.database_url is not None
+        else None
     )
     active_receipts = receipt_reader or _receipt_reader_from_settings(active_settings)
     active_mcp_credentials = (
@@ -454,9 +465,32 @@ def create_app(
             raise StarletteHTTPException(
                 status_code=503, detail="The Receipt reader is not configured."
             )
+        if active_intents is None:
+            raise StarletteHTTPException(status_code=503)
+        receipt_intents = active_intents.list_receipt_intents(mandate_id=mandate.id)
+        expected_receipts: list[ReceiptExpectation] = []
+        for intent in receipt_intents:
+            if intent.payment_reference is None or intent.receipt_anchor is None:
+                raise StarletteHTTPException(
+                    status_code=502,
+                    detail="A stored Receipt is missing its exact reference.",
+                )
+            expected_receipts.append(
+                ReceiptExpectation(
+                    user_id=mandate.agent_identity,
+                    mandate_id=str(mandate.id),
+                    purpose_hash=intent.purpose_hash,
+                    service_url=intent.service_url,
+                    amount=intent.amount,
+                    payment_reference=intent.payment_reference,
+                    receipt_anchor=intent.receipt_anchor,
+                )
+            )
         try:
             receipts = active_receipts.list_receipts(
-                user_id=mandate.agent_identity, mandate_id=str(mandate.id)
+                user_id=mandate.agent_identity,
+                mandate_id=str(mandate.id),
+                expected_receipts=expected_receipts,
             )
         except ReceiptReadError as error:
             raise StarletteHTTPException(status_code=502, detail=str(error)) from None

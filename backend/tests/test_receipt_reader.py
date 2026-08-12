@@ -17,6 +17,7 @@ import pytest
 
 from mandate.receipt_reader import (
     ArcReceipt,
+    ReceiptExpectation,
     ReceiptReadError,
     ScriptedReceiptReader,
     ViemReceiptReader,
@@ -196,6 +197,281 @@ def test_viem_reader_passes_the_known_registry_deployment_block() -> None:
     command = calls[0]
     index = command.index("--from-block")
     assert command[index + 1] == "56177338"
+
+
+def test_viem_reader_rejects_a_payment_reference_that_does_not_match_the_intent() -> None:
+    output = json.dumps(
+        [
+            {
+                "authorityId": "did:privy:user",
+                "mandateId": "mandate-1",
+                "taskId": "task-1",
+                "purposeHash": "hash-1",
+                "serviceUrl": "https://service-a.example.com",
+                "amount": "1.00",
+                "paymentReference": "wrong-reference",
+                "timestamp": 1783600000,
+                "transactionHash": "0x" + "ab" * 32,
+            }
+        ]
+    )
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: output,
+    )
+
+    with pytest.raises(ReceiptReadError, match="does not match its stored Intent"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="gateway-reference-1",
+                    receipt_anchor="0x" + "ab" * 32,
+                )
+            ],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("authorityId", "did:privy:other"),
+        ("mandateId", "mandate-other"),
+        ("purposeHash", "hash-other"),
+        ("serviceUrl", "https://service-b.example.com"),
+        ("amount", "2.00"),
+    ],
+)
+def test_viem_reader_rejects_event_fields_that_do_not_match_the_intent(
+    field: str,
+    wrong_value: str,
+) -> None:
+    event = {
+        "authorityId": "did:privy:user",
+        "mandateId": "mandate-1",
+        "taskId": "task-1",
+        "purposeHash": "hash-1",
+        "serviceUrl": "https://service-a.example.com",
+        "amount": "1.00",
+        "paymentReference": "gateway-reference-1",
+        "timestamp": 1783600000,
+        "transactionHash": "0x" + "ab" * 32,
+    }
+    event[field] = wrong_value
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: json.dumps([event]),
+    )
+
+    with pytest.raises(ReceiptReadError, match="does not match its stored Intent"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="gateway-reference-1",
+                    receipt_anchor="0x" + "ab" * 32,
+                )
+            ],
+        )
+
+
+def test_viem_reader_rejects_a_stored_anchor_without_an_arc_receipt() -> None:
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: "[]",
+    )
+
+    with pytest.raises(ReceiptReadError, match="has no verified Arc Receipt"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="gateway-reference-1",
+                    receipt_anchor="0x" + "ab" * 32,
+                )
+            ],
+        )
+
+
+def test_viem_reader_rejects_an_unrequested_receipt_anchor() -> None:
+    def event(anchor: str) -> dict[str, object]:
+        return {
+            "authorityId": "did:privy:user",
+            "mandateId": "mandate-1",
+            "taskId": "task-1",
+            "purposeHash": "hash-1",
+            "serviceUrl": "https://service-a.example.com",
+            "amount": "1.00",
+            "paymentReference": "gateway-reference-1",
+            "timestamp": 1783600000,
+            "transactionHash": anchor,
+        }
+
+    stored_anchor = "0x" + "ab" * 32
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: json.dumps([event(stored_anchor), event("0x" + "cd" * 32)]),
+    )
+
+    with pytest.raises(ReceiptReadError, match="unrequested Receipt Anchor"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="gateway-reference-1",
+                    receipt_anchor=stored_anchor,
+                )
+            ],
+        )
+
+
+def test_viem_reader_rejects_a_duplicate_receipt_anchor() -> None:
+    stored_anchor = "0x" + "ab" * 32
+    event = {
+        "authorityId": "did:privy:user",
+        "mandateId": "mandate-1",
+        "taskId": "task-1",
+        "purposeHash": "hash-1",
+        "serviceUrl": "https://service-a.example.com",
+        "amount": "1.00",
+        "paymentReference": "gateway-reference-1",
+        "timestamp": 1783600000,
+        "transactionHash": stored_anchor,
+    }
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: json.dumps([event, event]),
+    )
+
+    with pytest.raises(ReceiptReadError, match="duplicate Receipt Anchor"):
+        reader.list_receipts(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            expected_receipts=[
+                ReceiptExpectation(
+                    user_id="did:privy:user",
+                    mandate_id="mandate-1",
+                    purpose_hash="hash-1",
+                    service_url="https://service-a.example.com",
+                    amount="1.00",
+                    payment_reference="gateway-reference-1",
+                    receipt_anchor=stored_anchor,
+                )
+            ],
+        )
+
+
+def test_viem_reader_returns_stored_receipts_newest_first() -> None:
+    newest_anchor = "0x" + "ab" * 32
+    oldest_anchor = "0x" + "cd" * 32
+
+    def event(anchor: str, purpose_hash: str, timestamp: int) -> dict[str, object]:
+        return {
+            "authorityId": "did:privy:user",
+            "mandateId": "mandate-1",
+            "taskId": "task-1",
+            "purposeHash": purpose_hash,
+            "serviceUrl": "https://service-a.example.com",
+            "amount": "1.00",
+            "paymentReference": f"reference-{purpose_hash}",
+            "timestamp": timestamp,
+            "transactionHash": anchor,
+        }
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=lambda _command: json.dumps(
+            [event(oldest_anchor, "oldest", 1), event(newest_anchor, "newest", 2)]
+        ),
+    )
+    expected = [
+        ReceiptExpectation(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            purpose_hash="newest",
+            service_url="https://service-a.example.com",
+            amount="1.00",
+            payment_reference="reference-newest",
+            receipt_anchor=newest_anchor,
+        ),
+        ReceiptExpectation(
+            user_id="did:privy:user",
+            mandate_id="mandate-1",
+            purpose_hash="oldest",
+            service_url="https://service-a.example.com",
+            amount="1.00",
+            payment_reference="reference-oldest",
+            receipt_anchor=oldest_anchor,
+        ),
+    ]
+
+    receipts = reader.list_receipts(
+        user_id="did:privy:user",
+        mandate_id="mandate-1",
+        expected_receipts=expected,
+    )
+
+    assert [receipt.anchor for receipt in receipts] == [newest_anchor, oldest_anchor]
+
+
+def test_viem_reader_does_not_call_arc_when_the_mandate_has_no_stored_anchor() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: Sequence[str]) -> str:
+        calls.append(list(command))
+        return "[]"
+
+    reader = ViemReceiptReader(
+        registry_address="0xregistry",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        runner=runner,
+    )
+
+    receipts = reader.list_receipts(
+        user_id="did:privy:user",
+        mandate_id="mandate-1",
+        expected_receipts=[],
+    )
+
+    assert receipts == []
+    assert calls == []
 
 
 def test_scripted_reader_finds_receipt_for_one_intent() -> None:

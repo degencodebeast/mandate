@@ -11,7 +11,7 @@ failures must be explicit errors, never empty lists.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,7 +31,12 @@ from mandate.persistence.mandate_store import (
     PostgresMandateStore,
 )
 from mandate.persistence.migrations import apply_migrations
-from mandate.receipt_reader import ArcReceipt, ReceiptReadError, ScriptedReceiptReader
+from mandate.receipt_reader import (
+    ArcReceipt,
+    ReceiptExpectation,
+    ReceiptReadError,
+    ScriptedReceiptReader,
+)
 from mandate.receipts import ScriptedReceiptRecorder
 from mandate.spend import CircuitBreaker, MandateSpendService
 from mandate.spend.service import purpose_hash
@@ -91,7 +96,13 @@ class FailingReceiptRecorder:
 class FailingReceiptReader:
     """Simulate an unreadable Receipt source."""
 
-    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[object]:
+    def list_receipts(
+        self,
+        *,
+        user_id: str,
+        mandate_id: str,
+        expected_receipts: Sequence[ReceiptExpectation] | None = None,
+    ) -> list[object]:
         raise ReceiptReadError("The receipt reader failed.")
 
     def find_receipt(self, *, user_id: str, mandate_id: str, purpose_hash: str) -> object:

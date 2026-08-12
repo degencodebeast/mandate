@@ -42,10 +42,29 @@ class ArcReceipt:
     anchor: str | None = None
 
 
+@dataclass(frozen=True)
+class ReceiptExpectation:
+    """Trusted Intent fields for one stored Receipt Anchor."""
+
+    user_id: str
+    mandate_id: str
+    purpose_hash: str
+    service_url: str
+    amount: str
+    payment_reference: str
+    receipt_anchor: str
+
+
 class ReceiptReader(Protocol):
     """Read on-Arc receipts for one User authority and Mandate."""
 
-    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
+    def list_receipts(
+        self,
+        *,
+        user_id: str,
+        mandate_id: str,
+        expected_receipts: Sequence[ReceiptExpectation] | None = None,
+    ) -> list[ArcReceipt]:
         """Return the receipts for the User authority and Mandate, newest first.
 
         The authority is User-scoped and shared across the User's Mandates,
@@ -85,8 +104,16 @@ class ViemReceiptReader:
         self._deployment_block = deployment_block
         self._runner = runner
 
-    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
-        """Run the viem script and parse the receipts for the Mandate."""
+    def list_receipts(
+        self,
+        *,
+        user_id: str,
+        mandate_id: str,
+        expected_receipts: Sequence[ReceiptExpectation] | None = None,
+    ) -> list[ArcReceipt]:
+        """Read exact stored anchors, or scan only for the recovery path."""
+        if expected_receipts is not None and not expected_receipts:
+            return []
         try:
             command = [
                 "node",
@@ -95,17 +122,32 @@ class ViemReceiptReader:
                 self._registry_address,
                 "--rpc-url",
                 self._rpc_url,
-                "--authority-id",
-                user_id,
-                "--mandate-id",
-                mandate_id,
             ]
-            if self._deployment_block is not None:
-                command.extend(["--from-block", str(self._deployment_block)])
+            if expected_receipts is not None:
+                command.extend(
+                    [
+                        "--transaction-hashes",
+                        ",".join(item.receipt_anchor for item in expected_receipts),
+                    ]
+                )
+            else:
+                command.extend(
+                    [
+                        "--authority-id",
+                        user_id,
+                        "--mandate-id",
+                        mandate_id,
+                    ]
+                )
+                if self._deployment_block is not None:
+                    command.extend(["--from-block", str(self._deployment_block)])
             output = run_cli(command, self._runner)
         except subprocess.CalledProcessError as error:
             raise ReceiptReadError("The receipt reader script failed.") from error
-        return _parse_receipts(output)
+        receipts = _parse_receipts(output)
+        if expected_receipts is None:
+            return receipts
+        return _verify_stored_receipts(receipts, expected_receipts)
 
     def find_receipt(
         self, *, user_id: str, mandate_id: str, purpose_hash: str
@@ -123,7 +165,13 @@ class ScriptedReceiptReader:
     def __init__(self, receipts: list[ArcReceipt] | None = None) -> None:
         self._receipts = receipts or []
 
-    def list_receipts(self, *, user_id: str, mandate_id: str) -> list[ArcReceipt]:
+    def list_receipts(
+        self,
+        *,
+        user_id: str,
+        mandate_id: str,
+        expected_receipts: Sequence[ReceiptExpectation] | None = None,
+    ) -> list[ArcReceipt]:
         return [
             receipt
             for receipt in self._receipts
@@ -142,6 +190,48 @@ class ScriptedReceiptReader:
 
 class ReceiptReadError(RuntimeError):
     """The on-chain receipt read did not return a usable list."""
+
+
+def _verify_stored_receipts(
+    receipts: Sequence[ArcReceipt],
+    expected_receipts: Sequence[ReceiptExpectation],
+) -> list[ArcReceipt]:
+    """Verify exact Arc events against trusted Intent data."""
+    expected_by_anchor = {
+        expected.receipt_anchor.lower(): expected for expected in expected_receipts
+    }
+    verified_anchors: set[str] = set()
+    receipts_by_anchor: dict[str, ArcReceipt] = {}
+    for receipt in receipts:
+        anchor = (receipt.anchor or "").lower()
+        expected = expected_by_anchor.get(anchor)
+        if expected is None:
+            raise ReceiptReadError("The Arc reader returned an unrequested Receipt Anchor.")
+        if anchor in verified_anchors:
+            raise ReceiptReadError("The Arc reader returned a duplicate Receipt Anchor.")
+        verified_anchors.add(anchor)
+        receipts_by_anchor[anchor] = receipt
+        actual_fields = (
+            receipt.user_id,
+            receipt.mandate_id,
+            receipt.purpose_hash,
+            receipt.service_url,
+            receipt.amount,
+            receipt.tx_hash,
+        )
+        expected_fields = (
+            expected.user_id,
+            expected.mandate_id,
+            expected.purpose_hash,
+            expected.service_url,
+            expected.amount,
+            expected.payment_reference,
+        )
+        if actual_fields != expected_fields:
+            raise ReceiptReadError("An Arc Receipt does not match its stored Intent.")
+    if verified_anchors != expected_by_anchor.keys():
+        raise ReceiptReadError("A stored Receipt Anchor has no verified Arc Receipt.")
+    return [receipts_by_anchor[expected.receipt_anchor.lower()] for expected in expected_receipts]
 
 
 def _parse_receipts(output: str) -> list[ArcReceipt]:

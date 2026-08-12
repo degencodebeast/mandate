@@ -9,8 +9,9 @@ the real test database.
 
 from __future__ import annotations
 
+import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 
 import psycopg
@@ -28,7 +29,7 @@ from mandate.persistence.mandate_store import (
     PostgresMandateStore,
 )
 from mandate.persistence.migrations import apply_migrations
-from mandate.receipt_reader import ArcReceipt, ScriptedReceiptReader
+from mandate.receipt_reader import ArcReceipt, ScriptedReceiptReader, ViemReceiptReader
 from mandate.status import MandateStatusService
 
 _DATABASE_URL = "postgresql://mandate:mandate_dev@127.0.0.1:55448/mandate"
@@ -247,6 +248,85 @@ def test_get_mandate_receipts_returns_receipts_for_agent_identity() -> None:
     assert document["receipts"][0]["payment_reference"] == "0xsettled"
     assert document["receipts"][0]["receipt_anchor"] is None
     assert document["receipts"][0]["mandate_id"] == str(mandate.id)
+
+
+def test_get_mandate_receipts_reads_only_stored_receipt_anchors() -> None:
+    _reset_database()
+    mandate_store = PostgresMandateStore(_DATABASE_URL)
+    mandate = _create_mandate(mandate_store)
+    intent_store = PostgresIntentStore(_DATABASE_URL)
+    intent = intent_store.create_intent(
+        mandate_id=mandate.id,
+        purpose_hash="hash-stored-anchor",
+        service_url=_SERVICE_URL,
+        amount="1.00",
+    )
+    intent_store.transition(
+        intent_id=intent.id,
+        status="settling",
+        expected_status="pending",
+    )
+    intent_store.store_payment_reference(
+        intent_id=intent.id,
+        reference="gateway-reference-1",
+    )
+    intent_store.store_receipt_anchor(
+        intent_id=intent.id,
+        anchor="0x0000000000000000000000000000000000000000000000000000000000000abc",
+    )
+    calls: list[list[str]] = []
+
+    def runner(command: Sequence[str]) -> str:
+        calls.append(list(command))
+        return json.dumps(
+            [
+                {
+                    "authorityId": "did:erc8004:status-api-agent",
+                    "mandateId": str(mandate.id),
+                    "taskId": "task-1",
+                    "purposeHash": "hash-stored-anchor",
+                    "serviceUrl": "https://service-a.example.com",
+                    "amount": "1.00",
+                    "paymentReference": "gateway-reference-1",
+                    "timestamp": 1783600000,
+                    "transactionHash": (
+                        "0x0000000000000000000000000000000000000000000000000000000000000abc"
+                    ),
+                }
+            ]
+        )
+
+    reader = ViemReceiptReader(
+        registry_address="0x0000000000000000000000000000000000000123",
+        rpc_url="https://arc.example.com",
+        script="read-receipts.mjs",
+        deployment_block=56_177_338,
+        runner=runner,
+    )
+    verifier = DeterministicPrivyAdapter(signing_key=_TEST_SIGNING_KEY, app_id=_TEST_APP_ID)
+    app = create_app(
+        settings=ApiSettings(database_url=_DATABASE_URL),
+        identity_verifier=verifier,
+        mandate_store=mandate_store,
+        status_service=MandateStatusService(
+            mandate_store=mandate_store,
+            intent_store=intent_store,
+            breaker_store=ScriptedBreakerStateStore(),
+        ),
+        receipt_reader=reader,
+    )
+    client = TestClient(app)
+    client.headers["Authorization"] = f"Bearer {verifier.issue_token({'sub': _TEST_USER})}"
+
+    response = client.get(f"/api/v1/mandates/{mandate.id}/receipts")
+
+    assert response.status_code == 200
+    assert response.json()["receipts"][0]["receipt_anchor"].endswith("0abc")
+    assert len(calls) == 1
+    command = calls[0]
+    assert "--transaction-hashes" in command
+    assert command[command.index("--transaction-hashes") + 1].endswith("0abc")
+    assert "--from-block" not in command
 
 
 def test_get_mandate_receipts_scopes_by_mandate_for_shared_agent_identity() -> None:

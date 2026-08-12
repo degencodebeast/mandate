@@ -89,6 +89,8 @@ class IntentStore(Protocol):
 
     def list_intents(self, *, mandate_id: uuid.UUID, limit: int = 20) -> list[Intent]: ...
 
+    def list_receipt_intents(self, *, mandate_id: uuid.UUID) -> list[Intent]: ...
+
     def transition(
         self,
         *,
@@ -272,6 +274,19 @@ class PostgresIntentStore:
             rows = connection.execute(
                 _SELECT_INTENT + "WHERE mandate_id = %s ORDER BY created_at DESC LIMIT %s",
                 (mandate_id, limit),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def list_receipt_intents(self, *, mandate_id: uuid.UUID) -> list[Intent]:
+        """Return all Intents that have a stored Receipt Anchor, newest first."""
+        with psycopg.connect(self._database_url, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                _SELECT_INTENT
+                + """
+                  WHERE mandate_id = %s AND receipt_anchor IS NOT NULL
+                  ORDER BY settled_at DESC NULLS LAST, created_at DESC
+                  """,
+                (mandate_id,),
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
